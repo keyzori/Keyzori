@@ -3,7 +3,7 @@
 FROM oven/bun:1.4.0 AS builder
 WORKDIR /app
 
-COPY package.json bun.lock tsconfig.json bunfig.toml LICENSE NOTICE ./
+COPY package.json bun.lock tsconfig.json bunfig.toml LICENSE ./
 COPY apps/server/package.json ./apps/server/
 COPY apps/sdk/package.json ./apps/sdk/
 
