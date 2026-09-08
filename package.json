@@ -27,7 +27,7 @@
 		"sdk",
 		"cli"
 	],
-	"packageManager": "bun@1.4.0",
+	"packageManager": "bun@1.4.2",
 	"type": "module",
 	"private": true,
 	"scripts": {
@@ -80,8 +80,8 @@
 	],
 	"devDependencies": {
 		"@biomejs/biome": "2.5.12",
-		"@types/bun": "1.4.0",
-		"@types/node": "26.4.1",
+		"@types/bun": "1.4.2",
+		"@types/node": "26.5.0",
 		"turbo": "2.10.12",
 		"typescript": "7.0.2"
 	}
