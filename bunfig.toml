@@ -4,3 +4,7 @@ ignoreScripts = false
 saveTextLockfile = true
 linkWorkspacePackages = true
 linker = "hoisted"
+
+[test]
+coverageSkipTestFiles = true
+coverageThreshold = { line = 80 }

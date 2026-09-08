@@ -72,7 +72,8 @@
 		"release:verify": "bun run scripts/verifyRelease.ts",
 		"lint": "bunx @biomejs/biome check .",
 		"format": "bunx @biomejs/biome format --write .",
-		"audit": "bun audit --audit-level=high"
+		"audit": "bun audit --audit-level=high",
+		"prepare": "husky"
 	},
 	"workspaces": [
 		"apps/server",

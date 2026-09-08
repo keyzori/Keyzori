@@ -26,7 +26,7 @@ await cp(
 	},
 );
 
-for (const legalFile of ["LICENSE", "NOTICE"] as const) {
+for (const legalFile of ["LICENSE"] as const) {
 	await cp(
 		resolve(appDirectory, "../..", legalFile),
 		resolve(outputDirectory, legalFile),
