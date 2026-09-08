@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.27
 
-FROM oven/bun:1.4.0 AS builder
+FROM oven/bun:1.4.2 AS builder
 WORKDIR /app
 
 COPY package.json bun.lock tsconfig.json bunfig.toml LICENSE NOTICE ./
