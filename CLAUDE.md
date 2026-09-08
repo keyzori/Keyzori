@@ -51,6 +51,39 @@ bun run db:migrate
 
 Commit the generated SQL *and* snapshot alongside the schema change. `db:push` is for disposable local prototyping only.
 
+### Releases
+
+Releases are automated; never bump a version or move a tag by hand. A release is
+declared by landing a commit on `dev` whose message carries a release directive:
+
+```bash
+git commit --allow-empty -m "release: patch"
+```
+
+`patch`, `minor`, `major`, and explicit `release: v1.2.0` are all accepted, and the
+directive may be embedded in a PR title as `[release: minor]`. `.github/workflows/promote.yml`
+then runs `scripts/release.ts`, which syncs every manifest, runs `bun run check`,
+commits `chore(release): vX.Y.Z` to `dev`, and opens an auto-merging `dev -> main`
+pull request. When that lands, `.github/workflows/tag.yml` tags whatever version
+`main` declares, and the tag triggers `release.yml`.
+
+The invariant the pipeline exists to protect: **the tag never leads the version**.
+`scripts/tag.ts` reads all three manifests from `origin/main` and refuses to tag a
+commit that does not already declare that version — the failure mode that broke
+v0.4.2, where the tag was cut on a commit still declaring 0.4.1.
+
+```bash
+bun run release patch --dry-run   # print every git/gh action, change nothing
+bun run release:sync 0.5.0        # rewrite the three manifests only
+bun run release:tag --from-manifest   # idempotent; no-op if the tag exists
+```
+
+Both workflows authenticate as a GitHub App, because the `Protect main` and
+`Protect release tags` rulesets restrict pushes and `v*` tag creation to actors on
+their bypass lists. The app needs `contents: write` and `pull_requests: write`, and
+must be added to both rulesets' bypass actors; its credentials live in the
+`RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` secrets.
+
 ### Opt-in / external-dependency checks
 
 `bun run test` uses in-memory and fake adapters exclusively — no PostgreSQL, Redis, Docker, or Stripe needed. These need real services and are excluded from the default suite; say explicitly when you did not run them:

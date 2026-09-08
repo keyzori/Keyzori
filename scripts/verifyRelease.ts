@@ -1,39 +1,27 @@
-interface PackageManifest {
-	version?: string;
-	license?: string;
-}
+/**
+ * Asserts that the workspace agrees on one Apache-2.0 release version, and
+ * optionally that it matches the tag being released.
+ *
+ *   bun run scripts/verifyRelease.ts
+ *   bun run scripts/verifyRelease.ts v0.5.0
+ */
 
-const manifests = [
-	"package.json",
-	"apps/server/package.json",
-	"apps/sdk/package.json",
-] as const;
+import {
+	RELEASE_MANIFESTS,
+	SEMVER_PATTERN,
+	readManifest,
+} from "./releaseManifests.ts";
 
-async function readManifest(
-	path: (typeof manifests)[number],
-): Promise<PackageManifest> {
-	const value: unknown = await Bun.file(path).json();
-	if (!value || typeof value !== "object") {
-		throw new Error(`${path} does not contain a package manifest.`);
-	}
-	return value as PackageManifest;
-}
-
-const packages = await Promise.all(manifests.map(readManifest));
+const packages = await Promise.all(RELEASE_MANIFESTS.map(readManifest));
 const versions = packages.map((manifest) => manifest.version);
 const version = versions[0];
 
-if (
-	!version ||
-	!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(
-		version,
-	)
-) {
+if (!version || !SEMVER_PATTERN.test(version)) {
 	throw new Error("The release version must be valid SemVer.");
 }
 if (versions.some((candidate) => candidate !== version)) {
 	throw new Error(
-		`Workspace versions must match: ${manifests.map((path, index) => `${path}=${versions[index] ?? "missing"}`).join(", ")}`,
+		`Workspace versions must match: ${RELEASE_MANIFESTS.map((path, index) => `${path}=${versions[index] ?? "missing"}`).join(", ")}`,
 	);
 }
 if (packages.some((manifest) => manifest.license !== "Apache-2.0")) {
@@ -44,7 +32,10 @@ const requestedTag =
 	process.argv[2] ??
 	(Bun.env.GITHUB_REF_TYPE === "tag" ? Bun.env.GITHUB_REF_NAME : undefined);
 if (requestedTag && requestedTag !== `v${version}`) {
-	throw new Error(`Release tag ${requestedTag} does not match v${version}.`);
+	throw new Error(
+		`Release tag ${requestedTag} does not match v${version}. ` +
+			`Run \`bun run release ${requestedTag}\` so the version bump lands before the tag.`,
+	);
 }
 
 console.log(`Release metadata is aligned at v${version}.`);

@@ -1,0 +1,58 @@
+name: Tag
+
+# Publishes the release tag for whatever version `main` declares.
+#
+# This runs on every push to `main` and is a no-op unless the declared version
+# has no tag yet, so a release is whatever `main` says it is. Creating the tag
+# is what triggers `release.yml`.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag
+  cancel-in-progress: false
+
+env:
+  CI: "true"
+
+jobs:
+  tag:
+    name: Tag main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Mint release app token
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - name: Configure release identity
+        env:
+          RELEASE_APP_SLUG: ${{ steps.token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          git config user.name "${RELEASE_APP_SLUG}[bot]"
+          git config user.email "${RELEASE_APP_SLUG}[bot]@users.noreply.github.com"
+
+      - name: Tag declared version
+        run: bun run scripts/tag.ts --from-manifest
