@@ -1,6 +1,6 @@
 {
 	"name": "keyzori-server",
-	"version": "0.4.1",
+	"version": "0.4.2",
 	"license": "Apache-2.0",
 	"private": true,
 	"scripts": {
@@ -22,7 +22,7 @@
 		"commander": "^15.0.0",
 		"drizzle-orm": "1.0.0-rc.5-ab785fc",
 		"elysia": "1.4.30",
-		"stripe": "22.6.0"
+		"stripe": "22.6.1"
 	},
 	"devDependencies": {
 		"drizzle-kit": "1.0.0-rc.5-ab785fc"
