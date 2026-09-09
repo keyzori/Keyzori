@@ -15,20 +15,20 @@ This document is the release gate for operating Keyzori with real customer licen
 - Locked dependencies, automated dependency update proposals, and documented security reporting.
 - Atomic Redis session admission and serialized PostgreSQL IP/device-limit registration under parallel activations.
 - SHA-256 license-secret storage with masked administrative listings and a complete legacy backfill that drops plaintext storage.
-- Server-issued session tokens bound to their activation IP/device context, explicit atomic named-meter usage ledgers, and exception-safe SDK lifecycle events.
+- Server-issued session tokens bound to their activation IP/device context and explicit atomic named-meter usage ledgers.
 - Optional Stripe subscription linking with exact-body signature verification, a durable idempotent webhook inbox, current-state reconciliation, and independent manual/billing revocation.
 - Immutable action and container references, fail-closed Compose secrets, localhost-only local port publishing, and automated Docker dependency updates.
 - An enforced 80% application-service line-coverage floor plus FOSS governance, issue, pull-request, release, and operations guidance.
 - Multiple admin credentials for zero-downtime rotation, dependency URL validation, and probe endpoints that cannot be rate-limited into false failures.
 - Release metadata validation that prevents mismatched root, server, changelog, and tag versions.
-- Canonical references for CLI commands, HTTP routes, SDK exports, configuration, and licensing rules.
+- Canonical references for CLI commands, HTTP routes, configuration, and licensing rules.
 
 ## Required for each production environment
 
 These are deployment evidence, not repository code changes:
 
 1. Configure secret-safe logs, platform metrics, and alert thresholds for the chosen runtime.
-2. Exercise the [operations runbook](https://github.com/lilsnibbi/Keyzori/wiki/Operations), including backup restore and migration rollback, against production-sized data.
+2. Exercise the [operations runbook](https://github.com/keyzori/Keyzori/wiki/Operations), including backup restore and migration rollback, against production-sized data.
 3. Run load, soak, rate-limit, and dependency-failure tests through the intended TLS proxy and dependency topology.
 4. Record recovery objectives, on-call ownership, data retention, privacy obligations, and the exact release image tag.
 5. Review the release against the [compatibility and release policy](RELEASE_POLICY.md).
@@ -39,6 +39,6 @@ These are deployment evidence, not repository code changes:
 - [ ] Database migration is reviewed and tested against a recent backup copy.
 - [ ] `bun install --frozen-lockfile`, `bun run check`, `bun run build`, and package smoke tests pass.
 - [ ] Live PostgreSQL/Redis lifecycle and container build checks pass in CI.
-- [ ] SDK package and server runtime artifacts contain only intended files and the selected license.
+- [ ] Server runtime artifacts contain only intended files and the selected license.
 - [ ] Deployment rollback and secret-rotation steps are documented for the release.
 - [ ] Images and packages are immutable, checksummed, and traceable to the source tag.

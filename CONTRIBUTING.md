@@ -21,10 +21,9 @@ bun run check
 bun run build
 ```
 
-Keep changes inside the clean-architecture boundaries documented in [Architecture wiki page](https://github.com/lilsnibbi/Keyzori/wiki/Architecture). Use `bun`, `bunx`, `bun:test`, and Biome; do not add npm, pnpm, yarn, ESLint, or Prettier workflows.
+Keep changes inside the clean-architecture boundaries documented in [Architecture wiki page](https://github.com/keyzori/Keyzori/wiki/Architecture). Use `bun`, `bunx`, `bun:test`, and Biome; do not add npm, pnpm, yarn, ESLint, or Prettier workflows.
 
 See the [development guide](.github/DEVELOPMENT.md) for repository commands, schema changes, live integration tests, and build artifacts.
-Repository-aware coding agents must also follow [AGENTS.md](AGENTS.md).
 
 ## Pull requests
 

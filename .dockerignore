@@ -1,4 +1,4 @@
-# Send only inputs used by apps/server/Dockerfile. This also keeps local secrets,
+# Send only inputs used by Dockerfile. This also keeps local secrets,
 # build output, tests, documentation, and repository metadata out of the context.
 **
 
@@ -7,21 +7,13 @@
 !tsconfig.json
 !bunfig.toml
 !LICENSE
-!NOTICE
 
-!apps/
-apps/*
+!src/
+!src/**
 
-!apps/server/
-!apps/server/package.json
-!apps/server/tsconfig.json
-!apps/server/src/
-!apps/server/src/**
-!apps/server/scripts/
-!apps/server/scripts/**
-!apps/server/drizzle/
-!apps/server/drizzle/**
+!scripts/
+scripts/*
+!scripts/build.ts
 
-# Bun resolves the root workspace during the frozen install.
-!apps/sdk/
-!apps/sdk/package.json
+!drizzle/
+!drizzle/**

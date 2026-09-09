@@ -27,8 +27,7 @@
 <rect x="60" y="200" width="230" height="84" rx="14" fill="#ffec99" stroke="#f08c00" stroke-width="2"/>
 <text x="175" y="249" text-anchor="middle" font-size="20" fill="#1e1e1e">Stripe</text>
 <rect x="60" y="440" width="230" height="84" rx="14" fill="#ffec99" stroke="#f08c00" stroke-width="2"/>
-<text x="175" y="476.5" text-anchor="middle" font-size="20" fill="#1e1e1e">Your App</text>
-<text x="175" y="501.5" text-anchor="middle" font-size="20" fill="#1e1e1e">+ Keyzori SDK</text>
+<text x="175" y="489" text-anchor="middle" font-size="20" fill="#1e1e1e">Your App</text>
 <rect x="60" y="680" width="230" height="84" rx="14" fill="#ffec99" stroke="#f08c00" stroke-width="2"/>
 <text x="175" y="729" text-anchor="middle" font-size="20" fill="#1e1e1e">Operator</text>
 <rect x="400" y="440" width="230" height="84" rx="14" fill="#a5d8ff" stroke="#1971c2" stroke-width="2"/>

@@ -242,9 +242,7 @@ function createServerRuntime(
 	app.use(
 		adminPlugin(
 			graph.adminService,
-			config
-				? [config.adminApiKey, ...config.additionalAdminApiKeys]
-				: undefined,
+			config?.adminPass,
 			{
 				limiter,
 				clientIpResolver,

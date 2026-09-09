@@ -4,8 +4,7 @@ import type { TrustedProxyHeader } from "./controllers/clientIp";
 export interface ServerConfig {
 	databaseUrl: string;
 	redisUrl: string;
-	adminApiKey: string;
-	additionalAdminApiKeys: string[];
+	adminPass: string;
 	host: string;
 	port: number;
 	trustProxyHeaders: boolean;
@@ -70,8 +69,9 @@ function required(
 	name: string,
 ): string {
 	const value = environment[name]?.trim();
-	if (!value) throw new Error(`${name} must be configured.`);
-	return value;
+	if (value) return value;
+
+	throw new Error(`${name} must be configured.`);
 }
 
 function serviceUrl(
@@ -146,27 +146,15 @@ export function loadServerConfig(
 	environment: Record<string, string | undefined> = Bun.env,
 ): ServerConfig {
 	const host = environment.KEYZORI_SERVER_HOST?.trim() || "0.0.0.0";
-	const adminApiKey = required(environment, "KEYZORI_ADMIN_API_KEY");
-	const additionalAdminApiKeys = (environment.KEYZORI_ADMIN_API_KEYS ?? "")
-		.split(",")
-		.map((key) => key.trim())
-		.filter(Boolean);
+	const adminPass = environment.KEYZORI_ADMIN_PASS?.trim();
+	if (!adminPass) {
+		throw new Error("KEYZORI_ADMIN_PASS must be configured.");
+	}
 	const trustProxyHeaders = booleanValue(
 		environment,
 		"KEYZORI_TRUST_PROXY_HEADERS",
 		false,
 	);
-	for (const key of [adminApiKey, ...additionalAdminApiKeys]) {
-		if (
-			key.length < 32 ||
-			/^(replace|change|your[_-]?secure|example|development)/i.test(key)
-		) {
-			throw new Error(
-				"Admin API keys must be non-placeholder secrets of at least 32 characters.",
-			);
-		}
-	}
-
 	const serverPort = integerValue(
 		environment,
 		"KEYZORI_SERVER_PORT",
@@ -213,8 +201,7 @@ export function loadServerConfig(
 			"redis:",
 			"rediss:",
 		]),
-		adminApiKey,
-		additionalAdminApiKeys,
+		adminPass,
 		host,
 		port: serverPort,
 		trustProxyHeaders,

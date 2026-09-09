@@ -4,7 +4,7 @@ import { loadServerConfig } from "../config";
 const validEnvironment = {
 	KEYZORI_DATABASE_URL: "postgresql://localhost/keyzori",
 	KEYZORI_REDIS_URL: "redis://localhost:6379",
-	KEYZORI_ADMIN_API_KEY: "a-secure-production-key-that-is-long-enough",
+	KEYZORI_ADMIN_PASS: "admin-password",
 	KEYZORI_TRUSTED_PROXY_HEADER: "x-forwarded-for",
 };
 
@@ -108,23 +108,10 @@ describe("loadServerConfig", () => {
 		).toThrow("KEYZORI_TRUSTED_PROXY_HEADER must be x-forwarded-for");
 	});
 
-	test("rejects short and placeholder admin secrets", () => {
+	test("requires one direct admin password", () => {
 		expect(() =>
-			loadServerConfig({ ...validEnvironment, KEYZORI_ADMIN_API_KEY: "short" }),
-		).toThrow("at least 32 characters");
-		expect(() =>
-			loadServerConfig({
-				...validEnvironment,
-				KEYZORI_ADMIN_API_KEY: "replace_with_a_long_random_secret",
-			}),
-		).toThrow("at least 32 characters");
-		expect(() =>
-			loadServerConfig({
-				...validEnvironment,
-				KEYZORI_ADMIN_API_KEYS:
-					"another-valid-admin-key-that-is-long-enough,short",
-			}),
-		).toThrow("at least 32 characters");
+			loadServerConfig({ ...validEnvironment, KEYZORI_ADMIN_PASS: "" }),
+		).toThrow("KEYZORI_ADMIN_PASS must be configured");
 	});
 
 	test("rejects invalid typed settings", () => {

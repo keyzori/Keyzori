@@ -250,30 +250,23 @@ describe("license controller", () => {
 });
 
 describe("admin controller", () => {
-	test("accepts any configured canonical admin key", () => {
-		const previousPrimary = Bun.env.KEYZORI_ADMIN_API_KEY;
-		const previousAdditional = Bun.env.KEYZORI_ADMIN_API_KEYS;
+	test("accepts the configured admin password", () => {
+		const previous = Bun.env.KEYZORI_ADMIN_PASS;
 		try {
-			Bun.env.KEYZORI_ADMIN_API_KEY = "primary-secret";
-			Bun.env.KEYZORI_ADMIN_API_KEYS = " secondary-secret, tertiary-secret ";
+			Bun.env.KEYZORI_ADMIN_PASS = "admin-secret";
 			const middleware = createAdminAuthMiddleware();
 			const set = { headers: {} } as Context["set"];
 			const result = middleware({
 				request: request("/admin/licenses", {
-					headers: { "x-admin-key": "secondary-secret" },
+					headers: { "x-admin-key": "admin-secret" },
 				}),
 				set,
 			} as Context);
 			expect(result).toBeUndefined();
 			expect(set.status).toBeUndefined();
 		} finally {
-			if (previousPrimary === undefined) delete Bun.env.KEYZORI_ADMIN_API_KEY;
-			else Bun.env.KEYZORI_ADMIN_API_KEY = previousPrimary;
-			if (previousAdditional === undefined) {
-				delete Bun.env.KEYZORI_ADMIN_API_KEYS;
-			} else {
-				Bun.env.KEYZORI_ADMIN_API_KEYS = previousAdditional;
-			}
+			if (previous === undefined) delete Bun.env.KEYZORI_ADMIN_PASS;
+			else Bun.env.KEYZORI_ADMIN_PASS = previous;
 		}
 	});
 
@@ -310,7 +303,7 @@ describe("admin controller", () => {
 			resetRegisteredDevices: mock(async () => 3),
 		} as unknown as AdminService;
 		const app = new Elysia({ normalize: false }).use(
-			adminPlugin(service, ["admin-secret"]),
+			adminPlugin(service, "admin-secret"),
 		);
 
 		const mixedLicense = await app.handle(
@@ -503,7 +496,7 @@ describe("admin controller", () => {
 			listLicenseUsageLedger: mock(async () => [ledger]),
 		} as unknown as AdminService;
 		const app = new Elysia({ normalize: false }).use(
-			adminPlugin(service, ["admin-secret"]),
+			adminPlugin(service, "admin-secret"),
 		);
 
 		const accessResponse = await app.handle(
@@ -651,7 +644,7 @@ describe("admin controller", () => {
 			listLicenses: mock(async () => [license]),
 		} as unknown as AdminService;
 		const app = new Elysia({ normalize: false }).use(
-			adminPlugin(service, ["admin-secret"]),
+			adminPlugin(service, "admin-secret"),
 		);
 
 		const unauthorized = await app.handle(request("/admin/licenses"));
@@ -692,7 +685,7 @@ describe("admin controller", () => {
 			]),
 		} as unknown as ActivityService;
 		const app = new Elysia({ normalize: false }).use(
-			adminPlugin(service, ["admin-secret"], undefined, activity),
+			adminPlugin(service, "admin-secret", undefined, activity),
 		);
 
 		const response = await app.handle(adminRequest("/admin/activity"));
@@ -716,7 +709,7 @@ describe("admin controller", () => {
 			}),
 		} as unknown as AdminService;
 		const app = new Elysia({ normalize: false }).use(
-			adminPlugin(service, ["admin-secret"]),
+			adminPlugin(service, "admin-secret"),
 		);
 
 		const duplicate = await app.handle(
