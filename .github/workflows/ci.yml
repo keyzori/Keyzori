@@ -64,19 +64,8 @@ jobs:
         run: bun run db:check
       - name: Build distributable artifacts
         run: bun run build
-      - name: Verify compiled downstream SDK consumer
-        run: bun run test:sdk:compiled
       - name: Smoke-test package artifacts
         run: bun run smoke:packages
-      - name: Dry-run SDK package
-        run: bun pm pack --cwd apps/sdk --dry-run
-      - name: Verify live PostgreSQL and Redis flow
-        run: bun run --cwd apps/server ../../tests/liveFlow.ts
-        env:
-          KEYZORI_LIVE_TEST_ENABLED: "true"
-          KEYZORI_DATABASE_URL: postgresql://keyzori:keyzori-ci-password@127.0.0.1:5432/keyzori
-          KEYZORI_REDIS_URL: redis://127.0.0.1:6379
-          KEYZORI_ADMIN_API_KEY: ci-only-admin-key-that-is-at-least-32-characters
       - name: Validate Compose configuration
         run: |
           docker compose --file dev.docker-compose.yml config --quiet

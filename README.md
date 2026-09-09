@@ -2,7 +2,7 @@
 
 <img width="2560" height="720" alt="Keyzori banner" src="https://raw.githubusercontent.com/lilsnibbi/Keyzori/main/.github/assets/banner.png" />
 
-[`📖 Documentation`](https://github.com/lilsnibbi/Keyzori/wiki) · [`🌐 API`](https://github.com/lilsnibbi/Keyzori/wiki/API-Reference) · [`🔧 SDK`](apps/sdk/README.md) · [`💻 Deployment`](https://github.com/lilsnibbi/Keyzori/wiki/Deployment)
+[`📖 Documentation`](https://github.com/lilsnibbi/Keyzori/wiki) · [`🌐 API`](https://github.com/lilsnibbi/Keyzori/wiki/API-Reference) · [`🔧 SDK`](https://github.com/keyzori/Keyzori/wiki/SDK-Reference) · [`💻 Deployment`](https://github.com/lilsnibbi/Keyzori/wiki/Deployment)
 
 <br />
 
@@ -114,8 +114,8 @@ Keyzori links existing subscriptions only. It does not provide Checkout, a custo
 | ----------------------------- | --------------------------------------------- |
 | `bun run dev`                 | Start the API in watch mode                   |
 | `bun run cli:help`            | Show local operator commands                  |
-| `bun run build`               | Build the unified server executable and SDK   |
-| `bun run typecheck`           | Type-check all workspaces and cross-app tests |
+| `bun run build`               | Build the unified server executable           |
+| `bun run typecheck`           | Type-check the server and repository tests    |
 | `bun run test`                | Run the test suite                            |
 | `bun run check`               | Run release-level verification                |
 | `bun run db:generate`         | Generate a migration after schema changes     |

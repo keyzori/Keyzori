@@ -1,6 +1,6 @@
 # Release and compatibility policy
 
-Keyzori follows Semantic Versioning. Stable releases use matching `vMAJOR.MINOR.PATCH` tags and SDK package versions.
+Keyzori follows Semantic Versioning. The server and TypeScript SDK are versioned and released independently.
 
 ## Compatibility
 
@@ -20,13 +20,13 @@ A stable release requires:
 1. a reviewed changelog and version;
 2. `bun install --frozen-lockfile`, `bun run check`, `bun run build`, `bun run smoke:packages`, and `bun run db:check`;
 3. the live PostgreSQL/Redis flow and Docker build in CI;
-4. a published npm SDK package and versioned GHCR image tied to the source tag;
+4. a versioned GHCR image tied to the source tag;
 5. a tested backup, migration, health-check, and rollback plan for the target deployment.
 
 ## Publishing
 
-The repository publishes `keyzori` to npm, creates a GitHub Release with generated notes, and pushes the unified container to `ghcr.io/lilsnibbi/keyzori`. Every successful `main` commit updates `canary`. Releases receive only `v`-prefixed SemVer tags; stable releases also update `latest`, while prereleases never do. A granular npm token with publish access must be stored as the repository secret `NPM_TOKEN`.
+The repository creates a GitHub Release with generated notes and pushes the unified container to `ghcr.io/lilsnibbi/keyzori`. Every successful `main` commit updates `canary`. Releases receive only `v`-prefixed SemVer tags; stable releases also update `latest`, while prereleases never do. The private `keyzori/typescript-sdk` repository publishes the `keyzori` npm package separately.
 
-After the version and changelog are aligned, push the matching tag (for example, `v1.0.0`). The release workflow verifies, builds, integration-tests, and smoke-tests both artifacts before publishing. To repair an existing tag, run the workflow manually and enter that tag. Re-running the same tag is safe when npm already received that version.
+After the version and changelog are aligned, push the matching tag (for example, `v1.0.0`). The release workflow verifies, builds, and smoke-tests the server image before publishing. To repair an existing tag, run the workflow manually and enter that tag.
 
 Security fixes follow [SECURITY.md](../SECURITY.md).

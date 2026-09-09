@@ -31,7 +31,7 @@ Repository-aware coding agents must also follow [AGENTS.md](AGENTS.md).
 - Keep each pull request focused and explain user-visible behavior.
 - Add or update tests for changed behavior.
 - Ensure `bun run check` and `bun run build` pass.
-- Keep application-service and SDK source lines above the enforced 80% threshold with `bun run test:coverage:core`.
+- Keep application-service source lines above the enforced 80% threshold with `bun run test:coverage:core`.
 - Call out migrations, compatibility changes, and operational risks explicitly.
 
 By contributing, you agree that your contribution may be distributed under the repository's license.

@@ -4,11 +4,11 @@ These instructions apply to the entire repository.
 
 ## Project
 
-Keyzori is a self-hosted software-license manager built as a Bun and TypeScript monorepo:
+Keyzori is a self-hosted software-license manager built with Bun and TypeScript:
 
 - `apps/server`: Elysia API, CLI, PostgreSQL, Redis, and Stripe integration.
-- `apps/sdk`: public typed client SDK.
-- `tests`: cross-package and compiled-artifact tests.
+- `tests`: repository-level release tests.
+- The TypeScript SDK and its compatibility tests live in the private `keyzori/typescript-sdk` repository.
 - `.github/assets`: README and wiki image assets. Prose documentation lives in the [GitHub wiki](https://github.com/lilsnibbi/Keyzori/wiki).
 
 Read `README.md`, `CONTRIBUTING.md`, and the [Architecture wiki page](https://github.com/lilsnibbi/Keyzori/wiki/Architecture) before making broad or architectural changes.
@@ -18,7 +18,7 @@ Read `README.md`, `CONTRIBUTING.md`, and the [Architecture wiki page](https://gi
 - Use Bun 1.3.14 or newer. Use `bun`, `bunx`, and `bun:test`; do not introduce npm, pnpm, yarn, ESLint, or Prettier workflows.
 - Preserve existing user changes. Keep edits focused and do not revert unrelated work.
 - Respect the domain, application, infrastructure, and controller layer boundaries described in the [Architecture wiki page](https://github.com/lilsnibbi/Keyzori/wiki/Architecture).
-- Keep public HTTP, CLI, SDK, configuration, database, and documentation contracts synchronized.
+- Keep public HTTP, CLI, configuration, database, and documentation contracts synchronized. Runtime endpoint changes must also update and pass the separate TypeScript SDK contract suite.
 - Add or update tests for behavior changes. Include regression tests for bug fixes.
 - Treat licensing, authentication, session, metering, Stripe, and migration changes as security-sensitive.
 - Never commit secrets, license keys, credentials, customer data, or production logs.
@@ -51,9 +51,6 @@ Useful scoped commands include:
 ```powershell
 bun run check:server
 bun run check:cli
-bun run check:sdk
-bun run test:flow
-bun run test:sdk:compiled
 bun run db:check
 ```
 

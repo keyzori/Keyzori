@@ -9,7 +9,6 @@
 export const RELEASE_MANIFESTS = [
 	"package.json",
 	"apps/server/package.json",
-	"apps/sdk/package.json",
 ] as const;
 
 export type ReleaseManifestPath = (typeof RELEASE_MANIFESTS)[number];
