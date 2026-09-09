@@ -41,13 +41,8 @@ import {
 	UsageLedgerResponseSchema,
 } from "./validation";
 
-function configuredAdminKeys(): string[] {
-	return [
-		Bun.env.KEYZORI_ADMIN_API_KEY,
-		...(Bun.env.KEYZORI_ADMIN_API_KEYS ?? "").split(","),
-	]
-		.map((key) => key?.trim())
-		.filter((key): key is string => Boolean(key));
+function configuredAdminPass(): string {
+	return Bun.env.KEYZORI_ADMIN_PASS?.trim() ?? "";
 }
 
 function digest(value: string): Uint8Array {
@@ -55,17 +50,14 @@ function digest(value: string): Uint8Array {
 }
 
 export const createAdminAuthMiddleware =
-	(expectedKeys: readonly string[] = configuredAdminKeys()) =>
+	(expectedPass: string = configuredAdminPass()) =>
 	({ request, set }: Context) => {
 		const supplied = request.headers.get("x-admin-key");
-		const suppliedDigest = supplied ? digest(supplied) : null;
-		let authenticated = false;
-		if (suppliedDigest) {
-			for (const expected of expectedKeys) {
-				authenticated =
-					timingSafeEqual(digest(expected), suppliedDigest) || authenticated;
-			}
-		}
+		const authenticated = Boolean(
+			supplied &&
+				expectedPass &&
+				timingSafeEqual(digest(expectedPass), digest(supplied)),
+		);
 		if (!authenticated) {
 			set.status = 401;
 			return { error: "Unauthorized", code: "UNAUTHORIZED" as const };
@@ -174,7 +166,7 @@ function publicActivity(event: ActivityEvent) {
 
 export function adminPlugin(
 	adminService: AdminService,
-	adminApiKeys?: readonly string[],
+	adminPass?: string,
 	rateLimitOptions?: AdminRateLimitOptions,
 	activity?: ActivityService,
 	stripe?: StripeAdminOperations,
@@ -224,7 +216,7 @@ export function adminPlugin(
 				set,
 			);
 		})
-		.onBeforeHandle(createAdminAuthMiddleware(adminApiKeys))
+		.onBeforeHandle(createAdminAuthMiddleware(adminPass))
 		.post(
 			"/customers",
 			async ({ body, set }) => {

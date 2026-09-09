@@ -33,9 +33,9 @@ tests/      repository-level release tests
 
 ## Schema changes
 
-1. Edit `apps/server/src/db/schema.ts`.
+1. Edit `src/db/schema.ts`.
 2. Run `bun run db:generate`.
-3. Review and commit the generated SQL and snapshot under `apps/server/drizzle/`.
+3. Review and commit the generated SQL and snapshot under `drizzle/`.
 4. Run `bun run db:migrate` against a development database.
 
 Use `db:push` only for disposable local prototyping.
@@ -48,8 +48,6 @@ bun run build
 bun run docker:build
 ```
 
-The private `keyzori/typescript-sdk` repository owns the in-memory product-flow and opt-in live PostgreSQL/Redis compatibility tests.
-
-`bun run build:server` creates one platform-specific `keyzori` executable plus migrations under `apps/server/dist/`. Use `keyzori serve`, `keyzori admin ...`, or `keyzori healthcheck`. The Docker build copies only these runtime artifacts into the final image.
+`bun run build:server` creates one platform-specific `keyzori` executable plus migrations under `dist/`. Use `keyzori serve`, `keyzori admin ...`, or `keyzori healthcheck`. The Docker build copies only these runtime artifacts into the final image.
 
 Keep domain and application code independent of Drizzle, Redis, Elysia, and Commander. External-system implementations belong in infrastructure or delivery code.

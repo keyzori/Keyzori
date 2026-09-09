@@ -8,7 +8,7 @@ function findMigrationsFolder(): string {
 	const candidates = [
 		configured,
 		resolve(dirname(process.execPath), "drizzle"),
-		resolve(process.cwd(), "apps/server/drizzle"),
+		resolve(process.cwd(), "drizzle"),
 		resolve(process.cwd(), "drizzle"),
 	].filter((candidate): candidate is string => Boolean(candidate));
 

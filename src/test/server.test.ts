@@ -9,8 +9,7 @@ function serverConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
 	return {
 		databaseUrl: "postgresql://localhost/keyzori_test",
 		redisUrl: "redis://localhost:6379",
-		adminApiKey: "admin-secret",
-		additionalAdminApiKeys: [],
+		adminPass: "admin-secret",
 		host: "127.0.0.1",
 		port: 3000,
 		trustProxyHeaders: false,

@@ -1,8 +1,8 @@
 <div align="center">
 
-<img width="2560" height="720" alt="Keyzori banner" src="https://raw.githubusercontent.com/lilsnibbi/Keyzori/main/.github/assets/banner.png" />
+<img width="2560" height="720" alt="Keyzori banner" src="https://raw.githubusercontent.com/keyzori/Keyzori/main/.github/assets/banner.png" />
 
-[`📖 Documentation`](https://github.com/lilsnibbi/Keyzori/wiki) · [`🌐 API`](https://github.com/lilsnibbi/Keyzori/wiki/API-Reference) · [`🔧 SDK`](https://github.com/keyzori/Keyzori/wiki/SDK-Reference) · [`💻 Deployment`](https://github.com/lilsnibbi/Keyzori/wiki/Deployment)
+[`📖 Documentation`](https://github.com/keyzori/Keyzori/wiki) · [`🌐 API`](https://github.com/keyzori/Keyzori/wiki/API-Reference) · [`💻 Deployment`](https://github.com/keyzori/Keyzori/wiki/Deployment)
 
 <br />
 
@@ -11,7 +11,7 @@
 > [!WARNING]
 > Keyzori is under active development. This release intentionally contains breaking API and database naming changes.
 
-Keyzori is a self-hosted licensing server for software products. It provides a typed client SDK, an operator CLI, and an HTTP API for managing customers, licenses, access policies, usage meters, and runtime sessions.
+Keyzori is a self-hosted licensing server for software products. It provides an operator CLI and an HTTP API for managing customers, licenses, access policies, usage meters, and runtime sessions.
 
 You control the server, PostgreSQL database, Redis instance, and licensing data.
 
@@ -53,41 +53,15 @@ Use `keyzori admin` or the authenticated `/admin/*` API to create a customer and
 
 The full `lic_...` secret is returned only after creation or rotation. **Store it immediately.**
 
-## SDK integration
-
-```typescript
-import { LicenseClient } from "keyzori";
-
-const license = new LicenseClient({
-  licenseKey: process.env.KEYZORI_LICENSE_KEY ?? "",
-  serverUrl: "https://licenses.example.com",
-  deviceId: process.env.KEYZORI_DEVICE_ID,
-});
-
-const { licenseType, metadata } = await license.activate();
-
-await license.consume({
-  meter: "exports",
-  units: 1,
-  eventId: crypto.randomUUID(),
-});
-
-await license.deactivate();
-```
-
-Only activation sends the license secret.
-
-Automatic heartbeats, usage reporting, and deactivation use a bound server-issued session token.
-
-See the [`SDK Reference`](https://github.com/lilsnibbi/Keyzori/wiki/SDK-Reference) and [`Runtime Flow`](https://github.com/lilsnibbi/Keyzori/wiki/Runtime-Flow) documentation for the complete runtime model.
-
 ## Docker
 
 ```powershell
-docker compose --file dev.docker-compose.yml up --build -d
+docker compose up -d
 
-docker compose --file dev.docker-compose.yml exec server keyzori admin --help
+docker compose exec server keyzori admin --help
 ```
+
+Copy `.env.example` to `.env` and set `KEYZORI_ADMIN_PASS` and the URL-safe `KEYZORI_POSTGRES_PASS`. Both are passed directly as environment variables; no secret files or setup container are used. Use `docker compose up --build -d` to build the local source instead of using the published image.
 
 The server image runs as non-root with a read-only filesystem and contains one compiled `keyzori` executable.
 
@@ -125,21 +99,20 @@ Keyzori links existing subscriptions only. It does not provide Checkout, a custo
 
 ## Documentation
 
-Full documentation is available in the **[Keyzori Wiki](https://github.com/lilsnibbi/Keyzori/wiki)**.
+Full documentation is available in the **[Keyzori Wiki](https://github.com/keyzori/Keyzori/wiki)**.
 
 |     | Guide                                                                        | What it covers                                                        |
 | :-: | :--------------------------------------------------------------------------- | :-------------------------------------------------------------------- |
-|  💻 | [Deployment](https://github.com/lilsnibbi/Keyzori/wiki/Deployment)           | Compose, standalone container, reverse proxy, releases, native binary |
-|  ⚙️ | [Configuration](https://github.com/lilsnibbi/Keyzori/wiki/Configuration)     | Every `KEYZORI_` variable, with defaults and accepted ranges          |
-|  🔑 | [Licensing model](https://github.com/lilsnibbi/Keyzori/wiki/Licensing-Model) | The four types, effective status, limits, allowlists, and meters      |
-|  🔄 | [Product flow](https://github.com/lilsnibbi/Keyzori/wiki/Product-Flow)       | Operator setup, application runtime, and operator feedback loop       |
-|  ⏱️ | [Runtime flow](https://github.com/lilsnibbi/Keyzori/wiki/Runtime-Flow)       | Activation, session binding, heartbeat, and validation order          |
-| 🏗️ | [Architecture](https://github.com/lilsnibbi/Keyzori/wiki/Architecture)       | One binary, three entrypoints, layer boundaries, and storage          |
-|  🔧 | [SDK reference](https://github.com/lilsnibbi/Keyzori/wiki/SDK-Reference)     | The `keyzori` package, configuration, methods, events, and errors     |
-|  🌐 | [HTTP API](https://github.com/lilsnibbi/Keyzori/wiki/API-Reference)          | Routes, request/response shapes, and error codes                      |
-|  💾 | [Admin CLI](https://github.com/lilsnibbi/Keyzori/wiki/CLI-Reference)         | `keyzori admin` commands for customers, licenses, access, and meters  |
-|  📊 | [Operations](https://github.com/lilsnibbi/Keyzori/wiki/Operations)           | Monitoring, backup/restore, secret rotation, and incident playbooks   |
-|  🩺 | [Troubleshooting](https://github.com/lilsnibbi/Keyzori/wiki/Troubleshooting) | Symptom-first fixes for startup, licensing, Stripe, and migrations    |
+|  💻 | [Deployment](https://github.com/keyzori/Keyzori/wiki/Deployment)           | Compose, standalone container, reverse proxy, releases, native binary |
+|  ⚙️ | [Configuration](https://github.com/keyzori/Keyzori/wiki/Configuration)     | Every `KEYZORI_` variable, with defaults and accepted ranges          |
+|  🔑 | [Licensing model](https://github.com/keyzori/Keyzori/wiki/Licensing-Model) | The four types, effective status, limits, allowlists, and meters      |
+|  🔄 | [Product flow](https://github.com/keyzori/Keyzori/wiki/Product-Flow)       | Operator setup, application runtime, and operator feedback loop       |
+|  ⏱️ | [Runtime flow](https://github.com/keyzori/Keyzori/wiki/Runtime-Flow)       | Activation, session binding, heartbeat, and validation order          |
+| 🏗️ | [Architecture](https://github.com/keyzori/Keyzori/wiki/Architecture)       | One binary, three entrypoints, layer boundaries, and storage          |
+|  🌐 | [HTTP API](https://github.com/keyzori/Keyzori/wiki/API-Reference)          | Routes, request/response shapes, and error codes                      |
+|  💾 | [Admin CLI](https://github.com/keyzori/Keyzori/wiki/CLI-Reference)         | `keyzori admin` commands for customers, licenses, access, and meters  |
+|  📊 | [Operations](https://github.com/keyzori/Keyzori/wiki/Operations)           | Monitoring, backup/restore, secret rotation, and incident playbooks   |
+|  🩺 | [Troubleshooting](https://github.com/keyzori/Keyzori/wiki/Troubleshooting) | Symptom-first fixes for startup, licensing, Stripe, and migrations    |
 
 ## Community
 
