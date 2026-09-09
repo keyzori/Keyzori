@@ -2,7 +2,7 @@
 	"name": "keyzori-workspace",
 	"version": "0.4.2",
 	"license": "Apache-2.0",
-	"description": "Self-hosted software license management server with an operator CLI and client SDK.",
+	"description": "Self-hosted software license management server with an operator CLI.",
 	"author": "Keyzori contributors",
 	"keywords": [
 		"keyzori",
@@ -42,21 +42,15 @@
 		"cli:binary": "bun run --cwd apps/server cli:binary",
 		"build": "turbo run build",
 		"build:server": "turbo run build --filter=keyzori-server",
-		"build:sdk": "turbo run build --filter=keyzori",
-		"smoke:packages": "bun -e \"import { LicenseClient } from './apps/sdk/dist/index.js'; if (typeof LicenseClient !== 'function') throw new Error('SDK export missing')\" && bun run cli:binary --help",
+		"smoke:packages": "bun run cli:binary --help",
 		"test": "bun test apps tests",
-		"test:coverage:core": "bun test --config bunfig.coverage.toml --coverage apps/server/src/test/AdminService.test.ts apps/server/src/test/LicenseService.test.ts apps/server/src/test/ActivityService.test.ts && bun test --config bunfig.coverage.toml --coverage apps/sdk/src/test/sdk.test.ts",
+		"test:coverage:core": "bun test --config bunfig.coverage.toml --coverage apps/server/src/test/AdminService.test.ts apps/server/src/test/LicenseService.test.ts apps/server/src/test/ActivityService.test.ts",
 		"test:server": "bun run --cwd apps/server test",
 		"test:cli": "bun test apps/server/src/test/cli.test.ts",
-		"test:sdk": "bun run --cwd apps/sdk test",
-		"test:sdk:compiled": "bun run build:sdk && KEYZORI_SDK_COMPILED_TEST_ENABLED=true bun test tests/sdkCompiledBinary.test.ts",
-		"test:flow": "bun test tests/productFlow.test.ts",
-		"test:live": "bun run build:server && bun run --cwd apps/server ../../tests/liveFlow.ts",
 		"typecheck": "turbo run typecheck && bunx tsc --project tests/tsconfig.json",
 		"check": "bun run typecheck && bun run test && bun run test:coverage:core && bun run release:verify && bun run lint",
 		"check:server": "bun run --cwd apps/server typecheck && bun run test:server",
 		"check:cli": "bun run --cwd apps/server typecheck && bun run test:cli",
-		"check:sdk": "bun run --cwd apps/sdk typecheck && bun run test:sdk",
 		"db:generate": "bun run --cwd apps/server db:generate",
 		"db:check": "bun run --cwd apps/server db:check",
 		"db:migrate": "bun run --cwd apps/server db:migrate",
@@ -64,8 +58,6 @@
 		"db:studio": "bun run --cwd apps/server db:studio",
 		"docker:build": "docker build --file apps/server/Dockerfile --tag keyzori-license-server .",
 		"docker:build:server": "bun run docker:build",
-		"publish:packages": "bun run --cwd apps/sdk publish:package",
-		"publish:sdk": "bun run --cwd apps/sdk publish:package",
 		"release": "bun run scripts/release.ts",
 		"release:sync": "bun run scripts/syncVersions.ts",
 		"release:tag": "bun run scripts/tag.ts",
@@ -76,13 +68,15 @@
 		"prepare": "husky"
 	},
 	"workspaces": [
-		"apps/server",
-		"apps/sdk"
+		"apps/server"
 	],
 	"devDependencies": {
 		"@biomejs/biome": "2.5.12",
+		"@commitlint/cli": "^21.2.2",
+		"@commitlint/config-conventional": "^21.2.2",
 		"@types/bun": "1.4.2",
 		"@types/node": "26.5.0",
+		"husky": "^9.1.7",
 		"turbo": "2.10.12",
 		"typescript": "7.0.2"
 	}

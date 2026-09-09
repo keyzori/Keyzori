@@ -4,5 +4,5 @@
 		"rootDir": "..",
 		"noEmit": true
 	},
-	"include": ["productFlow.test.ts", "liveFlow.ts"]
+	"include": ["verifyRelease.test.ts"]
 }

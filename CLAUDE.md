@@ -16,7 +16,7 @@ bun run cli -- customers list   # invoke the admin CLI; note the `--`
 bun run typecheck        # all workspaces + tests/tsconfig.json
 bun run test             # bun test apps tests
 bun run lint             # biome check .
-bun run build            # compiled `keyzori` executable + SDK dist
+bun run build            # compiled `keyzori` executable
 bun run check            # release gate: typecheck, test, coverage, release:verify, lint
 ```
 
@@ -25,9 +25,6 @@ Scoped checks — prefer these while iterating, then widen:
 ```bash
 bun run check:server     # server typecheck + tests
 bun run check:cli
-bun run check:sdk
-bun run test:flow        # tests/productFlow.test.ts, in-memory cross-app lifecycle
-bun run test:sdk:compiled
 ```
 
 Single test file or filtered case:
@@ -37,7 +34,7 @@ bun test apps/server/src/test/LicenseService.test.ts
 bun test apps/server/src/test/LicenseService.test.ts --test-name-pattern "usage"
 ```
 
-`test:coverage:core` enforces an 80% line threshold on the three application services and the SDK; CI runs it via `bun run check`, so keep new service/SDK code covered.
+`test:coverage:core` enforces an 80% line threshold on the three application services; CI runs it via `bun run check`, so keep new service code covered.
 
 ### Database
 
@@ -68,13 +65,13 @@ pull request. When that lands, `.github/workflows/tag.yml` tags whatever version
 `main` declares, and the tag triggers `release.yml`.
 
 The invariant the pipeline exists to protect: **the tag never leads the version**.
-`scripts/tag.ts` reads all three manifests from `origin/main` and refuses to tag a
+`scripts/tag.ts` reads both manifests from `origin/main` and refuses to tag a
 commit that does not already declare that version — the failure mode that broke
 v0.4.2, where the tag was cut on a commit still declaring 0.4.1.
 
 ```bash
 bun run release patch --dry-run   # print every git/gh action, change nothing
-bun run release:sync 0.5.0        # rewrite the three manifests only
+bun run release:sync 0.5.0        # rewrite both manifests only
 bun run release:tag --from-manifest   # idempotent; no-op if the tag exists
 ```
 
@@ -89,13 +86,12 @@ must be added to both rulesets' bypass actors; its credentials live in the
 `bun run test` uses in-memory and fake adapters exclusively — no PostgreSQL, Redis, Docker, or Stripe needed. These need real services and are excluded from the default suite; say explicitly when you did not run them:
 
 ```bash
-bun run test:live        # requires KEYZORI_LIVE_TEST_ENABLED=true + disposable PG/Redis URLs
 bun run docker:build
 ```
 
 ## Architecture
 
-Monorepo: `apps/server` (API + CLI + migrations), `apps/sdk` (publishable `keyzori` npm package), `tests` (cross-app + compiled-artifact), `docs`. `apps/dash` is an empty placeholder — the embedded dashboard was removed (commit `6396418`), so `KEYZORI_DISABLE_DASHBOARD` and `/dashboard/*` no longer exist anywhere; `/` is expected to 404.
+This repository contains `apps/server` (API + CLI + migrations) and repository-level release tests. The publishable `keyzori` npm package and its cross-repository compatibility tests live in the private `keyzori/typescript-sdk` repository. `apps/dash` is an empty placeholder — the embedded dashboard was removed (commit `6396418`), so `KEYZORI_DISABLE_DASHBOARD` and `/dashboard/*` no longer exist anywhere; `/` is expected to 404.
 
 ### One binary, three entrypoints
 
@@ -124,9 +120,9 @@ Monorepo: `apps/server` (API + CLI + migrations), `apps/sdk` (publishable `keyzo
 
 ### Contract surfaces to keep in sync
 
-A behavior change usually touches several of: `controllers/validation.ts`, the SDK (`apps/sdk/src/core/`), CLI commands (`src/cli/commands/`), the wiki pages `API-Reference`, `CLI-Reference`, `SDK-Reference`, `Configuration` (see `Wiki` below), `.env.example`, and `apps/server/.env.example`.
+A behavior change usually touches several of: `controllers/validation.ts`, CLI commands (`src/cli/commands/`), the wiki pages `API-Reference`, `CLI-Reference`, `SDK-Reference`, `Configuration` (see `Wiki` below), `.env.example`, and `apps/server/.env.example`. Runtime endpoint changes also require the `keyzori/typescript-sdk` contract suite to pass.
 
-Versions in the root, server, and SDK `package.json` must match and all declare Apache-2.0 — `scripts/verifyRelease.ts` (`bun run release:verify`) enforces this.
+Versions in the root and server `package.json` must match and both declare Apache-2.0 — `scripts/verifyRelease.ts` (`bun run release:verify`) enforces this. The SDK is versioned independently.
 
 ### Wiki
 
@@ -140,4 +136,4 @@ Page files are flat and named after the page (`API-Reference.md` renders as "API
 
 ### Test conventions
 
-`bun:test` throughout. Server unit tests hand-roll fakes (`FakeQuery` chainables for Drizzle, `mock()` for services); `tests/productFlow.test.ts` implements the full set of `I*Repository` interfaces in memory and drives the real `LicenseService`/`AdminService`/`licensePlugin`. When you add a repository method, that in-memory implementation needs it too.
+`bun:test` throughout. Server unit tests hand-roll fakes (`FakeQuery` chainables for Drizzle and `mock()` for services). The SDK repository owns the in-memory product flow and live compatibility suites; update its fake repository implementations when a server repository contract changes.

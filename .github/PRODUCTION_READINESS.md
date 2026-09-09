@@ -18,9 +18,9 @@ This document is the release gate for operating Keyzori with real customer licen
 - Server-issued session tokens bound to their activation IP/device context, explicit atomic named-meter usage ledgers, and exception-safe SDK lifecycle events.
 - Optional Stripe subscription linking with exact-body signature verification, a durable idempotent webhook inbox, current-state reconciliation, and independent manual/billing revocation.
 - Immutable action and container references, fail-closed Compose secrets, localhost-only local port publishing, and automated Docker dependency updates.
-- An enforced 80% application-service and SDK line-coverage floor plus FOSS governance, issue, pull-request, release, and operations guidance.
+- An enforced 80% application-service line-coverage floor plus FOSS governance, issue, pull-request, release, and operations guidance.
 - Multiple admin credentials for zero-downtime rotation, dependency URL validation, and probe endpoints that cannot be rate-limited into false failures.
-- Release metadata validation that prevents mismatched root, server, SDK, changelog, and tag versions.
+- Release metadata validation that prevents mismatched root, server, changelog, and tag versions.
 - Canonical references for CLI commands, HTTP routes, SDK exports, configuration, and licensing rules.
 
 ## Required for each production environment

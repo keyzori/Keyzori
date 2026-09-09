@@ -68,11 +68,9 @@ jobs:
       - name: Verify release source and credentials
         shell: bash
         env:
-          KEYZORI_NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           KEYZORI_RELEASE_BRANCH: main
         run: |
           set -euo pipefail
-          test -n "${KEYZORI_NPM_TOKEN}" || { echo "NPM_TOKEN is not configured." >&2; exit 1; }
           git check-ref-format "refs/tags/${KEYZORI_RELEASE_TAG}" >/dev/null
           tag_commit=$(git rev-list --max-count=1 "refs/tags/${KEYZORI_RELEASE_TAG}")
           test -n "${tag_commit}" || { echo "Release tag ${KEYZORI_RELEASE_TAG} was not found." >&2; exit 1; }
@@ -88,14 +86,8 @@ jobs:
         run: bun run db:check
       - name: Build distributable artifacts
         run: bun run build
-      - name: Verify compiled downstream SDK consumer
-        run: bun run test:sdk:compiled
       - name: Smoke-test package artifacts
         run: bun run smoke:packages
-      - name: Verify live PostgreSQL and Redis flow
-        run: bun run --cwd apps/server ../../tests/liveFlow.ts
-        env:
-          KEYZORI_LIVE_TEST_ENABLED: "true"
       - name: Validate Compose configuration
         run: |
           docker compose --file dev.docker-compose.yml config --quiet
@@ -249,23 +241,6 @@ jobs:
               docker push "${image}:latest"
             fi
           done
-      - name: Publish SDK to npm
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Authenticated npm user: $(bun pm whoami)"
-          version="${KEYZORI_RELEASE_TAG#v}"
-          if [[ "${version}" == *-* ]]; then
-            npm_tag="${version#*-}"
-            npm_tag="${npm_tag%%.*}"
-          else
-            npm_tag="latest"
-          fi
-          echo "Publishing ${version} with npm dist-tag ${npm_tag}"
-          (cd apps/sdk && bun publish --access public --tolerate-republish --tag "${npm_tag}")
-        env:
-          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
       - name: Create GitHub release
         shell: bash
         env:

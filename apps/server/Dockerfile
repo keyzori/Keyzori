@@ -5,7 +5,6 @@ WORKDIR /app
 
 COPY package.json bun.lock tsconfig.json bunfig.toml LICENSE ./
 COPY apps/server/package.json ./apps/server/
-COPY apps/sdk/package.json ./apps/sdk/
 
 RUN --mount=type=cache,target=/root/.bun/install/cache,sharing=locked \
 	bun install --frozen-lockfile --ignore-scripts
