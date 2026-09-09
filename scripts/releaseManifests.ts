@@ -1,15 +1,12 @@
 /**
  * Shared release metadata helpers.
  *
- * Every workspace manifest that must carry the release version is listed here
+ * Every manifest that must carry the release version is listed here
  * exactly once, so `syncVersions.ts`, `verifyRelease.ts`, and `tag.ts` can
  * never disagree about what the release surface is.
  */
 
-export const RELEASE_MANIFESTS = [
-	"package.json",
-	"apps/server/package.json",
-] as const;
+export const RELEASE_MANIFESTS = ["package.json"] as const;
 
 export type ReleaseManifestPath = (typeof RELEASE_MANIFESTS)[number];
 
