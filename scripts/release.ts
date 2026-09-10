@@ -125,7 +125,7 @@ if (skipChecks) {
 // --- Commit ----------------------------------------------------------------
 
 await run(`commit "chore(release): ${tag}" and push ${branch}`, async () => {
-	await Bun.$`git add package.json apps/server/package.json bun.lock`;
+	await Bun.$`git add package.json bun.lock`;
 	await Bun.$`git commit --message ${`chore(release): ${tag}`}`;
 	await Bun.$`git push origin ${branch}`;
 });

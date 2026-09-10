@@ -6,10 +6,7 @@
  * never disagree about what the release surface is.
  */
 
-export const RELEASE_MANIFESTS = [
-	"package.json",
-	"apps/server/package.json",
-] as const;
+export const RELEASE_MANIFESTS = ["package.json"] as const;
 
 export type ReleaseManifestPath = (typeof RELEASE_MANIFESTS)[number];
 
