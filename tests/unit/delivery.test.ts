@@ -15,7 +15,7 @@ type Job = {
 	if?: string;
 	steps?: Step[];
 	"continue-on-error"?: boolean;
-	strategy?: { matrix?: { suite?: string[] } };
+	strategy?: { matrix?: { include?: { suite: string; name: string }[] } };
 	with?: Record<string, unknown>;
 };
 type Workflow = { jobs: Record<string, Job> };
@@ -72,7 +72,7 @@ test("Release Please only versions, tags, and creates GitHub releases", async ()
 test("CI exposes one stable required check that cannot hide skipped failures", async () => {
 	const file = await workflow("ci.yml");
 	const required = file.jobs.required;
-	expect(file.jobs.docker?.name).toBe("Container verification");
+	expect(file.jobs.docker?.name).toBe("Docker");
 	expect(required?.name).toBe("Required checks");
 	expect(required?.if).toContain("always()");
 	expect([required?.needs].flat().toSorted()).toEqual(["checks", "docker"]);
@@ -96,13 +96,11 @@ test("checks run independently and real infrastructure jobs cannot silently skip
 		expect(job?.["continue-on-error"]).toBeUndefined();
 		expect(job?.needs).toBeUndefined();
 	}
-	expect(file.jobs.integration?.strategy?.matrix?.suite?.toSorted()).toEqual([
-		"cli",
-		"database",
-		"http",
-		"plugins",
-		"services",
-	]);
+	expect(
+		file.jobs.integration?.strategy?.matrix?.include
+			?.map((entry) => entry.suite)
+			.toSorted(),
+	).toEqual(["cli", "database", "http", "plugins", "services"]);
 	expect(
 		file.jobs.integration?.steps?.some((step) =>
 			step.run?.startsWith("bun run test:integration"),
