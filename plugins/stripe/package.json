@@ -1,0 +1,8 @@
+{
+	"name": "keyzori-plugin-stripe",
+	"private": true,
+	"type": "module",
+	"dependencies": {
+		"stripe": "22.6.1"
+	}
+}
