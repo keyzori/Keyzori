@@ -55,7 +55,7 @@ jobs:
           bun-version: 1.4.2
 
       - name: Install locked dependencies
-        run: bun install --frozen-lockfile
+        run: bun run setup
 
       - name: Configure release identity
         env:
