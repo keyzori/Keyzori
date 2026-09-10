@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/keyzori/Keyzori/compare/v0.5.0...v0.5.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* reject placeholder admin keys ([#93](https://github.com/keyzori/Keyzori/issues/93)) ([e8ae56b](https://github.com/keyzori/Keyzori/commit/e8ae56b03cb7fbe3d13f8c096efdfbe5a055d656))
+
 ## [0.5.0](https://github.com/keyzori/Keyzori/compare/v0.4.2...v0.5.0) (2026-09-10)
 
 
