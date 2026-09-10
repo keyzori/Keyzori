@@ -9,6 +9,7 @@ type Step = {
 	with?: Record<string, unknown>;
 };
 type Job = {
+	name?: string;
 	needs?: string | string[];
 	uses?: string;
 	if?: string;
@@ -37,10 +38,22 @@ test.each(["ci.yml", "release.yml"])(
 		expect(image?.if).toBeUndefined();
 		expect(image?.["continue-on-error"]).toBeUndefined();
 		for (const [id, job] of Object.entries(file.jobs)) {
-			if (id !== "docker") expect([job.needs].flat()).not.toContain("docker");
+			if (!["docker", "required"].includes(id))
+				expect([job.needs].flat()).not.toContain("docker");
 		}
 	},
 );
+test("CI exposes one stable required check that cannot hide skipped failures", async () => {
+	const file = await workflow("ci.yml");
+	const required = file.jobs.required;
+	expect(file.jobs.docker?.name).toBe("Container verification");
+	expect(required?.name).toBe("Required checks");
+	expect(required?.if).toContain("always()");
+	expect([required?.needs].flat().toSorted()).toEqual(["checks", "docker"]);
+	const command = required?.steps?.[0]?.run ?? "";
+	expect(command).toContain('CHECKS_RESULT}" != "success"');
+	expect(command).toContain('CONTAINER_RESULT}" != "success"');
+});
 test("checks run independently and real infrastructure jobs cannot silently skip", async () => {
 	const file = await workflow("checks.yml");
 	for (const id of [
@@ -74,8 +87,9 @@ test("checks run independently and real infrastructure jobs cannot silently skip
 			false,
 		);
 });
-test("the final job smoke-tests one image before any publication", async () => {
+test("the container job uses an accurate name and tests one image before publication", async () => {
 	const file = await workflow("docker.yml");
+	expect(file.jobs.image?.name).toBe("Build and smoke test");
 	const steps = file.jobs.image?.steps ?? [];
 	const builds = steps.filter((step) => step.run?.includes("docker build"));
 	expect(builds).toHaveLength(1);

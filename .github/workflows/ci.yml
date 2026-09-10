@@ -16,7 +16,7 @@ jobs:
     with:
       ref: ${{ github.sha }}
   docker:
-    name: Docker (final gate)
+    name: Container verification
     needs: checks
     uses: ./.github/workflows/docker.yml
     permissions:
@@ -25,3 +25,21 @@ jobs:
     with:
       ref: ${{ github.sha }}
       publish: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  required:
+    name: Required checks
+    if: ${{ always() }}
+    needs: [checks, docker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful verification
+        env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          CONTAINER_RESULT: ${{ needs.docker.result }}
+        shell: bash
+        run: |
+          if [[ "${CHECKS_RESULT}" != "success" || "${CONTAINER_RESULT}" != "success" ]]; then
+            echo "Checks: ${CHECKS_RESULT}"
+            echo "Container verification: ${CONTAINER_RESULT}"
+            exit 1
+          fi

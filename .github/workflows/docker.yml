@@ -13,7 +13,7 @@ on:
         default: ""
 jobs:
   image:
-    name: Build, smoke test, then publish
+    name: Build and smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -33,7 +33,7 @@ jobs:
           docker build --tag keyzori-rebuild \
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${SOURCE_SHA}" .
-      - name: Smoke test the image that will be published
+      - name: Smoke test the built image
         run: bun run docker:smoke
       - name: Log in to GHCR
         if: inputs.publish

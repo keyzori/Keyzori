@@ -48,7 +48,7 @@ jobs:
     with:
       ref: ${{ needs.source.outputs.sha }}
   docker:
-    name: Release image (final gate)
+    name: Publish release image
     needs: [source, checks]
     uses: ./.github/workflows/docker.yml
     permissions:
