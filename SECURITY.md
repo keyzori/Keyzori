@@ -17,4 +17,4 @@ Do not access data you do not own, disrupt running services, or publish details 
 
 ## Deployment responsibility
 
-Keyzori is self-hosted. Operators are responsible for TLS termination, network isolation, secret management, dependency updates, database backups, monitoring, and timely upgrades. See [the Deployment wiki page](https://github.com/lilsnibbi/Keyzori/wiki/Deployment).
+Keyzori is self-hosted. Operators are responsible for TLS termination, network isolation, secret management, dependency updates, database backups, monitoring, and timely upgrades. See [the Deployment wiki page](https://github.com/keyzori/keyzori/wiki/Deployment).

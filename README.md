@@ -1,154 +1,81 @@
-<div align="center">
+# Keyzori
 
-<img width="2560" height="720" alt="Keyzori banner" src="https://raw.githubusercontent.com/lilsnibbi/Keyzori/main/.github/assets/banner.png" />
+A self-hosted licensing API and operator CLI, running as one Bun application.
 
-[`📖 Documentation`](https://github.com/lilsnibbi/Keyzori/wiki) · [`🌐 API`](https://github.com/lilsnibbi/Keyzori/wiki/API-Reference) · [`🔧 SDK`](https://github.com/keyzori/Keyzori/wiki/SDK-Reference) · [`💻 Deployment`](https://github.com/lilsnibbi/Keyzori/wiki/Deployment)
+This rebuild replaces the previous HTTP API, configuration, database, and migrations. **Use a fresh PostgreSQL database.** Startup refuses existing legacy data and never erases it. The separate TypeScript SDK is outside this rebuild.
 
-<br />
+## Setup
 
-</div>
-
-> [!WARNING]
-> Keyzori is under active development. This release intentionally contains breaking API and database naming changes.
-
-Keyzori is a self-hosted licensing server for software products. It provides a typed client SDK, an operator CLI, and an HTTP API for managing customers, licenses, access policies, usage meters, and runtime sessions.
-
-You control the server, PostgreSQL database, Redis instance, and licensing data.
-
-## License types
-
-| Type           | Behavior                                                                           |
-| -------------- | ---------------------------------------------------------------------------------- |
-| `lifetime`     | No type-level expiry or usage balance.                                             |
-| `subscription` | Requires an expiry and supports manual or optional Stripe renewal synchronization. |
-| `metered`      | Uses explicit, idempotent consumption against named integer meters.                |
-| `trial`        | Starts a positive duration atomically on first activation.                         |
-
-Every license type can use IP, device, session, allowlist, metadata, revocation, and access-management controls.
-
-Type changes preserve the secret and shared policy while keeping former type settings as dormant drafts.
-
-## Quick start
-
-Keyzori requires **Bun**, **PostgreSQL**, and **Redis**.
+Requires Bun 1.3.14+, PostgreSQL, and Redis.
 
 ```powershell
 Copy-Item .env.example .env
-
-# Replace every placeholder secret and configure dependency URLs.
-
+# Configure dependency URLs and a random KEYZORI_ADMIN_KEY (32+ characters).
 bun run setup
-bun run dev
+bun run db:migrate
+bun run start
 ```
 
-The API starts at `http://localhost:3000`.
+Setup installs locked core and plugin dependencies. The one-shot `migrate` command locks PostgreSQL, applies core then enabled-plugin migrations, and exits. It does not connect to Redis or start HTTP/workers. Server startup validates plugins and verifies migration names/hashes; pending migrations prevent it from listening.
 
-| URL       | Purpose                                    |
-| --------- | ------------------------------------------ |
-| `/health` | Process liveness                           |
-| `/ready`  | PostgreSQL and Redis readiness             |
-| `/docs`   | Interactive operator/runtime API reference |
+- `/health`: liveness; `/ready`: PostgreSQL/Redis readiness.
+- `/docs`: interactive API reference; `/openapi.json`: generated schema.
+- `/admin/*`: administration using `X-Admin-Key`.
+- `POST /sessions`: activate with `{ "key": "lic_…", "deviceId": "your-device" }`.
+- `POST /sessions/heartbeat`, `/sessions/deactivate`, and `/usage`: bearer session token plus `X-Device-Id`.
 
-Use `keyzori admin` or the authenticated `/admin/*` API to create a customer and license.
+License keys are hashed; plaintext is returned only on creation or rotation. Sessions are bound to license, device, IP, and policy revision, with a default 60-second TTL. Policy changes require a new activation.
 
-The full `lic_...` secret is returned only after creation or rotation. **Store it immediately.**
+## License types
 
-## SDK integration
+| Type | Configuration |
+| --- | --- |
+| `lifetime` | No type expiry |
+| `subscription` | Future ISO `expiresAt`; renewable |
+| `metered` | Named integer meters and idempotent usage events |
+| `trial` | `durationSeconds`, starting on first successful activation |
 
-```typescript
-import { LicenseClient } from "keyzori";
+All types support customers, metadata, source-specific blocks, registered device/IP limits, separate allowlists, and concurrent session limits. Activity is redacted and retained for 30 days by default.
 
-const license = new LicenseClient({
-  licenseKey: process.env.KEYZORI_LICENSE_KEY ?? "",
-  serverUrl: "https://licenses.example.com",
-  deviceId: process.env.KEYZORI_DEVICE_ID,
-});
+## CLI
 
-const { licenseType, metadata } = await license.activate();
-
-await license.consume({
-  meter: "exports",
-  units: 1,
-  eventId: crypto.randomUUID(),
-});
-
-await license.deactivate();
-```
-
-Only activation sends the license secret.
-
-Automatic heartbeats, usage reporting, and deactivation use a bound server-issued session token.
-
-See the [`SDK Reference`](https://github.com/lilsnibbi/Keyzori/wiki/SDK-Reference) and [`Runtime Flow`](https://github.com/lilsnibbi/Keyzori/wiki/Runtime-Flow) documentation for the complete runtime model.
-
-## Docker
+The CLI uses only `KEYZORI_URL` and `KEYZORI_ADMIN_KEY`; plugin commands also use `KEYZORI_PLUGINS`. JSON arguments accept `@file.json`.
 
 ```powershell
-docker compose --file dev.docker-compose.yml up --build -d
-
-docker compose --file dev.docker-compose.yml exec server keyzori admin --help
+bun run cli -- --help
+bun run cli -- customers create '{"email":"owner@example.com","name":"Owner"}'
+bun run cli -- licenses create @license.json
+bun run cli -- licenses list
+bun run cli -- access get <license-id>
+bun run cli -- sessions terminate <license-id>
 ```
 
-The server image runs as non-root with a read-only filesystem and contains one compiled `keyzori` executable.
+## Plugins
 
-Available commands include:
+Root `plugins/<name>/index.ts` entries are discovered automatically. Enable names with comma-separated `KEYZORI_PLUGINS`; the default is none. Loading is alphabetical. Plugins own their dependencies, configuration, tables, migrations, workers, and CLI extensions.
 
-```text
-keyzori serve
-keyzori admin ...
-keyzori healthcheck
+Stripe is an ordinary plugin. See [its setup instructions](plugins/stripe/README.md). Plugin development and API details are in the [wiki](https://github.com/keyzori/keyzori/wiki).
+
+## Verification and Docker
+
+```powershell
+bun run check
+# Docker provisions isolated PostgreSQL/Redis, runs all tests with coverage, and cleans up.
+bun run test:local
+# Or point the suite at existing isolated local services:
+$env:KEYZORI_TEST_DATABASE_URL = "postgresql://postgres:test-password@127.0.0.1:5432/postgres"
+$env:KEYZORI_TEST_REDIS_URL = "redis://127.0.0.1:6379"
+bun run test:integration
+bun run docker:build
+bun run docker:smoke
 ```
 
-Stripe controls and webhook processing are absent unless both of the following variables are configured:
+Integration tests create and drop uniquely named test databases. Without both test URLs, infrastructure suites explicitly skip. Use isolated test services; no real Stripe account is required.
 
-```text
-KEYZORI_STRIPE_SECRET_KEY
-KEYZORI_STRIPE_WEBHOOK_SECRET
-```
+Bun runs the TypeScript source directly: `bun src/main.ts serve`. There is no compilation, bundling, or `dist` output. Docker installs production dependencies and copies source once, running Bun as a non-root user.
 
-Keyzori links existing subscriptions only. It does not provide Checkout, a customer portal, or end-user licensing controls.
+One `compose.yml` runs PostgreSQL, Redis, migrations, and the server: `docker compose up --build -d`. Set `KEYZORI_ADMIN_KEY` and a URL-safe `KEYZORI_POSTGRES_PASSWORD` in `.env`. Only the API is published, on localhost by default; PostgreSQL and Redis use private networking and persistent volumes. Compose supplies the internal dependency URLs. Use `KEYZORI_BIND_ADDRESS` and `KEYZORI_PORT` to change the API binding.
 
-## Development
+Compose reuses one Alpine image with production dependencies for `migrate` and `server`. The server waits for successful migrations. When upgrading or enabling plugins, run `docker compose build`, `docker compose run --rm migrate`, then `docker compose up -d`. A migration failure prevents startup; existing data is never reset. To use a published image, set `KEYZORI_IMAGE`, then run `docker compose pull server migrate` and `docker compose up --no-build -d`.
 
-| Command                       | Purpose                                       |
-| ----------------------------- | --------------------------------------------- |
-| `bun run dev`                 | Start the API in watch mode                   |
-| `bun run cli:help`            | Show local operator commands                  |
-| `bun run build`               | Build the unified server executable           |
-| `bun run typecheck`           | Type-check the server and repository tests    |
-| `bun run test`                | Run the test suite                            |
-| `bun run check`               | Run release-level verification                |
-| `bun run db:generate`         | Generate a migration after schema changes     |
-| `bun run db:migrate`          | Apply committed migrations                    |
-| `bun run docker:build`        | Build the optimized server image              |
-| `bun run docker:build:server` | Alias for the unified image build             |
-
-## Documentation
-
-Full documentation is available in the **[Keyzori Wiki](https://github.com/lilsnibbi/Keyzori/wiki)**.
-
-|     | Guide                                                                        | What it covers                                                        |
-| :-: | :--------------------------------------------------------------------------- | :-------------------------------------------------------------------- |
-|  💻 | [Deployment](https://github.com/lilsnibbi/Keyzori/wiki/Deployment)           | Compose, standalone container, reverse proxy, releases, native binary |
-|  ⚙️ | [Configuration](https://github.com/lilsnibbi/Keyzori/wiki/Configuration)     | Every `KEYZORI_` variable, with defaults and accepted ranges          |
-|  🔑 | [Licensing model](https://github.com/lilsnibbi/Keyzori/wiki/Licensing-Model) | The four types, effective status, limits, allowlists, and meters      |
-|  🔄 | [Product flow](https://github.com/lilsnibbi/Keyzori/wiki/Product-Flow)       | Operator setup, application runtime, and operator feedback loop       |
-|  ⏱️ | [Runtime flow](https://github.com/lilsnibbi/Keyzori/wiki/Runtime-Flow)       | Activation, session binding, heartbeat, and validation order          |
-| 🏗️ | [Architecture](https://github.com/lilsnibbi/Keyzori/wiki/Architecture)       | One binary, three entrypoints, layer boundaries, and storage          |
-|  🔧 | [SDK reference](https://github.com/lilsnibbi/Keyzori/wiki/SDK-Reference)     | The `keyzori` package, configuration, methods, events, and errors     |
-|  🌐 | [HTTP API](https://github.com/lilsnibbi/Keyzori/wiki/API-Reference)          | Routes, request/response shapes, and error codes                      |
-|  💾 | [Admin CLI](https://github.com/lilsnibbi/Keyzori/wiki/CLI-Reference)         | `keyzori admin` commands for customers, licenses, access, and meters  |
-|  📊 | [Operations](https://github.com/lilsnibbi/Keyzori/wiki/Operations)           | Monitoring, backup/restore, secret rotation, and incident playbooks   |
-|  🩺 | [Troubleshooting](https://github.com/lilsnibbi/Keyzori/wiki/Troubleshooting) | Symptom-first fixes for startup, licensing, Stripe, and migrations    |
-
-## Community
-
-* [Contributing](CONTRIBUTING.md)
-* [Governance](GOVERNANCE.md)
-* [Support](https://tsukiyo.cc/join)
-
-## License
-
-Copyright © 2026 Keyzori contributors.
-
-Licensed under the [Apache License 2.0](LICENSE).
+[Contributing](CONTRIBUTING.md) · [Apache-2.0 license](LICENSE)
