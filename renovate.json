@@ -2,41 +2,28 @@
 	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
 	"extends": ["config:best-practices"],
 	"timezone": "Australia/Sydney",
-	"baseBranchPatterns": ["main"],
+	"baseBranch": "dev",
 	"reviewers": ["lilsnibbi"],
 	"labels": ["dependencies", "renovate"],
 	"dependencyDashboardLabels": ["dependencies", "renovate"],
 	"prBodyTemplate": "{{{header}}}{{{table}}}{{{warnings}}}{{{notes}}}{{{changelogs}}}{{{controls}}}",
 	"prCreation": "immediate",
 	"automerge": false,
-	"minimumReleaseAge": null,
-	"lockFileMaintenance": {
-		"enabled": true,
-		"schedule": ["before 4am on monday"],
-		"groupName": "Bun lockfile maintenance"
-	},
 	"vulnerabilityAlerts": {
 		"assignees": ["lilsnibbi"],
 		"labels": ["dependencies", "renovate", "security"]
 	},
 	"packageRules": [
 		{
-			"description": "Group non-major root package updates",
+			"description": "Allow all dependency updates immediately after release",
+			"matchPackageNames": ["*"],
+			"minimumReleaseAge": null
+		},
+		{
+			"description": "Group non-major Bun dependency updates",
 			"matchManagers": ["bun"],
 			"matchUpdateTypes": ["minor", "patch"],
-			"groupName": "Dependencies",
-			"addLabels": ["bun"]
-		},
-		{
-			"description": "Keep root dependency ranges current",
-			"matchManagers": ["bun"],
-			"rangeStrategy": "bump"
-		},
-		{
-			"description": "Keep the Bun toolchain and build image together",
-			"matchPackageNames": ["bun", "oven/bun", "oven-sh/bun"],
-			"groupName": "Bun runtime",
-			"rangeStrategy": "bump",
+			"groupName": "Bun dependencies",
 			"addLabels": ["bun"]
 		},
 		{
@@ -46,9 +33,8 @@
 			"addLabels": ["github-actions"]
 		},
 		{
-			"description": "Group non-major Docker image updates",
+			"description": "Group Docker image updates",
 			"matchDatasources": ["docker"],
-			"matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
 			"groupName": "Docker images",
 			"addLabels": ["docker"],
 			"pinDigests": false
@@ -59,18 +45,19 @@
 			"addLabels": ["major-update"]
 		},
 		{
-			"description": "Use stable numeric PostgreSQL and Redis image tags",
+			"description": "Postgres/Redis: stable numeric tags only, no beta/arch variants",
 			"matchDatasources": ["docker"],
 			"matchPackageNames": ["postgres", "redis"],
 			"ignoreUnstable": true,
-			"allowedVersions": "/^\\d+(?:\\.\\d+){0,2}$/"
+			"enabled": false
 		},
 		{
 			"description": "Track drizzle prerelease builds together",
 			"matchPackageNames": ["drizzle-orm", "drizzle-kit"],
 			"groupName": "Drizzle",
 			"rangeStrategy": "bump",
-			"followTag": "latest"
+			"enabled": false
 		}
-	]
+	],
+	"ignoreUnstable": false
 }

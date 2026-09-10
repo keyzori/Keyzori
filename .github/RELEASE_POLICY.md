@@ -1,33 +1,9 @@
-# Release and compatibility policy
+# Release artifacts
 
-Keyzori follows Semantic Versioning.
+Release metadata lives only in the root package.json. The container runs TypeScript directly with Bun. There is no code build, dist output, or standalone binary.
 
-## Compatibility
+CI runs separate typecheck, lint, migration integrity, release metadata, unit-test, Compose, and infrastructure jobs. HTTP, services, database, plugins, and CLI infrastructure suites run independently with PostgreSQL/Redis. The final Docker job depends on every check, builds once, smoke-tests the resulting image, and only then publishes it. Pull requests never publish. Successful main pushes publish canary and commit-tagged containers.
 
-- Pre-release versions target the latest canonical API and may make clean breaking changes without compatibility aliases.
-- The server and operator CLI are one `keyzori` executable. Use the CLI from the same image as the running server.
-- Database migrations are forward-only. A downgrade that crosses a migration requires restoring the pre-deployment backup.
+Releases validate an existing tag against main and the manifest, resolve its immutable commit, and run the same checks. The final image job verifies and publishes that exact source, then creates the GitHub release. Prereleases never update latest. Existing promotion/tag preparation remains separate.
 
-## Support
-
-The latest stable release receives security and correctness fixes. Pre-release versions may change without backward compatibility.
-
-## Release artifacts
-
-A stable release requires:
-
-1. reviewed release notes and a version;
-2. successful quality, type, test, and build/package CI jobs;
-3. the live PostgreSQL/Redis container smoke test;
-4. a versioned GHCR image tied to the source tag;
-5. a tested backup, migration, health-check, and rollback plan for the target deployment.
-
-## Publishing
-
-Release Please maintains a release pull request from conventional commits. Merge that pull request when its generated changelog and version are ready. The merge creates the immutable `vX.Y.Z` tag and GitHub Release first, then builds, smoke-tests, and publishes `ghcr.io/keyzori/server`.
-
-Every successful `main` release workflow updates `canary`. Stable releases also publish `latest`, `X.Y.Z`, and `vX.Y.Z`. Re-run a failed release run to repair missing image tags.
-
-Store a fine-grained token with Contents, Issues, and Pull requests read/write access in the `RELEASE_TOKEN` Actions secret so Release Please can open release PRs and trigger their CI checks.
-
-Security fixes follow [SECURITY.md](../SECURITY.md).
+Do not call a release successful until its remote publication has completed. This rebuild does not publish or deploy anything automatically from a local development run.

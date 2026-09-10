@@ -17,7 +17,7 @@ body:
     id: component
     attributes:
       label: Component
-      options: [Server, Admin CLI, Migrations, Docker, Documentation]
+      options: [Server, Admin CLI, SDK, Migrations, Docker, Documentation]
     validations:
       required: true
   - type: textarea

@@ -1,20 +1,20 @@
 /**
- * Prepares a release on the current release branch.
+ * Prepares a release on the integration branch.
  *
  *   bun run release patch              # bump, verify, commit, push, open the promotion PR
  *   bun run release v0.5.0 --dry-run   # show every action without touching the remote
- *   bun run release --from-commit      # read the directive from the HEAD commit message
+ *   bun run release --from-commit      # read the directive from the HEAD commit message (CI)
  *
- * The tag itself is not created here. Merging the bump into `main` is what makes
- * a release real, so `scripts/tag.ts` runs after the pull request lands and only
- * ever tags a commit that already declares the version.
+ * The tag itself is not created here. Pushing the bump to `main` is what makes
+ * a release real, so `scripts/tag.ts` runs from the promotion branch afterwards
+ * and only ever tags a commit that already declares the version.
  */
 
 import {
 	parseReleaseDirective,
 	readReleaseVersion,
 	resolveVersion,
-} from "./releaseManifests";
+} from "./releaseManifests.ts";
 
 const VALUE_FLAGS = new Set(["--branch", "--base"]);
 
@@ -44,6 +44,7 @@ const dryRun = options.has("--dry-run");
 const skipChecks = options.has("--no-checks");
 const skipPromote = options.has("--no-promote");
 const fromCommit = options.has("--from-commit");
+const branch = (options.get("--branch") as string | undefined) ?? "dev";
 const base = (options.get("--base") as string | undefined) ?? "main";
 
 async function run(
@@ -77,15 +78,6 @@ if (!directive) {
 const currentBranch = (
 	await Bun.$`git rev-parse --abbrev-ref HEAD`.text()
 ).trim();
-const branch = (options.get("--branch") as string | undefined) ?? currentBranch;
-if (currentBranch === "HEAD") {
-	throw new Error("Check out a release branch before preparing a release.");
-}
-if (branch === base) {
-	throw new Error(
-		`Create a release branch before preparing a release from ${base}.`,
-	);
-}
 if (currentBranch !== branch) {
 	throw new Error(`Releases are prepared on ${branch}, not ${currentBranch}.`);
 }
@@ -95,21 +87,14 @@ if (dirty.length > 0) {
 	throw new Error(`The working tree must be clean before releasing:\n${dirty}`);
 }
 
-await Bun.$`git fetch origin ${base}`;
-await Bun.$`git merge-base --is-ancestor origin/${base} HEAD`;
-const remoteBranch = (
-	await Bun.$`git ls-remote --heads origin refs/heads/${branch}`.text()
+await Bun.$`git fetch origin ${branch} ${base}`;
+const behind = (
+	await Bun.$`git rev-list --count HEAD..origin/${branch}`.text()
 ).trim();
-if (remoteBranch) {
-	await Bun.$`git fetch origin refs/heads/${branch}:refs/remotes/origin/${branch}`;
-	const behind = (
-		await Bun.$`git rev-list --count HEAD..origin/${branch}`.text()
-	).trim();
-	if (behind !== "0") {
-		throw new Error(
-			`${branch} is ${behind} commit(s) behind origin/${branch}. Pull first.`,
-		);
-	}
+if (behind !== "0") {
+	throw new Error(
+		`${branch} is ${behind} commit(s) behind origin/${branch}. Pull first.`,
+	);
 }
 
 const previous = await readReleaseVersion();

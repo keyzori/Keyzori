@@ -1,123 +1,45 @@
 name: CI
-
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  CI: "true"
-
 jobs:
-  quality:
-    name: Code quality
+  checks:
+    uses: ./.github/workflows/checks.yml
+    with:
+      ref: ${{ github.sha }}
+  docker:
+    name: Container verification
+    needs: checks
+    uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      ref: ${{ github.sha }}
+      publish: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  required:
+    name: Required checks
+    if: ${{ always() }}
+    needs: [checks, docker]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.2
-      - name: Install locked dependencies
-        run: bun install --frozen-lockfile
-      - name: Audit dependencies
-        run: bun run audit
-      - name: Lint
-        run: bun run lint
-      - name: Validate release metadata
-        run: bun run release:verify
-
-  types:
-    name: Type check
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.2
-      - name: Install locked dependencies
-        run: bun install --frozen-lockfile
-      - name: Type check
-        run: bun run typecheck
-
-  tests:
-    name: Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.2
-      - name: Install locked dependencies
-        run: bun install --frozen-lockfile
-      - name: Run tests
-        run: bun run test
-      - name: Check core coverage
-        run: bun run test:coverage:core
-
-  build:
-    name: Build and package
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.2
-      - name: Install locked dependencies
-        run: bun install --frozen-lockfile
-      - name: Validate migration history
-        run: bun run db:check
-      - name: Build distributable artifacts
-        run: bun run build
-      - name: Smoke-test package artifacts
-        run: bun run smoke:packages
-      - name: Validate Compose configuration
+      - name: Require successful verification
         env:
-          KEYZORI_ADMIN_PASS: ci-only-admin-password
-          KEYZORI_POSTGRES_PASS: ci-only-postgres-password
-        run: docker compose config --quiet
-
-  verify:
-    name: Verify workspace and artifacts
-    if: always()
-    needs: [quality, types, tests, build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Require every CI job
-        env:
-          QUALITY_RESULT: ${{ needs.quality.result }}
-          TYPES_RESULT: ${{ needs.types.result }}
-          TESTS_RESULT: ${{ needs.tests.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          CONTAINER_RESULT: ${{ needs.docker.result }}
+        shell: bash
         run: |
-          test "${QUALITY_RESULT}" = "success"
-          test "${TYPES_RESULT}" = "success"
-          test "${TESTS_RESULT}" = "success"
-          test "${BUILD_RESULT}" = "success"
+          if [[ "${CHECKS_RESULT}" != "success" || "${CONTAINER_RESULT}" != "success" ]]; then
+            echo "Checks: ${CHECKS_RESULT}"
+            echo "Container verification: ${CONTAINER_RESULT}"
+            exit 1
+          fi

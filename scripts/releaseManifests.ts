@@ -1,7 +1,7 @@
 /**
  * Shared release metadata helpers.
  *
- * Every manifest that must carry the release version is listed here
+ * Every workspace manifest that must carry the release version is listed here
  * exactly once, so `syncVersions.ts`, `verifyRelease.ts`, and `tag.ts` can
  * never disagree about what the release surface is.
  */

@@ -1,19 +1,19 @@
-# Send only inputs used by Dockerfile. This also keeps local secrets,
-# build output, tests, documentation, and repository metadata out of the context.
-**
-
+*
 !package.json
 !bun.lock
-!tsconfig.json
 !bunfig.toml
+!tsconfig.json
 !LICENSE
-
 !src/
 !src/**
-
+!plugins/
+!plugins/**
+!migrations/
+!migrations/**
 !scripts/
-scripts/*
-!scripts/build.ts
-
-!drizzle/
-!drizzle/**
+!scripts/plugins.ts
+**/node_modules
+**/.env
+**/.env.*
+**/*.test.ts
+**/.git

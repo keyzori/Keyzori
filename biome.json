@@ -33,6 +33,10 @@
 	},
 	"overrides": [
 		{
+			"includes": ["**/migrations/**/snapshot.json"],
+			"formatter": { "enabled": false }
+		},
+		{
 			"includes": ["renovate.json"],
 			"formatter": {
 				"enabled": false

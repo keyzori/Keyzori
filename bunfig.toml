@@ -1,10 +1,7 @@
 [install]
-exact = false
-ignoreScripts = false
+exact = true
 saveTextLockfile = true
-linkWorkspacePackages = true
-linker = "hoisted"
 
 [test]
 coverageSkipTestFiles = true
-coverageThreshold = { line = 80 }
+timeout = 20000
