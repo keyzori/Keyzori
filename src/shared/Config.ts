@@ -16,6 +16,14 @@ export class Config {
 		this.adminKey = this.required("KEYZORI_ADMIN_KEY");
 		if (this.adminKey.length < 32)
 			throw new Error("KEYZORI_ADMIN_KEY must contain at least 32 characters.");
+		if (
+			["replace", "change", "your_secure", "example", "development"].some(
+				(prefix) => this.adminKey.toLowerCase().startsWith(prefix),
+			)
+		)
+			throw new Error(
+				"KEYZORI_ADMIN_KEY must be a randomly generated secret, not a placeholder.",
+			);
 		this.databaseUrl = this.url("KEYZORI_DATABASE_URL", [
 			"postgres:",
 			"postgresql:",
