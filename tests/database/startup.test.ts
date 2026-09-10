@@ -13,16 +13,17 @@ import {
 } from "../helpers/TestContext.ts";
 
 describe.skipIf(!integrationAvailable)("startup and lifecycle", () => {
-	test("server refuses a fresh database; one-shot CLI migrates repeatedly without Redis", async () => {
+	test("server migrates a fresh database; standalone CLI remains repeatable without Redis", async () => {
 		const ctx = new TestContext();
 		await ctx.control.unsafe(`CREATE DATABASE "${ctx.name}"`);
 		const sql = new SQL(ctx.env.KEYZORI_DATABASE_URL ?? "");
 		try {
-			await expect(ctx.app.start()).rejects.toThrow("Pending migrations");
-			expect(ctx.app.app.server).toBeNull();
+			await ctx.app.start();
+			expect((await ctx.request("/ready")).status).toBe(200);
 			expect(
 				(await sql`SELECT to_regclass('public.licenses') AS name`)[0].name,
-			).toBeNull();
+			).toBe("licenses");
+			await ctx.app.stop();
 			for (let attempt = 0; attempt < 2; attempt++) {
 				const job = Bun.spawn([process.execPath, "src/main.ts", "migrate"], {
 					cwd: root,
@@ -46,19 +47,14 @@ describe.skipIf(!integrationAvailable)("startup and lifecycle", () => {
 			await ctx.close();
 		}
 	});
-	test("enabling a plugin requires its separate one-shot migrations", async () => {
+	test("enabling a plugin migrates its tables before serving", async () => {
 		const ctx = await new TestContext().start();
 		try {
-			await expect(
-				ctx.restart({
-					KEYZORI_PLUGINS: "stripe",
-					KEYZORI_STRIPE_SECRET_KEY: "sk_test_fake",
-					KEYZORI_STRIPE_WEBHOOK_SECRET: "whsec_test",
-				}),
-			).rejects.toThrow("Pending migrations in plugin_stripe");
-			expect(ctx.app.app.server).toBeNull();
-			await new Application(new Config(ctx.env), root).migrate();
-			await ctx.restart();
+			await ctx.restart({
+				KEYZORI_PLUGINS: "stripe",
+				KEYZORI_STRIPE_SECRET_KEY: "sk_test_fake",
+				KEYZORI_STRIPE_WEBHOOK_SECRET: "whsec_test",
+			});
 			expect((await ctx.request("/plugins/stripe/admin/links")).status).toBe(
 				200,
 			);
@@ -66,15 +62,11 @@ describe.skipIf(!integrationAvailable)("startup and lifecycle", () => {
 			await ctx.close();
 		}
 	});
-	test("concurrent one-shot jobs serialize migrations and leave disabled plugin tables absent", async () => {
+	test("concurrent servers serialize migrations and leave disabled plugin tables absent", async () => {
 		const ctx = new TestContext();
 		await ctx.control.unsafe(`CREATE DATABASE "${ctx.name}"`);
 		const second = new Application(new Config(ctx.env), root);
 		try {
-			await Promise.all([
-				new Application(new Config(ctx.env), root).migrate(),
-				new Application(new Config(ctx.env), root).migrate(),
-			]);
 			await Promise.all([ctx.app.start(), second.start()]);
 			const rows = await ctx.app.services.database
 				.sql`SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'stripe%'`;
@@ -94,7 +86,7 @@ describe.skipIf(!integrationAvailable)("startup and lifecycle", () => {
 		try {
 			await sql`CREATE TABLE legacy_license (value text)`;
 			await sql`INSERT INTO legacy_license VALUES ('preserve-me')`;
-			await expect(ctx.app.migrate()).rejects.toThrow("fresh database");
+			await expect(ctx.app.start()).rejects.toThrow("fresh database");
 			expect(ctx.app.app.server).toBeNull();
 			expect((await sql`SELECT * FROM legacy_license`)[0].value).toBe(
 				"preserve-me",
@@ -138,7 +130,7 @@ describe.skipIf(!integrationAvailable)("startup and lifecycle", () => {
 		ctx.app = new Application(new Config(ctx.env), folder);
 		const sql = new SQL(ctx.env.KEYZORI_DATABASE_URL ?? "");
 		try {
-			await expect(ctx.app.migrate()).rejects.toThrow();
+			await expect(ctx.app.start()).rejects.toThrow();
 			expect(ctx.app.app.server).toBeNull();
 			expect(
 				(await sql`SELECT to_regclass('public.should_rollback') AS name`)[0]

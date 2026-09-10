@@ -15,7 +15,7 @@ type Job = {
 	if?: string;
 	steps?: Step[];
 	"continue-on-error"?: boolean;
-	strategy?: { matrix?: { suite?: string[] } };
+	strategy?: { matrix?: { include?: { suite: string; name: string }[] } };
 	with?: Record<string, unknown>;
 };
 type Workflow = { jobs: Record<string, Job> };
@@ -72,7 +72,7 @@ test("Release Please only versions, tags, and creates GitHub releases", async ()
 test("CI exposes one stable required check that cannot hide skipped failures", async () => {
 	const file = await workflow("ci.yml");
 	const required = file.jobs.required;
-	expect(file.jobs.docker?.name).toBe("Container verification");
+	expect(file.jobs.docker?.name).toBe("Docker");
 	expect(required?.name).toBe("Required checks");
 	expect(required?.if).toContain("always()");
 	expect([required?.needs].flat().toSorted()).toEqual(["checks", "docker"]);
@@ -96,13 +96,11 @@ test("checks run independently and real infrastructure jobs cannot silently skip
 		expect(job?.["continue-on-error"]).toBeUndefined();
 		expect(job?.needs).toBeUndefined();
 	}
-	expect(file.jobs.integration?.strategy?.matrix?.suite?.toSorted()).toEqual([
-		"cli",
-		"database",
-		"http",
-		"plugins",
-		"services",
-	]);
+	expect(
+		file.jobs.integration?.strategy?.matrix?.include
+			?.map((entry) => entry.suite)
+			.toSorted(),
+	).toEqual(["cli", "database", "http", "plugins", "services"]);
 	expect(
 		file.jobs.integration?.steps?.some((step) =>
 			step.run?.startsWith("bun run test:integration"),
@@ -130,7 +128,7 @@ test("the container job uses an accurate name and tests one image before publica
 		steps.slice(publish).some((step) => step.run?.includes("docker build")),
 	).toBe(false);
 });
-test("Compose isolates storage, shares the runtime image, and requires successful migrations", async () => {
+test("Compose isolates storage and waits for healthy dependencies before serving", async () => {
 	const config = Bun.YAML.parse(
 		await Bun.file(resolve(root, "compose.yml")).text(),
 	) as {
@@ -149,16 +147,10 @@ test("Compose isolates storage, shares the runtime image, and requires successfu
 		>;
 	};
 	const { server, migrate, postgres, redis } = config.services;
-	expect(server?.image).toBe(migrate?.image);
+	expect(migrate).toBeUndefined();
 	expect(server?.read_only).toBe(true);
-	expect(migrate?.read_only).toBe(true);
-	expect(migrate?.command).toEqual(["migrate"]);
-	expect(migrate?.restart).toBe("no");
-	expect(migrate?.healthcheck?.disable).toBe(true);
-	expect(server?.depends_on?.migrate?.condition).toBe(
-		"service_completed_successfully",
-	);
-	expect(migrate?.depends_on?.postgres?.condition).toBe("service_healthy");
+	expect(server?.command).toEqual(["serve"]);
+	expect(server?.depends_on?.postgres?.condition).toBe("service_healthy");
 	expect(server?.depends_on?.redis?.condition).toBe("service_healthy");
 	expect(postgres?.ports).toBeUndefined();
 	expect(redis?.ports).toBeUndefined();

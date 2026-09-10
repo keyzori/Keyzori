@@ -40,20 +40,14 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
-  migrate:
-    <<: *application
-    command: ["migrate"]
-    restart: "no"
-    healthcheck: { disable: true }
-    depends_on:
-      postgres: { condition: service_healthy }
   server:
     <<: *application
+    command: ["serve"]
     restart: unless-stopped
     ports: ["${KEYZORI_BIND_ADDRESS:-127.0.0.1}:${KEYZORI_PORT:-3000}:3000"]
     stop_grace_period: 30s
     depends_on:
-      migrate: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
 volumes:
   postgres-data:

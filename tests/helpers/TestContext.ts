@@ -32,7 +32,6 @@ export class TestContext {
 	}
 	async start() {
 		await this.control.unsafe(`CREATE DATABASE "${this.name}"`);
-		await new Application(new Config(this.env), root).migrate();
 		await this.app.start();
 		return this;
 	}

@@ -35,7 +35,6 @@ Copy-Item .env.example .env
 # Edit .env: set your database and Redis URLs and a random KEYZORI_ADMIN_KEY.
 # The admin key must contain at least 32 characters.
 bun run setup
-bun run db:migrate
 bun run start
 ```
 
@@ -60,13 +59,13 @@ docker compose up --build -d
 docker compose exec server bun src/main.ts admin --help
 ```
 
-Compose starts PostgreSQL, Redis, a one-time database setup service, and the API. It supplies the internal database URLs and stores data in named volumes. The API is available at `http://localhost:3000` and is bound to localhost by default.
+Compose starts PostgreSQL, Redis, and the API. The server applies pending core and enabled-plugin migrations before accepting requests; migration failures prevent startup. It supplies the internal database URLs and stores data in named volumes. The API is available at `http://localhost:3000` and is bound to localhost by default.
 
 The container runs TypeScript directly with Bun as a non-root user. See [Deployment](https://github.com/keyzori/Keyzori/wiki/Deployment) for upgrades, HTTPS, and image settings.
 
 ## Plugins
 
-Plugins are off by default. To enable the included Stripe plugin, set `KEYZORI_PLUGINS=stripe` along with `KEYZORI_STRIPE_SECRET_KEY` and `KEYZORI_STRIPE_WEBHOOK_SECRET`, then install dependencies, apply migrations, and restart the server.
+Plugins are off by default. To enable the included Stripe plugin, set `KEYZORI_PLUGINS=stripe` along with `KEYZORI_STRIPE_SECRET_KEY` and `KEYZORI_STRIPE_WEBHOOK_SECRET`, then install dependencies and restart the server. Startup applies the plugin migrations automatically.
 
 Stripe syncs existing subscriptions with subscription licenses. It does not create a checkout or customer portal. See [Plugins](https://github.com/keyzori/Keyzori/wiki/Plugins) for setup and examples.
 

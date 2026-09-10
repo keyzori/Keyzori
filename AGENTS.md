@@ -26,7 +26,7 @@ The separate TypeScript SDK is outside this rebuild. Read README.md, CONTRIBUTIN
 - Licensing, authentication, sessions, metering, billing, and migrations are security-sensitive. Do not weaken validation, binding, revisions, locks, idempotency, redaction, or transaction guarantees without explicit approval.
 - Add behavioral tests and regression coverage for fixes.
 - Generate migrations with bun run db:generate and review the generated SQL. Do not use db:push. Never erase an existing database to make startup succeed.
-- Run migrations through the one-shot migrate command. Server startup verifies migration history and must refuse pending or modified migrations; it never applies them. Compose waits for the migration service to complete successfully.
+- Server startup applies core and enabled-plugin migrations under the database lock before opening HTTP or starting workers. Missing or modified migration history and migration failures must prevent startup. The standalone migrate command remains available; Compose runs migrations within the server container.
 - Never commit secrets, license keys, credentials, customer data, or production logs.
 
 ## Style and validation

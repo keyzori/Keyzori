@@ -9,7 +9,7 @@ permissions:
   contents: read
 jobs:
   workflows:
-    name: Workflow validation
+    name: Workflow checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
       - run: docker run --rm --volume "$PWD:/repo:ro" --workdir /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
   typecheck:
-    name: Typecheck
+    name: Type checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -30,7 +30,7 @@ jobs:
       - uses: ./.github/actions/setup
       - run: bun run typecheck
   lint:
-    name: Lint
+    name: Lint and formatting
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -41,7 +41,7 @@ jobs:
       - uses: ./.github/actions/setup
       - run: bun run lint
   migrations:
-    name: Migration integrity
+    name: Migration checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -52,7 +52,7 @@ jobs:
       - uses: ./.github/actions/setup
       - run: bun run db:check
   metadata:
-    name: Release metadata
+    name: Release checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -74,13 +74,23 @@ jobs:
       - uses: ./.github/actions/setup
       - run: bun run test:unit --coverage
   integration:
-    name: Integration / ${{ matrix.suite }}
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        suite: [http, services, database, plugins, cli]
+        include:
+          - suite: http
+            name: HTTP API tests
+          - suite: services
+            name: Service tests
+          - suite: database
+            name: Database tests
+          - suite: plugins
+            name: Plugin tests
+          - suite: cli
+            name: CLI tests
     services:
       postgres:
         image: postgres:18-alpine
@@ -107,7 +117,7 @@ jobs:
       - uses: ./.github/actions/setup
       - run: bun run test:integration tests/${{ matrix.suite }} --coverage
   compose:
-    name: Compose configuration
+    name: Docker Compose checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
