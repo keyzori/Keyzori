@@ -1,0 +1,13 @@
+{
+	"$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+	"bootstrap-sha": "5dcdf83dd64ca92dbc3ee16f5278e4793cfd4d01",
+	"include-component-in-tag": false,
+	"include-v-in-tag": true,
+	"packages": {
+		".": {
+			"bump-minor-pre-major": true,
+			"package-name": "keyzori",
+			"release-type": "node"
+		}
+	}
+}
