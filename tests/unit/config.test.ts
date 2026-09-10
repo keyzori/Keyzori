@@ -42,6 +42,18 @@ describe("configuration boundaries", () => {
 				expect(() => new Config({ ...base, [name]: value })).toThrow(name);
 		},
 	);
+	test.each([
+		"short",
+		"replace_with_at_least_32_random_characters",
+		"change_this_admin_password_xxxxxxx",
+		"YOUR_SECURE_ADMIN_KEY_xxxxxxxxxxxx",
+		"example-admin-key-at-least-32-characters",
+		"development-admin-key-at-least-32-characters",
+	])("rejects weak admin key %s", (value) =>
+		expect(() => new Config({ ...base, KEYZORI_ADMIN_KEY: value })).toThrow(
+			"KEYZORI_ADMIN_KEY",
+		),
+	);
 	test.each(["http://user:private@localhost", "not-a-url"])(
 		"rejects database URL %s without exposing credentials",
 		(value) => {
