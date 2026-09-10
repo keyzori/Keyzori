@@ -78,34 +78,6 @@ try {
 		"-e",
 		'import { existsSync } from "node:fs"; const pkg = await Bun.file("/app/package.json").json(); if (!existsSync("/app/src/main.ts") || pkg.scripts?.build) throw new Error("Image must run source"); for (const path of ["dist", "tests", ".env", "node_modules/typescript", "node_modules/@biomejs/biome", "node_modules/drizzle-kit"]) if (existsSync("/app/" + path)) throw new Error("Unexpected runtime file: " + path);',
 	);
-	for (let attempt = 0; attempt < 2; attempt++) {
-		await docker(
-			"run",
-			"--rm",
-			"--network",
-			id,
-			"--read-only",
-			"--no-healthcheck",
-			"--cap-drop",
-			"ALL",
-			"--security-opt",
-			"no-new-privileges:true",
-			"-e",
-			`KEYZORI_DATABASE_URL=postgresql://postgres:smoke-only@${names.postgres}:5432/keyzori`,
-			"-e",
-			"KEYZORI_REDIS_URL=redis://127.0.0.1:1",
-			"-e",
-			`KEYZORI_ADMIN_KEY=${admin}`,
-			"-e",
-			"KEYZORI_PLUGINS=stripe",
-			"-e",
-			"KEYZORI_STRIPE_SECRET_KEY=sk_test_fake",
-			"-e",
-			"KEYZORI_STRIPE_WEBHOOK_SECRET=whsec_smoke",
-			image,
-			"migrate",
-		);
-	}
 	await docker(
 		"run",
 		"-d",

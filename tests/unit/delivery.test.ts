@@ -130,7 +130,7 @@ test("the container job uses an accurate name and tests one image before publica
 		steps.slice(publish).some((step) => step.run?.includes("docker build")),
 	).toBe(false);
 });
-test("Compose isolates storage, shares the runtime image, and requires successful migrations", async () => {
+test("Compose isolates storage and waits for healthy dependencies before serving", async () => {
 	const config = Bun.YAML.parse(
 		await Bun.file(resolve(root, "compose.yml")).text(),
 	) as {
@@ -149,16 +149,10 @@ test("Compose isolates storage, shares the runtime image, and requires successfu
 		>;
 	};
 	const { server, migrate, postgres, redis } = config.services;
-	expect(server?.image).toBe(migrate?.image);
+	expect(migrate).toBeUndefined();
 	expect(server?.read_only).toBe(true);
-	expect(migrate?.read_only).toBe(true);
-	expect(migrate?.command).toEqual(["migrate"]);
-	expect(migrate?.restart).toBe("no");
-	expect(migrate?.healthcheck?.disable).toBe(true);
-	expect(server?.depends_on?.migrate?.condition).toBe(
-		"service_completed_successfully",
-	);
-	expect(migrate?.depends_on?.postgres?.condition).toBe("service_healthy");
+	expect(server?.command).toEqual(["serve"]);
+	expect(server?.depends_on?.postgres?.condition).toBe("service_healthy");
 	expect(server?.depends_on?.redis?.condition).toBe("service_healthy");
 	expect(postgres?.ports).toBeUndefined();
 	expect(redis?.ports).toBeUndefined();

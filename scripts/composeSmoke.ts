@@ -33,17 +33,14 @@ export async function composeSmoke(
 		POSTGRES_DB: "keyzori",
 		POSTGRES_PASSWORD: "compose-only",
 	};
-	for (const name of ["migrate", "server"]) {
-		const service = config.services[name];
-		if (!service) throw new Error(`Missing Compose service: ${name}`);
-		delete service.build;
-		delete service.env_file;
-		service.image = image;
-		service.environment = { ...environment };
-	}
 	const server = config.services.server;
-	const migrate = config.services.migrate;
-	if (!server || !migrate) throw new Error("Missing Compose services");
+	if (!server || config.services.migrate)
+		throw new Error("Expected server without a migration service");
+	delete server.build;
+	delete server.env_file;
+	server.image = image;
+	server.environment = { ...environment };
+	server.restart = "no";
 	server.ports = ["127.0.0.1::3000"];
 	const compose = (...args: string[]) =>
 		docker("compose", "--project-name", project, "--file", file, ...args);
@@ -65,27 +62,15 @@ export async function composeSmoke(
 		throw new Error("Compose server did not become ready after migrations.");
 	}
 	try {
-		migrate.environment = { ...environment, KEYZORI_PLUGINS: "missing" };
-		await Bun.write(file, JSON.stringify(config));
-		let rejected = false;
-		try {
-			await compose("up", "--detach", "server");
-		} catch {
-			rejected = true;
-		}
-		if (
-			!rejected ||
-			(await compose("ps", "--status", "running", "--quiet", "server"))
-		)
-			throw new Error("Failed migration must prevent Compose server startup.");
-		migrate.environment = { ...environment };
+		server.environment = { ...environment, KEYZORI_PLUGINS: "missing" };
 		await Bun.write(file, JSON.stringify(config));
 		await compose("up", "--detach", "server");
-		const job = await compose("ps", "--all", "--quiet", "migrate");
-		if (
-			(await docker("inspect", "--format", "{{.State.ExitCode}}", job)) !== "0"
-		)
-			throw new Error("One-shot migration did not exit successfully.");
+		const failed = await compose("ps", "--all", "--quiet", "server");
+		if ((await docker("wait", failed)) !== "1")
+			throw new Error("Failed startup must exit unsuccessfully.");
+		server.environment = { ...environment };
+		await Bun.write(file, JSON.stringify(config));
+		await compose("up", "--detach", "server");
 		const url = await ready();
 		const headers = {
 			"X-Admin-Key": environment.KEYZORI_ADMIN_KEY,
@@ -110,7 +95,7 @@ export async function composeSmoke(
 		if (!persisted.ok || (await persisted.json()).id !== customer.id)
 			throw new Error("Compose recreation lost persisted data.");
 		console.log(
-			"Compose smoke passed: migration failure/retry, readiness, and volume persistence.",
+			"Compose smoke passed: startup failure/retry, readiness, and volume persistence.",
 		);
 	} finally {
 		await compose("down", "--volumes", "--remove-orphans");

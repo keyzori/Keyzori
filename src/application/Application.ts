@@ -58,9 +58,7 @@ export class Application {
 				this.app,
 			);
 			await this.services.connect();
-			await new MigrationRunner(this.services.database, this.root).verify(
-				plugins,
-			);
+			await new MigrationRunner(this.services.database, this.root).run(plugins);
 			loader.mount(this.app, plugins);
 			await this.services.activity.prune();
 			// Elysia's Bun adapter does not await lifecycle promises. Run hooks here
