@@ -31,9 +31,6 @@
 		"db:check": "bunx --bun drizzle-kit check && bun run scripts/plugins.ts check && bun run scripts/checkMigrations.ts",
 		"docker:build": "docker build --tag keyzori-rebuild .",
 		"docker:smoke": "bun run scripts/dockerSmoke.ts",
-		"release": "bun run scripts/release.ts",
-		"release:sync": "bun run scripts/syncVersions.ts",
-		"release:tag": "bun run scripts/tag.ts",
 		"release:verify": "bun run scripts/verifyRelease.ts",
 		"audit": "bun audit --audit-level=high",
 		"prepare": "husky"

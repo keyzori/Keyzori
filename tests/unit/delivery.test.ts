@@ -25,24 +25,50 @@ const workflow = async (name: string) =>
 		await Bun.file(resolve(root, ".github/workflows", name)).text(),
 	) as Workflow;
 
-test.each(["ci.yml", "release.yml"])(
-	"%s gates Docker on all checks at the same source commit",
-	async (name) => {
-		const file = await workflow(name);
-		const image = file.jobs.docker;
-		const checks = file.jobs.checks;
-		expect(image?.uses).toBe("./.github/workflows/docker.yml");
-		expect(checks?.uses).toBe("./.github/workflows/checks.yml");
-		expect([image?.needs].flat()).toContain("checks");
-		expect(image?.with?.ref).toBe(checks?.with?.ref);
-		expect(image?.if).toBeUndefined();
-		expect(image?.["continue-on-error"]).toBeUndefined();
-		for (const [id, job] of Object.entries(file.jobs)) {
-			if (!["docker", "required"].includes(id))
-				expect([job.needs].flat()).not.toContain("docker");
-		}
-	},
-);
+test("CI gates Docker on all checks at the same source commit", async () => {
+	const file = await workflow("ci.yml");
+	const image = file.jobs.docker;
+	const checks = file.jobs.checks;
+	expect(image?.uses).toBe("./.github/workflows/docker.yml");
+	expect(checks?.uses).toBe("./.github/workflows/checks.yml");
+	expect([image?.needs].flat()).toContain("checks");
+	expect(image?.with?.ref).toBe(checks?.with?.ref);
+	expect(image?.if).toBeUndefined();
+	expect(image?.["continue-on-error"]).toBeUndefined();
+	for (const [id, job] of Object.entries(file.jobs)) {
+		if (!["docker", "required"].includes(id))
+			expect([job.needs].flat()).not.toContain("docker");
+	}
+});
+test("Release Please only versions, tags, and creates GitHub releases", async () => {
+	const file = await workflow("release.yml");
+	const steps = file.jobs.release?.steps ?? [];
+	const release = steps.find((step) =>
+		step.uses?.startsWith("googleapis/release-please-action@"),
+	);
+	expect(release?.uses).toBe(
+		"googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7",
+	);
+	expect(release?.with?.["config-file"]).toBe("release-please-config.json");
+	expect(release?.with?.["manifest-file"]).toBe(
+		".release-please-manifest.json",
+	);
+	expect(file.jobs.docker).toBeUndefined();
+	expect(
+		steps.some((step) => /npm publish|docker push/.test(step.run ?? "")),
+	).toBe(false);
+	const config = (await Bun.file(
+		resolve(root, "release-please-config.json"),
+	).json()) as {
+		packages: Record<string, Record<string, unknown>>;
+	};
+	expect(config.packages["."]?.["release-type"]).toBe("node");
+	expect(config.packages["."]?.["bump-minor-pre-major"]).toBe(true);
+	expect(existsSync(resolve(root, ".github/workflows/tag.yml"))).toBe(false);
+	expect(existsSync(resolve(root, ".github/workflows/promote.yml"))).toBe(
+		false,
+	);
+});
 test("CI exposes one stable required check that cannot hide skipped failures", async () => {
 	const file = await workflow("ci.yml");
 	const required = file.jobs.required;
