@@ -1,37 +1,27 @@
-# Contributing to Keyzori
+# Contributing
 
-Thanks for helping improve Keyzori. Bug reports, documentation, tests, and focused code changes are welcome.
-
-## Before opening a change
-
-- Search existing issues and pull requests.
-- For large features or architecture changes, open a proposal issue first.
-- Never include license keys, admin credentials, customer data, or production logs containing secrets.
-- Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
-
-## Development
-
-Install Bun 1.3.14 or newer, PostgreSQL, and Redis. Then:
+Use Bun 1.3.14+, TypeScript, ArkType, Drizzle, and Biome. Read [AGENTS.md](AGENTS.md) and the [Architecture wiki](https://github.com/keyzori/keyzori/wiki/Architecture).
 
 ```powershell
-Copy-Item .env.example .env
-bun install --frozen-lockfile
-bun run db:migrate
-bun run check
-bun run build
+bun run setup
+bun run typecheck
+bun run test
+bun run lint
+bun run db:check
 ```
 
-Keep changes inside the clean-architecture boundaries documented in [Architecture wiki page](https://github.com/lilsnibbi/Keyzori/wiki/Architecture). Use `bun`, `bunx`, `bun:test`, and Biome; do not add npm, pnpm, yarn, ESLint, or Prettier workflows.
+Run `bun run test:unit` for independent tests, or `bun run test:local` for the complete suite with isolated Docker PostgreSQL/Redis and coverage. The latter requires installed dependencies and Docker; it runs Bun tests on Linux and removes its containers/network afterward. Optional arguments select a suite, for example `bun run test:local tests/http`.
 
-See the [development guide](.github/DEVELOPMENT.md) for repository commands, schema changes, live integration tests, and build artifacts.
-Repository-aware coding agents must also follow [AGENTS.md](AGENTS.md).
+Alternatively, set `KEYZORI_TEST_DATABASE_URL` and `KEYZORI_TEST_REDIS_URL` to isolated local services, then run `bun run test:integration` or `bun run test:coverage`. Both require the URLs; coverage writes `coverage/lcov.info`. Tests provision uniquely named databases and clean them up. `bun run test` skips infrastructure when URLs are absent. Run `bun run docker:build` and `bun run docker:smoke` for distribution changes.
 
-## Pull requests
+CI runs typecheck, lint, migration integrity, release metadata, unit tests, Compose validation, and five independent infrastructure suites. Only after every check succeeds does the final Docker job build an image, smoke-test it, and publish that same image. Pull requests verify without publishing. Release tags are pinned to the exact verified commit.
 
-- Keep each pull request focused and explain user-visible behavior.
-- Add or update tests for changed behavior.
-- Ensure `bun run check` and `bun run build` pass.
-- Keep application-service source lines above the enforced 80% threshold with `bun run test:coverage:core`.
-- Call out migrations, compatibility changes, and operational risks explicitly.
+Keep handlers thin, schemas declarative, and service/repository classes small. Use constructor injection; avoid generic repositories and framework-dependent controller classes. Authored files must remain below 500 lines. Plugin-specific code belongs under `plugins/<name>`.
 
-By contributing, you agree that your contribution may be distributed under the repository's license.
+Bun runs TypeScript directly. Do not add compilation, transpilation, bundling, or a dist directory. Docker installs production dependencies and copies the source once.
+
+Generate migrations with `bun run db:generate`; review SQL and snapshots. Never rewrite applied migration history or use `db:push`. Core and plugins have separate journals. A fresh database is required for this rebuild.
+
+Add behavioral and regression tests. Keep API schemas, CLI commands, environment examples, and wiki documentation synchronized. The separate SDK is out of scope for this rebuild.
+
+Do not include credentials, license keys, customer data, or production logs in commits. Report vulnerabilities according to [SECURITY.md](SECURITY.md).
