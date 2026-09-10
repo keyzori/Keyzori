@@ -1,0 +1,1524 @@
+{
+  "version": "8",
+  "dialect": "postgres",
+  "id": "192dd3b5-b48f-4a25-99b7-3ace5da39edd",
+  "prevIds": [
+    "00000000-0000-0000-0000-000000000000"
+  ],
+  "ddl": [
+    {
+      "values": [
+        "lifetime",
+        "subscription",
+        "metered",
+        "trial"
+      ],
+      "name": "license_type",
+      "entityType": "enums",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "device_allowlist",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "registered_devices",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "ip_allowlist",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "registered_ips",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "license_blocks",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "activity",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "customers",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "keyzori_application",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "licenses",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "license_subscriptions",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "license_trials",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "meters",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "usage_ledger",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "licenseId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "device_allowlist"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "fingerprint",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "device_allowlist"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "registered_devices"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "licenseId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "registered_devices"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "fingerprint",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "registered_devices"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "blocked",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "registered_devices"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "registered_devices"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "licenseId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "ip_allowlist"
+    },
+    {
+      "type": "cidr",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "network",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "ip_allowlist"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "registered_ips"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "licenseId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "registered_ips"
+    },
+    {
+      "type": "inet",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "address",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "registered_ips"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "blocked",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "registered_ips"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "registered_ips"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "licenseId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "license_blocks"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "source",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "license_blocks"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "license_blocks"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "license_blocks"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "activity"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "licenseId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "activity"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "customerId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "activity"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "action",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "activity"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'core'",
+      "generated": null,
+      "identity": null,
+      "name": "source",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "activity"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "activity"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "email",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "metadata",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updatedAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "2",
+      "generated": null,
+      "identity": null,
+      "name": "version",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "keyzori_application"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "customerId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "keyHash",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "license_type",
+      "typeSchema": "public",
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "type",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "policyRevision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "maxDevices",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "maxIps",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "maxSessions",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "deviceAllowlistEnabled",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "ipAllowlistEnabled",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "metadata",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updatedAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "licenseId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "license_subscriptions"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "expiresAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "license_subscriptions"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "licenseId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "license_trials"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "durationSeconds",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "license_trials"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "activatedAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "license_trials"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "expiresAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "license_trials"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "meters"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "licenseId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "meters"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "meters"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "limit",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "meters"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "used",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "meters"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "meters"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "licenseId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "meterId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "eventId",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "units",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "used",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "remaining",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "createdAt",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "activity_created_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "activity"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "licenseId",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "createdAt",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "activity_license_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "activity"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "customerId",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "licenses_customer_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "createdAt",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "usage_created_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "licenseId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "licenses",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "device_allowlist_licenseId_licenses_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "device_allowlist"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "licenseId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "licenses",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "registered_devices_licenseId_licenses_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "registered_devices"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "licenseId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "licenses",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "ip_allowlist_licenseId_licenses_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "ip_allowlist"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "licenseId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "licenses",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "registered_ips_licenseId_licenses_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "registered_ips"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "licenseId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "licenses",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "license_blocks_licenseId_licenses_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "license_blocks"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "licenseId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "licenses",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "activity_licenseId_licenses_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "activity"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "customerId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "customers",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "activity_customerId_customers_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "activity"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "customerId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "customers",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "RESTRICT",
+      "name": "licenses_customerId_customers_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "licenseId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "licenses",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "license_subscriptions_licenseId_licenses_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "license_subscriptions"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "licenseId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "licenses",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "license_trials_licenseId_licenses_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "license_trials"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "licenseId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "licenses",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "meters_licenseId_licenses_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "meters"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "licenseId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "licenses",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "usage_ledger_licenseId_licenses_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "meterId",
+        "licenseId"
+      ],
+      "schemaTo": "public",
+      "tableTo": "meters",
+      "columnsTo": [
+        "id",
+        "licenseId"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "RESTRICT",
+      "name": "usage_ledger_meterId_licenseId_meters_id_licenseId_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "columns": [
+        "licenseId",
+        "fingerprint"
+      ],
+      "nameExplicit": false,
+      "name": "device_allowlist_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "device_allowlist"
+    },
+    {
+      "columns": [
+        "licenseId",
+        "network"
+      ],
+      "nameExplicit": false,
+      "name": "ip_allowlist_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "ip_allowlist"
+    },
+    {
+      "columns": [
+        "licenseId",
+        "source"
+      ],
+      "nameExplicit": false,
+      "name": "license_blocks_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "license_blocks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "registered_devices_pkey",
+      "schema": "public",
+      "table": "registered_devices",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "registered_ips_pkey",
+      "schema": "public",
+      "table": "registered_ips",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "activity_pkey",
+      "schema": "public",
+      "table": "activity",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "customers_pkey",
+      "schema": "public",
+      "table": "customers",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "version"
+      ],
+      "nameExplicit": false,
+      "name": "keyzori_application_pkey",
+      "schema": "public",
+      "table": "keyzori_application",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "licenses_pkey",
+      "schema": "public",
+      "table": "licenses",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "licenseId"
+      ],
+      "nameExplicit": false,
+      "name": "license_subscriptions_pkey",
+      "schema": "public",
+      "table": "license_subscriptions",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "licenseId"
+      ],
+      "nameExplicit": false,
+      "name": "license_trials_pkey",
+      "schema": "public",
+      "table": "license_trials",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "meters_pkey",
+      "schema": "public",
+      "table": "meters",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "usage_ledger_pkey",
+      "schema": "public",
+      "table": "usage_ledger",
+      "entityType": "pks"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        "licenseId",
+        "fingerprint"
+      ],
+      "nullsNotDistinct": false,
+      "name": "device_license_fingerprint",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "registered_devices"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        "licenseId",
+        "address"
+      ],
+      "nullsNotDistinct": false,
+      "name": "ip_license_address",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "registered_ips"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        "licenseId",
+        "name"
+      ],
+      "nullsNotDistinct": false,
+      "name": "meter_license_name",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "meters"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        "id",
+        "licenseId"
+      ],
+      "nullsNotDistinct": false,
+      "name": "meter_id_license",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "meters"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        "licenseId",
+        "eventId"
+      ],
+      "nullsNotDistinct": false,
+      "name": "usage_license_event",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "usage_ledger"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "email"
+      ],
+      "nullsNotDistinct": false,
+      "name": "customers_email_key",
+      "schema": "public",
+      "table": "customers",
+      "entityType": "uniques"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "keyHash"
+      ],
+      "nullsNotDistinct": false,
+      "name": "licenses_keyHash_key",
+      "schema": "public",
+      "table": "licenses",
+      "entityType": "uniques"
+    },
+    {
+      "value": "\"source\" ~ '^[a-z][a-z0-9-]{0,63}$'",
+      "name": "block_source",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "license_blocks"
+    },
+    {
+      "value": "\"version\" = 2",
+      "name": "application_version",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "keyzori_application"
+    },
+    {
+      "value": "\"maxDevices\" BETWEEN 1 AND 10000 AND \"maxIps\" BETWEEN 1 AND 10000 AND \"maxSessions\" BETWEEN 1 AND 10000",
+      "name": "license_limits",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "value": "\"policyRevision\" > 0 AND \"policyRevision\" <= 9007199254740991",
+      "name": "license_revision",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "value": "\"keyHash\" ~ '^[a-f0-9]{64}$'",
+      "name": "license_key_hash",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "licenses"
+    },
+    {
+      "value": "\"durationSeconds\" BETWEEN 1 AND 31536000",
+      "name": "trial_duration",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "license_trials"
+    },
+    {
+      "value": "(\"activatedAt\" IS NULL AND \"expiresAt\" IS NULL) OR (\"activatedAt\" IS NOT NULL AND \"expiresAt\" IS NOT NULL AND \"expiresAt\" > \"activatedAt\")",
+      "name": "trial_activation",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "license_trials"
+    },
+    {
+      "value": "\"used\" >= 0 AND \"limit\" >= \"used\" AND \"limit\" <= 9007199254740991",
+      "name": "meter_balance",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "meters"
+    },
+    {
+      "value": "\"units\" > 0 AND \"used\" >= \"units\" AND \"remaining\" >= 0 AND \"used\" + \"remaining\" <= 9007199254740991",
+      "name": "usage_positive",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "usage_ledger"
+    }
+  ],
+  "renames": []
+}
