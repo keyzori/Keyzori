@@ -56,7 +56,7 @@
 			"matchPackageNames": ["drizzle-orm", "drizzle-kit"],
 			"groupName": "Drizzle",
 			"rangeStrategy": "bump",
-			"followTag": "latest"
+			"enabled": false
 		}
 	],
 	"ignoreUnstable": false
