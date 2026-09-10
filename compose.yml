@@ -1,0 +1,60 @@
+x-application: &application
+  image: ${KEYZORI_IMAGE:-keyzori:local}
+  build: .
+  env_file:
+    - path: .env
+      required: false
+  read_only: true
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  environment:
+    KEYZORI_DATABASE_URL: postgresql://keyzori:${KEYZORI_POSTGRES_PASSWORD:?Set KEYZORI_POSTGRES_PASSWORD}@postgres:5432/keyzori
+    KEYZORI_REDIS_URL: redis://redis:6379
+    KEYZORI_ADMIN_KEY: ${KEYZORI_ADMIN_KEY:?Set KEYZORI_ADMIN_KEY}
+    KEYZORI_HOST: 0.0.0.0
+    KEYZORI_PORT: "3000"
+    KEYZORI_PLUGINS: ${KEYZORI_PLUGINS:-}
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: keyzori
+      POSTGRES_DB: keyzori
+      POSTGRES_PASSWORD: ${KEYZORI_POSTGRES_PASSWORD:?Set KEYZORI_POSTGRES_PASSWORD}
+    volumes: ["postgres-data:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keyzori -d keyzori"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  migrate:
+    <<: *application
+    command: ["migrate"]
+    restart: "no"
+    healthcheck: { disable: true }
+    depends_on:
+      postgres: { condition: service_healthy }
+  server:
+    <<: *application
+    restart: unless-stopped
+    ports: ["${KEYZORI_BIND_ADDRESS:-127.0.0.1}:${KEYZORI_PORT:-3000}:3000"]
+    stop_grace_period: 30s
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+volumes:
+  postgres-data:
+  redis-data:
