@@ -13,6 +13,7 @@ type Job = {
 	needs?: string | string[];
 	uses?: string;
 	if?: string;
+	permissions?: Record<string, string>;
 	steps?: Step[];
 	"continue-on-error"?: boolean;
 	strategy?: { matrix?: { include?: { suite: string; name: string }[] } };
@@ -40,9 +41,10 @@ test("CI gates Docker on all checks at the same source commit", async () => {
 			expect([job.needs].flat()).not.toContain("docker");
 	}
 });
-test("Release Please only versions, tags, and creates GitHub releases", async () => {
+test("Release Please publishes the created release image", async () => {
 	const file = await workflow("release.yml");
 	const steps = file.jobs.release?.steps ?? [];
+	const image = file.jobs.docker;
 	const release = steps.find((step) =>
 		step.uses?.startsWith("googleapis/release-please-action@"),
 	);
@@ -53,7 +55,18 @@ test("Release Please only versions, tags, and creates GitHub releases", async ()
 	expect(release?.with?.["manifest-file"]).toBe(
 		".release-please-manifest.json",
 	);
-	expect(file.jobs.docker).toBeUndefined();
+	expect(image?.uses).toBe("./.github/workflows/docker.yml");
+	expect([image?.needs].flat()).toContain("release");
+	expect(image?.if).toBe("needs.release.outputs.release_created == 'true'");
+	expect(image?.permissions).toEqual({
+		contents: "write",
+		packages: "write",
+	});
+	expect(image?.with).toEqual({
+		ref: `\${{ needs.release.outputs.sha }}`,
+		release_tag: `\${{ needs.release.outputs.tag_name }}`,
+		publish: true,
+	});
 	expect(
 		steps.some((step) => /npm publish|docker push/.test(step.run ?? "")),
 	).toBe(false);
