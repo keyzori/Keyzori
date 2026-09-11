@@ -154,6 +154,8 @@ test("Compose isolates storage and waits for healthy dependencies before serving
 	expect(server?.depends_on?.redis?.condition).toBe("service_healthy");
 	expect(postgres?.ports).toBeUndefined();
 	expect(redis?.ports).toBeUndefined();
+	expect(redis?.command).toContain("noeviction");
+	expect(redis?.command).not.toContain("allkeys-lru");
 	expect(postgres?.volumes?.length).toBeGreaterThan(0);
 	expect(redis?.volumes?.length).toBeGreaterThan(0);
 	expect(existsSync(resolve(root, "dev.docker-compose.yml"))).toBe(false);
