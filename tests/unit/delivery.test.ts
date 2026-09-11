@@ -19,7 +19,10 @@ type Job = {
 	strategy?: { matrix?: { include?: { suite: string; name: string }[] } };
 	with?: Record<string, unknown>;
 };
-type Workflow = { jobs: Record<string, Job> };
+type Workflow = {
+	on?: { workflow_run?: { workflows?: string[] } };
+	jobs: Record<string, Job>;
+};
 const root = resolve(import.meta.dir, "../..");
 const workflow = async (name: string) =>
 	Bun.YAML.parse(
@@ -45,6 +48,8 @@ test("Release Please publishes the created release image", async () => {
 	const file = await workflow("release.yml");
 	const steps = file.jobs.release?.steps ?? [];
 	const image = file.jobs.docker;
+	expect(file.on?.workflow_run?.workflows).toEqual(["CI"]);
+	expect(steps[0]?.run).toContain("for workflow in CI CodeQL");
 	const release = steps.find((step) =>
 		step.uses?.startsWith("googleapis/release-please-action@"),
 	);
