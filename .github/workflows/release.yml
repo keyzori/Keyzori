@@ -22,6 +22,10 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      sha: ${{ steps.release.outputs.sha }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     env:
       RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
     steps:
@@ -80,6 +84,7 @@ jobs:
         run: test -n "${RELEASE_TOKEN}" || { echo "RELEASE_TOKEN is not configured." >&2; exit 1; }
 
       - name: Run Release Please
+        id: release
         if: steps.gate.outputs.eligible == 'true'
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -87,3 +92,16 @@ jobs:
           manifest-file: .release-please-manifest.json
           target-branch: main
           token: ${{ secrets.RELEASE_TOKEN }}
+
+  docker:
+    name: Publish release image
+    needs: release
+    if: needs.release.outputs.release_created == 'true'
+    uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: write
+      packages: write
+    with:
+      ref: ${{ needs.release.outputs.sha }}
+      release_tag: ${{ needs.release.outputs.tag_name }}
+      publish: true
