@@ -44,7 +44,7 @@
 		"elysia": "1.4.30"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.12",
+		"@biomejs/biome": "2.5.13",
 		"@commitlint/cli": "^21.2.2",
 		"@commitlint/config-conventional": "^21.2.2",
 		"@types/bun": "1.4.2",

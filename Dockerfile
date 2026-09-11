@@ -20,6 +20,6 @@ COPY --chown=bun:bun package.json ./package.json
 COPY --chown=bun:bun LICENSE ./LICENSE
 USER bun
 EXPOSE 3000
-HEALTHCHECK --interval=15s --timeout=6s --start-period=60s CMD url="${KEYZORI_URL:-http://127.0.0.1:${KEYZORI_PORT:-3000}}"; wget -q -T 5 -O /dev/null "${url%/}/ready"
+HEALTHCHECK --interval=15s --timeout=6s --start-period=60s CMD url="${KEYZORI_URL:-http://127.0.0.1:${KEYZORI_PORT:-3000}}"; wget -q -T 5 -O /dev/null "${url%/}/ready" || exit 1
 ENTRYPOINT ["bun", "src/main.ts"]
 CMD ["serve"]
