@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/keyzori/Keyzori/compare/v0.5.1...v0.5.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* harden Docker Compose configuration ([#95](https://github.com/keyzori/Keyzori/issues/95)) ([c7c51c6](https://github.com/keyzori/Keyzori/commit/c7c51c67fc37e727189c0e5d4f35c23129e2d796))
+
 ## [0.5.1](https://github.com/keyzori/Keyzori/compare/v0.5.0...v0.5.1) (2026-09-10)
 
 
