@@ -80,7 +80,7 @@ export function createHttp(
 			set.status = failure.status;
 			return { error: { code: failure.code, message: failure.message } };
 		})
-		.onBeforeHandle({ as: "global" }, async ({ request, server, set }) => {
+		.onRequest(async ({ request, server, set }) => {
 			set.headers["cache-control"] = "no-store";
 			const path = new URL(request.url).pathname;
 			if (["/health", "/ready", "/docs", "/openapi.json"].includes(path))
