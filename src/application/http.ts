@@ -92,6 +92,25 @@ export function createHttp(
 				path.startsWith("/admin") ? "admin" : "runtime",
 			);
 		})
+		.onTransform({ as: "global" }, ({ body, query }) => {
+			// ArkType's undeclared-key checks can treat Object.prototype names as
+			// declared. These are never top-level API fields; metadata stays opaque.
+			const configBody =
+				body && typeof body === "object" && Object.hasOwn(body, "config")
+					? Reflect.get(body, "config")
+					: undefined;
+			for (const value of [body, query, configBody]) {
+				if (value === null || typeof value !== "object") continue;
+				if (
+					Object.keys(value).some((key) => Object.hasOwn(Object.prototype, key))
+				)
+					throw new AppError(
+						"VALIDATION_ERROR",
+						"Request does not match the documented schema.",
+						422,
+					);
+			}
+		})
 		.use(
 			openapi({
 				path: "/docs",
