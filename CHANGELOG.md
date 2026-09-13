@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/keyzori/Keyzori/compare/v0.5.2...v0.5.3) (2026-09-11)
+
+
+### Bug Fixes
+
+* **ci:** avoid duplicate release runs ([#99](https://github.com/keyzori/Keyzori/issues/99)) ([a7f5333](https://github.com/keyzori/Keyzori/commit/a7f533345246317abd4385a802ef17e9ad5a56b1))
+
 ## [0.5.2](https://github.com/keyzori/Keyzori/compare/v0.5.1...v0.5.2) (2026-09-11)
 
 
