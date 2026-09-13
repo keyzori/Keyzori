@@ -29,6 +29,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - run: bun run typecheck
+      - name: Require a shared type entry for every endpoint
+        run: bun test ./.types/tests/routes.test.ts
   lint:
     name: Lint and formatting
     runs-on: ubuntu-latest

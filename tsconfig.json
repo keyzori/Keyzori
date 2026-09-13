@@ -13,7 +13,15 @@
 		"noFallthroughCasesInSwitch": true,
 		"noUncheckedIndexedAccess": true,
 		"noImplicitOverride": true,
-		"types": ["bun"]
+		"types": ["bun"],
+		"paths": {
+			"@keyzori/types": ["./.types/src/index.ts", "../types/src/index.ts"],
+			"@keyzori/type-contract": [
+				"./.types/tests/server-contract.ts",
+				"../types/tests/server-contract.ts"
+			],
+			"@keyzori/server/*": ["./*"]
+		}
 	},
 	"include": [
 		"src/**/*.ts",

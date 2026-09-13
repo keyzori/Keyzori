@@ -15,6 +15,8 @@ Keyzori is a self-hosted license server for software products. Create customers 
 
 You host the server, PostgreSQL, and Redis, and keep control of your licensing data.
 
+For Node.js applications, use [`@keyzori/sdk`](https://github.com/keyzori/Keyzori/wiki/SDK-Reference), with ESM and CommonJS support. Its guides live alongside the server documentation in the wiki.
+
 ## License types
 
 | Type | How it works |

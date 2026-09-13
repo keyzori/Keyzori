@@ -3,6 +3,12 @@ description: Install locked Bun and plugin dependencies
 runs:
   using: composite
   steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: keyzori/types
+        ref: ee05fe6d13255e5b8765fe01bcdaeb54b33b462b # @keyzori/types 0.1.0
+        path: .types
+        persist-credentials: false
     - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
       with:
         bun-version: 1.4.2

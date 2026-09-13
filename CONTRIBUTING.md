@@ -2,6 +2,8 @@
 
 Use Bun 1.3.14+, TypeScript, ArkType, Drizzle, and Biome. Read [AGENTS.md](AGENTS.md) and the [Architecture wiki](https://github.com/keyzori/keyzori/wiki/Architecture).
 
+For typechecking, keep the shared `keyzori/types` repository in `../types` (or `.types`, as CI does). Endpoint changes must pass its `bun run test:contract` check against this server checkout.
+
 ```powershell
 bun run setup
 bun run typecheck
@@ -22,6 +24,6 @@ Bun runs TypeScript directly. Do not add compilation, transpilation, bundling, o
 
 Generate migrations with `bun run db:generate`; review SQL and snapshots. Never rewrite applied migration history or use `db:push`. Core and plugins have separate journals. A fresh database is required for this rebuild.
 
-Add behavioral and regression tests. Keep API schemas, CLI commands, environment examples, and wiki documentation synchronized. The separate SDK is out of scope for this rebuild.
+Add behavioral and regression tests. Keep API schemas, CLI commands, environment examples, and wiki documentation synchronized. Endpoint changes must also update shared public typings, the TypeScript SDK in `../ts-sdk`, runtime validation, and contract tests against the modified server. Public date fields use their JSON string representation.
 
 Do not include credentials, license keys, customer data, or production logs in commits. Report vulnerabilities according to [SECURITY.md](SECURITY.md).
