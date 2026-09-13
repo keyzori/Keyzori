@@ -43,6 +43,16 @@ test("OpenAPI documents every core operation with categories and preserves auth"
 		expect(spec.paths[path]?.post?.security).toEqual([{ session: [] }]);
 	expect(spec.paths["/sessions/"]?.post?.security ?? []).toEqual([]);
 	expect(spec.paths["/health"]?.get?.security).toEqual([]);
+	const terminationParameters = spec.paths["/admin/sessions/{id}/{sessionId}"]
+		?.delete?.parameters as OpenAPIV3.ParameterObject[];
+	const licenseIdSchema = terminationParameters.find(
+		(parameter) => parameter.name === "id",
+	)?.schema as OpenAPIV3.SchemaObject;
+	const sessionIdSchema = terminationParameters.find(
+		(parameter) => parameter.name === "sessionId",
+	)?.schema as OpenAPIV3.SchemaObject;
+	expect(licenseIdSchema.description).toContain("license");
+	expect(sessionIdSchema.description).toContain("session ID");
 	expect(spec.info.description).toContain("## Authentication");
 	expect(spec.info.description).toContain("## Errors and retries");
 	const body = spec.paths["/usage/"]?.post

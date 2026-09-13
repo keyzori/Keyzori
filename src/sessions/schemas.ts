@@ -29,7 +29,7 @@ export const sessionQuery = type({
 });
 export const sessionParams = type({
 	id: type("string.uuid").describe(
-		"SHA-256 session identifier for admin termination; not a bearer token.",
+		"UUID of the license whose session will be terminated.",
 	),
 	sessionId: type(/^[a-f0-9]{64}$/).describe(
 		"Hashed session ID from the admin session listing, not the bearer token.",
