@@ -7,7 +7,6 @@
 		".": {
 			"bump-minor-pre-major": true,
 			"package-name": "keyzori",
-			"release-as": "1.0.0",
 			"release-type": "node"
 		}
 	}
