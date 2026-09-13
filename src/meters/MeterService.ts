@@ -49,7 +49,10 @@ export class MeterService {
 	async list(query: typeof usageQuery.infer) {
 		required(await this.licenses.get(query.licenseId), "License");
 		const page = pagination(query);
-		return collection(await this.repository.list(query.licenseId, page), page);
+		return collection(
+			await this.repository.list(query.licenseId, page, query.meterId),
+			page,
+		);
 	}
 	async usage(query: typeof usageQuery.infer) {
 		required(await this.licenses.get(query.licenseId), "License");

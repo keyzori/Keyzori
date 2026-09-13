@@ -9,11 +9,16 @@ export class MeterRepository {
 	async get(id: string, tx = this.db) {
 		return (await tx.select().from(meters).where(eq(meters.id, id)))[0];
 	}
-	list(licenseId: string, page: Page) {
+	list(licenseId: string, page: Page, meterId?: string) {
 		return this.db
 			.select()
 			.from(meters)
-			.where(eq(meters.licenseId, licenseId))
+			.where(
+				and(
+					eq(meters.licenseId, licenseId),
+					meterId ? eq(meters.id, meterId) : undefined,
+				),
+			)
 			.orderBy(meters.id)
 			.limit(page.limit + 1)
 			.offset(page.offset);

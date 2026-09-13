@@ -11,6 +11,7 @@ import { AccessRepository } from "../access/AccessRepository.ts";
 import { AccessService } from "../access/AccessService.ts";
 import { SessionRepository } from "../sessions/SessionRepository.ts";
 import { SessionService } from "../sessions/SessionService.ts";
+import { SessionWorkQueue } from "../sessions/SessionWorkQueue.ts";
 import { MeterRepository } from "../meters/MeterRepository.ts";
 import { MeterService } from "../meters/MeterService.ts";
 import { ActivityRepository } from "../activity/ActivityRepository.ts";
@@ -62,6 +63,7 @@ export class Services {
 			activity,
 			config.sessionTtl,
 			this.logger,
+			new SessionWorkQueue(),
 		);
 		this.meters = new MeterService(this.database, meters, licenses, activity);
 		this.activity = new ActivityService(activity, config.retentionDays);

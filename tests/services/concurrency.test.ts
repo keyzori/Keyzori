@@ -7,6 +7,7 @@ import { LicenseRepository } from "../../src/licenses/LicenseRepository.ts";
 import { LicensePolicy } from "../../src/licenses/LicensePolicy.ts";
 import { AccessRepository } from "../../src/access/AccessRepository.ts";
 import { SessionService } from "../../src/sessions/SessionService.ts";
+import { SessionWorkQueue } from "../../src/sessions/SessionWorkQueue.ts";
 import { trials, subscriptions } from "../../src/licenses/tables.ts";
 import { activity } from "../../src/activity/tables.ts";
 import { digest } from "../../src/shared/security.ts";
@@ -119,6 +120,7 @@ describe.skipIf(!integrationAvailable)(
 				records,
 				60,
 				logger,
+				new SessionWorkQueue(),
 			);
 			await expect(
 				service.activate({ key: license.key, deviceId: "d" }, "127.0.0.1"),
