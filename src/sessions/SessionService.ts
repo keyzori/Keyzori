@@ -12,6 +12,7 @@ import type { AppLogger } from "../shared/logging.ts";
 import { digest, secret } from "../shared/security.ts";
 import { normalizeIp } from "../shared/ClientIp.ts";
 import { AppError, required } from "../shared/errors.ts";
+import type { SessionWorkQueue } from "./SessionWorkQueue.ts";
 import { collection, pagination } from "../shared/schemas.ts";
 
 export type SessionIdentity = { token: string; deviceId: string; ip: string };
@@ -26,8 +27,14 @@ export class SessionService {
 		private readonly activity: ActivityRepository,
 		private readonly ttl: number,
 		private readonly logger: AppLogger,
+		private readonly work: SessionWorkQueue,
 	) {}
 	async activate(input: typeof activationBody.infer, ip: string) {
+		return this.work.run(`key:${digest(input.key)}`, () =>
+			this.activateQueued(input, ip),
+		);
+	}
+	private async activateQueued(input: typeof activationBody.infer, ip: string) {
 		const token = secret("ses");
 		const id = digest(token);
 		let reservation: SessionRecord | undefined;
@@ -97,23 +104,25 @@ export class SessionService {
 				"Session does not match this device and IP.",
 				401,
 			);
-		return this.database.orm.transaction(async (tx) => {
-			await this.licenses.lock(tx, record.licenseId);
-			const license = required(await this.licenses.get(record.licenseId, tx));
-			if (record.revision !== license.policyRevision)
-				throw new AppError(
-					"SESSION_STALE",
-					"License policy changed. Activate a new session.",
-					401,
-				);
-			this.policy.assertActive(license);
-			// Re-read after taking the database lock: termination or TTL expiry may
-			// have occurred while this request waited for another operation.
-			const current = await this.repository.get(id);
-			if (current.raw !== raw)
-				throw new AppError("SESSION_INVALID", "Session is invalid.", 401);
-			return operation(tx, license, { id, record, raw });
-		});
+		return this.work.run(`license:${record.licenseId}`, () =>
+			this.database.orm.transaction(async (tx) => {
+				await this.licenses.lock(tx, record.licenseId);
+				const license = required(await this.licenses.get(record.licenseId, tx));
+				if (record.revision !== license.policyRevision)
+					throw new AppError(
+						"SESSION_STALE",
+						"License policy changed. Activate a new session.",
+						401,
+					);
+				this.policy.assertActive(license);
+				// Re-read after taking the database lock: termination or TTL expiry may
+				// have occurred while this request waited for another operation.
+				const current = await this.repository.get(id);
+				if (current.raw !== raw)
+					throw new AppError("SESSION_INVALID", "Session is invalid.", 401);
+				return operation(tx, license, { id, record, raw });
+			}),
+		);
 	}
 	async heartbeat(identity: SessionIdentity) {
 		return this.withSession(identity, async (tx, license, session) => {
