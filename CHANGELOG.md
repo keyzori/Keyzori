@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0](https://github.com/keyzori/Keyzori/compare/v0.5.3...v1.0.0) (2026-09-13)
+
+
+### Bug Fixes
+
+* harden request handling and concurrency under load ([#102](https://github.com/keyzori/Keyzori/issues/102)) ([2114df6](https://github.com/keyzori/Keyzori/commit/2114df68a4f936283cfe422e8f1d221578c1dc56))
+
 ## [0.5.3](https://github.com/keyzori/Keyzori/compare/v0.5.2...v0.5.3) (2026-09-11)
 
 
