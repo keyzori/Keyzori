@@ -9,8 +9,13 @@ export class MeterRepository {
 	async get(id: string, tx = this.db) {
 		return (await tx.select().from(meters).where(eq(meters.id, id)))[0];
 	}
-	list(licenseId: string, page: Page, meterId?: string) {
-		return this.db
+	list(
+		licenseId: string,
+		page: Page,
+		meterId?: string,
+		tx: Executor = this.db,
+	) {
+		return tx
 			.select()
 			.from(meters)
 			.where(
@@ -75,8 +80,13 @@ export class MeterRepository {
 			(await tx.insert(usageLedger).values(event).returning())[0],
 		);
 	}
-	usage(licenseId: string, page: Page, meterId?: string) {
-		return this.db
+	usage(
+		licenseId: string,
+		page: Page,
+		meterId?: string,
+		tx: Executor = this.db,
+	) {
+		return tx
 			.select()
 			.from(usageLedger)
 			.where(
