@@ -5,6 +5,7 @@ import {
 	admitSession,
 	refreshSession,
 	removeSession,
+	removeAllSessions,
 	listSessions,
 } from "./scripts.ts";
 import { sessionRecord, type SessionRecord } from "./schemas.ts";
@@ -80,6 +81,14 @@ export class SessionRepository {
 			this.key(id),
 			this.index(record),
 			id,
+		]);
+	}
+	async removeAll(licenseId: string, revision: number) {
+		await this.redis.send("EVAL", [
+			removeAllSessions,
+			"1",
+			this.index({ licenseId, revision }),
+			`${this.prefix}session:`,
 		]);
 	}
 	async list(licenseId: string, revision: number, page: Page) {
