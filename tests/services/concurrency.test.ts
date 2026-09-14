@@ -111,17 +111,17 @@ describe.skipIf(!integrationAvailable)(
 			const failure = spyOn(records, "write").mockImplementation(() => {
 				throw new Error("forced audit failure");
 			});
-			const service = new SessionService(
+			const service = new SessionService({
 				database,
-				new SessionRepository(redis),
-				new LicenseRepository(database),
-				new LicensePolicy(),
-				new AccessRepository(database.orm),
-				records,
-				60,
+				repository: new SessionRepository(redis),
+				licenses: new LicenseRepository(database),
+				policy: new LicensePolicy(),
+				access: new AccessRepository(database.orm),
+				activity: records,
+				ttl: 60,
 				logger,
-				new SessionWorkQueue(),
-			);
+				work: new SessionWorkQueue(),
+			});
 			await expect(
 				service.activate({ key: license.key, deviceId: "d" }, "127.0.0.1"),
 			).rejects.toThrow("forced audit failure");
