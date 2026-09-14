@@ -44,11 +44,11 @@ async function main() {
 			process.env.KEYZORI_URL ??
 			`http://127.0.0.1:${process.env.KEYZORI_PORT ?? 3000}`;
 		const response = await fetch(new URL("/ready", url), {
-			signal: AbortSignal.timeout(5000), // needs tweaking
+			signal: AbortSignal.timeout(5000),
 			redirect: "error",
 		});
 		if (!response.ok) throw new Error("Server is not ready.");
-		process.stdout.write("ready\n"); // might remove?
+		process.stdout.write("ready\n");
 	} else if (["--help", "-h"].includes(command))
 		process.stdout.write(
 			"bun src/main.ts <serve | migrate | admin | healthcheck>\n",
