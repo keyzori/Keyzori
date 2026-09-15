@@ -8,8 +8,8 @@ export class CustomerRepository {
 	async get(id: string, tx = this.db) {
 		return (await tx.select().from(customers).where(eq(customers.id, id)))[0];
 	}
-	list(page: Page) {
-		return this.db
+	list(page: Page, tx: Executor = this.db) {
+		return tx
 			.select()
 			.from(customers)
 			.orderBy(asc(customers.id))
