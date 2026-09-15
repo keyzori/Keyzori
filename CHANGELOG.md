@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/keyzori/Keyzori/compare/v1.1.0...v1.1.1) (2026-09-15)
+
+
+### Performance Improvements
+
+* **sessions:** batch fetch session data with MGET to eliminate N+1 round-trips ([#122](https://github.com/keyzori/Keyzori/issues/122)) ([3b46368](https://github.com/keyzori/Keyzori/commit/3b463686286977d8674c891ed72bce0709a4fe30)), closes [#114](https://github.com/keyzori/Keyzori/issues/114)
+
 ## [1.1.0](https://github.com/keyzori/Keyzori/compare/v1.0.0...v1.1.0) (2026-09-13)
 
 
