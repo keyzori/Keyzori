@@ -24,7 +24,7 @@ export function metadata(value: Record<string, unknown> = {}) {
 }
 
 const sensitive =
-	/secret|token|password|authorization|cookie|credential|api.?key|license.?key|key.?hash|device|ip.?address/i;
+	/\b(?:secret|accessToken|access_token|token|password|authorization|cookie|credential|apiKey|api_key|licenseKey|license_key|keyHash|key_hash|deviceId|device_id|device|ipAddress|ip_address)\b/i;
 export function redact(value: unknown, depth = 0): unknown {
 	if (depth > 12) return "[REDACTED]";
 	if (typeof value === "string")
