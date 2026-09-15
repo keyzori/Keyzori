@@ -12,23 +12,45 @@ import type { AppLogger } from "../shared/logging.ts";
 import { digest, secret } from "../shared/security.ts";
 import { normalizeIp } from "../shared/ClientIp.ts";
 import { AppError, required } from "../shared/errors.ts";
-import type { SessionWorkQueue } from "./SessionWorkQueue.ts";
+import { SessionWorkQueue } from "./SessionWorkQueue.ts";
 import { collection, pagination } from "../shared/schemas.ts";
 
 export type SessionIdentity = { token: string; deviceId: string; ip: string };
 
+export interface SessionServiceDependencies {
+	database: Database;
+	repository: SessionRepository;
+	licenses: LicenseRepository;
+	policy: LicensePolicy;
+	access: AccessRepository;
+	activity: ActivityRepository;
+	ttl: number;
+	logger: AppLogger;
+	work?: SessionWorkQueue;
+}
+
 export class SessionService {
-	constructor(
-		private readonly database: Database,
-		private readonly repository: SessionRepository,
-		private readonly licenses: LicenseRepository,
-		private readonly policy: LicensePolicy,
-		private readonly access: AccessRepository,
-		private readonly activity: ActivityRepository,
-		private readonly ttl: number,
-		private readonly logger: AppLogger,
-		private readonly work: SessionWorkQueue,
-	) {}
+	private readonly database: Database;
+	private readonly repository: SessionRepository;
+	private readonly licenses: LicenseRepository;
+	private readonly policy: LicensePolicy;
+	private readonly access: AccessRepository;
+	private readonly activity: ActivityRepository;
+	private readonly ttl: number;
+	private readonly logger: AppLogger;
+	private readonly work: SessionWorkQueue;
+
+	constructor(deps: SessionServiceDependencies) {
+		this.database = deps.database;
+		this.repository = deps.repository;
+		this.licenses = deps.licenses;
+		this.policy = deps.policy;
+		this.access = deps.access;
+		this.activity = deps.activity;
+		this.ttl = deps.ttl;
+		this.logger = deps.logger;
+		this.work = deps.work ?? new SessionWorkQueue();
+	}
 	async activate(input: typeof activationBody.infer, ip: string) {
 		return this.work.run(`key:${digest(input.key)}`, () =>
 			this.activateQueued(input, ip),
