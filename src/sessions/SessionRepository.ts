@@ -82,6 +82,11 @@ export class SessionRepository {
 			id,
 		]);
 	}
+	/**
+	 * Lists active session summaries for a given license revision.
+	 * Fetches limit + 1 items via 0-indexed inclusive ZRANGE (offset to offset + limit)
+	 * to support lookahead pagination without an extra COUNT query.
+	 */
 	async list(licenseId: string, revision: number, page: Page) {
 		const ids = (await this.redis.send("EVAL", [
 			listSessions,
