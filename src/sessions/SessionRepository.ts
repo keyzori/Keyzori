@@ -5,6 +5,7 @@ import {
 	admitSession,
 	refreshSession,
 	removeSession,
+	removeAllSessions,
 	listSessions,
 } from "./scripts.ts";
 import { sessionRecord, type SessionRecord } from "./schemas.ts";
@@ -82,11 +83,14 @@ export class SessionRepository {
 			id,
 		]);
 	}
-	/**
-	 * Lists active session summaries for a given license revision.
-	 * Fetches limit + 1 items via 0-indexed inclusive ZRANGE (offset to offset + limit)
-	 * to support lookahead pagination without an extra COUNT query.
-	 */
+	async removeAll(licenseId: string, revision: number) {
+		await this.redis.send("EVAL", [
+			removeAllSessions,
+			"1",
+			this.index({ licenseId, revision }),
+			`${this.prefix}session:`,
+		]);
+	}
 	async list(licenseId: string, revision: number, page: Page) {
 		const ids = (await this.redis.send("EVAL", [
 			listSessions,
