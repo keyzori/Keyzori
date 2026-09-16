@@ -82,6 +82,11 @@ export class SessionRepository {
 			id,
 		]);
 	}
+	/**
+	 * Lists active session summaries for a given license revision.
+	 * Fetches limit + 1 items via 0-indexed inclusive ZRANGE (offset to offset + limit)
+	 * to support lookahead pagination without an extra COUNT query.
+	 */
 	async list(licenseId: string, revision: number, page: Page) {
 		const ids = (await this.redis.send("EVAL", [
 			listSessions,
@@ -90,17 +95,33 @@ export class SessionRepository {
 			String(page.offset),
 			String(page.offset + page.limit),
 		])) as string[];
+		if (ids.length === 0) return [];
+
+		const keys = ids.map((id) => this.key(id));
+		const [rawList, ttls] = await Promise.all([
+			this.redis.send("MGET", keys) as Promise<Array<string | null>>,
+			Promise.all(
+				keys.map(async (key) => Number(await this.redis.send("TTL", [key]))),
+			),
+		]);
+
 		const result = [];
-		for (const id of ids) {
-			const raw = await this.redis.get(this.key(id));
+		for (let i = 0; i < ids.length; i++) {
+			const id = ids[i]!;
+			const raw = rawList[i];
 			if (!raw) continue;
-			const record: unknown = JSON.parse(raw);
+			let record: unknown;
+			try {
+				record = JSON.parse(raw);
+			} catch {
+				continue;
+			}
 			if (sessionRecord.allows(record))
 				result.push({
 					id,
 					licenseId: record.licenseId,
 					revision: record.revision,
-					ttl: Number(await this.redis.send("TTL", [this.key(id)])),
+					ttl: ttls[i] ?? 0,
 				});
 		}
 		return result;

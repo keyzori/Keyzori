@@ -74,7 +74,7 @@ describe.skipIf(!integrationAvailable)("independent billing plugin", () => {
 		expect(spec.paths["/plugins/stripe/admin/links"].get.security).toEqual([
 			{ adminKey: [] },
 		]);
-		expect(spec.paths["/plugins/stripe/webhook"].post.security).toBeUndefined();
+		expect(spec.paths["/plugins/stripe/webhook"].post.security).toEqual([]);
 		const journals = await ctx.app.services.database.sql<
 			{ tablename: string }[]
 		>`SELECT tablename FROM pg_tables WHERE schemaname = 'keyzori_migrations' ORDER BY tablename`;

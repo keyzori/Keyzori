@@ -24,4 +24,6 @@ Generate migrations with `bun run db:generate`; review SQL and snapshots. Never 
 
 Add behavioral and regression tests. Keep API schemas, CLI commands, environment examples, and wiki documentation synchronized. The separate SDK is out of scope for this rebuild.
 
+Document every HTTP operation with a summary, description, and tag. Use the configured plugin name as the tag for plugin routes so they appear in the Plugins group on `/docs`. Keep field descriptions alongside their ArkType schemas; documentation must preserve validation and authentication contracts.
+
 Do not include credentials, license keys, customer data, or production logs in commits. Report vulnerabilities according to [SECURITY.md](SECURITY.md).
