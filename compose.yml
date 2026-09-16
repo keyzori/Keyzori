@@ -65,7 +65,6 @@ services:
     <<: *application
     command: ["serve"]
     restart: unless-stopped
-    ports: ["${KEYZORI_BIND_ADDRESS:-127.0.0.1}:${KEYZORI_PORT:-3000}:3000"]
     stop_grace_period: 30s
     depends_on:
       postgres: { condition: service_healthy }

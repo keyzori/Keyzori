@@ -59,7 +59,7 @@ docker compose up --build -d
 docker compose exec server bun src/main.ts admin --help
 ```
 
-Compose starts PostgreSQL, Redis, and the API. The server applies pending core and enabled-plugin migrations before accepting requests; migration failures prevent startup. It supplies the internal database URLs and stores data in named volumes. The API is available at `http://localhost:3000` and is bound to localhost by default.
+Compose starts PostgreSQL, Redis, and the API. The server applies pending core and enabled-plugin migrations before accepting requests; migration failures prevent startup. It supplies the internal database URLs and stores data in named volumes. No ports are published to the host by default. Connect a reverse proxy to the API's Docker network and route to `server:3000`; in Dokploy, configure a domain for service `server` on port `3000`.
 
 The container runs TypeScript directly with Bun as a non-root user. See [Deployment](https://github.com/keyzori/Keyzori/wiki/Deployment) for upgrades, HTTPS, and image settings.
 

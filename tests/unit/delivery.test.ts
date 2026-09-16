@@ -168,6 +168,7 @@ test("Compose isolates storage and waits for healthy dependencies before serving
 	expect(migrate).toBeUndefined();
 	expect(server?.read_only).toBe(true);
 	expect(server?.command).toEqual(["serve"]);
+	expect(server?.ports).toBeUndefined();
 	expect(server?.depends_on?.postgres?.condition).toBe("service_healthy");
 	expect(server?.depends_on?.redis?.condition).toBe("service_healthy");
 	expect(postgres?.ports).toBeUndefined();
