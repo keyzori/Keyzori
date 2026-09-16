@@ -9,8 +9,19 @@ const names = {
 	server: `${id}-app`,
 };
 const admin = "docker-smoke-test-only-admin-key-32-characters";
+/**
+ * Runs Docker without inherited `KEYZORI_` configuration.
+ *
+ * @param args Docker CLI arguments.
+ * @returns The command's trimmed standard output.
+ * @throws If Docker exits unsuccessfully; the error includes its standard error.
+ */
 async function docker(...args: string[]) {
 	const process = Bun.spawn(["docker", ...args], {
+		// Compose must use its isolated fixture, not the developer's Bun-loaded .env.
+		env: Object.fromEntries(
+			Object.entries(Bun.env).filter(([name]) => !name.startsWith("KEYZORI_")),
+		),
 		stdout: "pipe",
 		stderr: "pipe",
 	});

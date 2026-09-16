@@ -2,6 +2,16 @@ import { mkdtemp, rmdir, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+/**
+ * Exercises the repository Compose file with only its required secrets.
+ *
+ * Uses an existing server image to verify the configured defaults, failed-start
+ * recovery, and volume persistence in an isolated Compose project.
+ *
+ * @param docker Runs Docker CLI arguments and returns standard output.
+ * @param image Server image to use instead of building the Compose service.
+ * @throws If a Docker or Compose operation or smoke assertion fails.
+ */
 export async function composeSmoke(
 	docker: (...args: string[]) => Promise<string>,
 	image: string,
@@ -18,28 +28,45 @@ export async function composeSmoke(
 		KEYZORI_STRIPE_SECRET_KEY: "sk_test_fake",
 		KEYZORI_STRIPE_WEBHOOK_SECRET: "whsec_smoke",
 	};
-	const config = Bun.YAML.parse(
+	const source = join(directory, "compose.yml");
+	const envFile = join(directory, ".env");
+	await Bun.write(
+		source,
 		await Bun.file(resolve(import.meta.dir, "../compose.yml")).text(),
-	) as {
-		"x-application"?: unknown;
-		services: Record<string, Record<string, unknown>>;
-		networks?: unknown;
-	};
-	delete config["x-application"];
+	);
+	await Bun.write(
+		envFile,
+		`KEYZORI_ADMIN_KEY=${environment.KEYZORI_ADMIN_KEY}\nKEYZORI_POSTGRES_PASSWORD=compose-only\n`,
+	);
+	const config = JSON.parse(
+		await docker(
+			"compose",
+			"--project-name",
+			project,
+			"--env-file",
+			envFile,
+			"--file",
+			source,
+			"config",
+			"--format",
+			"json",
+		),
+	) as { services: Record<string, Record<string, unknown>> };
 	const postgres = config.services.postgres;
 	if (!postgres) throw new Error("Missing Compose PostgreSQL service");
-	postgres.environment = {
-		POSTGRES_USER: "keyzori",
-		POSTGRES_DB: "keyzori",
-		POSTGRES_PASSWORD: "compose-only",
-	};
+
 	const server = config.services.server;
 	if (!server || config.services.migrate)
 		throw new Error("Expected server without a migration service");
 	delete server.build;
 	delete server.env_file;
 	server.image = image;
-	server.environment = { ...environment };
+	const defaults = server.environment as Record<string, string>;
+	if (
+		defaults.KEYZORI_PORT !== "3000" ||
+		defaults.KEYZORI_REDIS_URL !== "redis://redis:6379"
+	)
+		throw new Error("Compose defaults were not supplied.");
 	server.restart = "no";
 	server.ports = ["127.0.0.1::3000"];
 	const compose = (...args: string[]) =>
@@ -62,6 +89,9 @@ export async function composeSmoke(
 		throw new Error("Compose server did not become ready after migrations.");
 	}
 	try {
+		await Bun.write(file, JSON.stringify(config));
+		await compose("up", "--detach", "server");
+		await ready();
 		server.environment = { ...environment, KEYZORI_PLUGINS: "missing" };
 		await Bun.write(file, JSON.stringify(config));
 		await compose("up", "--detach", "server");
@@ -100,6 +130,8 @@ export async function composeSmoke(
 	} finally {
 		await compose("down", "--volumes", "--remove-orphans");
 		await unlink(file);
+		await unlink(source);
+		await unlink(envFile);
 		await rmdir(directory);
 	}
 }
