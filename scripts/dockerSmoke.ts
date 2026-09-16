@@ -11,6 +11,10 @@ const names = {
 const admin = "docker-smoke-test-only-admin-key-32-characters";
 async function docker(...args: string[]) {
 	const process = Bun.spawn(["docker", ...args], {
+		// Compose must use its isolated fixture, not the developer's Bun-loaded .env.
+		env: Object.fromEntries(
+			Object.entries(Bun.env).filter(([name]) => !name.startsWith("KEYZORI_")),
+		),
 		stdout: "pipe",
 		stderr: "pipe",
 	});
