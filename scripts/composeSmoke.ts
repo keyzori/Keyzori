@@ -2,6 +2,16 @@ import { mkdtemp, rmdir, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+/**
+ * Exercises the repository Compose file with only its required secrets.
+ *
+ * Uses an existing server image to verify the configured defaults, failed-start
+ * recovery, and volume persistence in an isolated Compose project.
+ *
+ * @param docker Runs Docker CLI arguments and returns standard output.
+ * @param image Server image to use instead of building the Compose service.
+ * @throws If a Docker or Compose operation or smoke assertion fails.
+ */
 export async function composeSmoke(
 	docker: (...args: string[]) => Promise<string>,
 	image: string,
