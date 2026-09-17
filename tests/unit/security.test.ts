@@ -71,6 +71,14 @@ test("secrets are unique, correctly sized, and compared without length errors", 
 });
 test.each([
 	"secret",
+	"refreshToken",
+	"refresh_token",
+	"clientSecret",
+	"api-key",
+	"APIKey",
+	"clientAPIKey",
+	"device_id",
+	"ip-address",
 	"accessToken",
 	"Password",
 	"authorization",
@@ -146,4 +154,14 @@ test("database codes unwrap driver causes and ignore unrelated errors", () => {
 		expect(databaseCode(value)).toBeUndefined();
 	for (const value of [0, false, ""]) expect(required(value)).toBe(value);
 	expect(() => required(null, "Customer")).toThrow("Customer not found");
+});
+
+test("preserves benign compound metadata keys", () => {
+	const input = {
+		device_model: "MacBook Pro",
+		deviceModel: "laptop",
+		tokenizer: "bpe",
+		secretariat: "office",
+	};
+	expect(metadata(input)).toEqual(input);
 });

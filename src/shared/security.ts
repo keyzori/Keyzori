@@ -24,7 +24,14 @@ export function metadata(value: Record<string, unknown> = {}) {
 }
 
 const sensitive =
-	/secret|token|password|authorization|cookie|credential|api.?key|license.?key|key.?hash|device|ip.?address/i;
+	/(?:^|[^a-z0-9])(?:secret|token|password|authorization|cookie|credential|api[^a-z0-9]*key|license[^a-z0-9]*key|key[^a-z0-9]*hash|device[^a-z0-9]*id|ip[^a-z0-9]*address)(?:$|[^a-z0-9])|^device$/i;
+function sensitiveKey(key: string) {
+	return sensitive.test(
+		key
+			.replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+			.replace(/([a-z0-9])([A-Z])/g, "$1_$2"),
+	);
+}
 export function redact(value: unknown, depth = 0): unknown {
 	if (depth > 12) return "[REDACTED]";
 	if (typeof value === "string")
@@ -37,7 +44,7 @@ export function redact(value: unknown, depth = 0): unknown {
 		return Object.fromEntries(
 			Object.entries(value).map(([k, v]) => [
 				k,
-				sensitive.test(k) ? "[REDACTED]" : redact(v, depth + 1),
+				sensitiveKey(k) ? "[REDACTED]" : redact(v, depth + 1),
 			]),
 		);
 	return value;
