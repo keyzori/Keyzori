@@ -21,7 +21,7 @@ const env = {
 describe("configuration and validation", () => {
 	test("mandatory secret, strict numbers, plugins, and defaults", () => {
 		expect(() => new Config({ ...env, KEYZORI_ADMIN_KEY: "short" })).toThrow();
-		expect(() => new Config({ ...env, KEYZORI_PORT: "3.5" })).toThrow();
+		expect(() => new Config({ ...env, KEYZORI_SESSION_TTL: "3.5" })).toThrow();
 		expect(() => new Config({ ...env, KEYZORI_PLUGINS: "a,a" })).toThrow();
 		expect(
 			() => new Config({ ...env, KEYZORI_PLUGINS: "../stripe" }),

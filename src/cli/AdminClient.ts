@@ -5,7 +5,7 @@ export class AdminClient {
 	readonly url: URL;
 	private readonly key: string;
 	constructor(env: Environment) {
-		this.url = new URL(env.KEYZORI_URL ?? "http://127.0.0.1:3000");
+		this.url = new URL(env.KEYZORI_URL ?? "http://127.0.0.1:6284");
 		if (
 			!["http:", "https:"].includes(this.url.protocol) ||
 			this.url.username ||

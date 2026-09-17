@@ -38,7 +38,7 @@ bun run setup
 bun run start
 ```
 
-The default address is `http://localhost:3000`. For automatic restarts while developing, use `bun run dev` instead of `bun run start`.
+The default address is `http://localhost:6284`. For automatic restarts while developing, use `bun run dev` instead of `bun run start`.
 
 | URL | Purpose |
 | --- | --- |
@@ -59,9 +59,9 @@ docker compose up --build -d
 docker compose exec server bun src/main.ts admin --help
 ```
 
-In Dokploy, select this repository and `compose.yml`, enter the same two secrets in Environment, and deploy. For domain routing, select the `server` service on container port `3000`.
+In Dokploy, select this repository and `compose.yml`, enter the same two secrets in Environment, and deploy. For domain routing, select the `server` service on container port `6284`.
 
-Compose starts PostgreSQL, Redis, and the API. The server applies pending core and enabled-plugin migrations before accepting requests; migration failures prevent startup. It supplies the internal database URLs and stores data in named volumes. The API is available at `http://localhost:3001` and is bound to localhost by default. Only the two secrets are required; leave the optional settings commented out. `KEYZORI_PUBLISHED_PORT` overrides the host port without changing the container listener on port 3000. For admin CLI commands outside Docker, set `KEYZORI_URL=http://localhost:3001`.
+Compose starts PostgreSQL, Redis, and the API. The server applies pending core and enabled-plugin migrations before accepting requests; migration failures prevent startup. It supplies the internal database URLs and stores data in named volumes. The API is available at `http://localhost:6284` and is bound to localhost by default. Only the two secrets are required; leave the optional settings commented out. The server always listens on `0.0.0.0:6284`; configure reverse proxies to target container port `6284`. For admin CLI commands outside Docker, set `KEYZORI_URL=http://localhost:6284`.
 
 The container runs TypeScript directly with Bun as a non-root user. See [Deployment](https://github.com/keyzori/Keyzori/wiki/Deployment) for upgrades, HTTPS, and image settings.
 

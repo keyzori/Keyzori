@@ -40,9 +40,7 @@ async function main() {
 			},
 		);
 	} else if (command === "healthcheck") {
-		const url =
-			process.env.KEYZORI_URL ??
-			`http://127.0.0.1:${process.env.KEYZORI_PORT ?? 3000}`;
+		const url = "http://127.0.0.1:6284";
 		const response = await fetch(new URL("/ready", url), {
 			signal: AbortSignal.timeout(5000),
 			redirect: "error",
