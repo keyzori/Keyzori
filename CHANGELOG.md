@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/keyzori/Keyzori/compare/v1.2.0...v1.2.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* align Docker listener and healthchecks on port 6284 ([#132](https://github.com/keyzori/Keyzori/issues/132)) ([93b5d75](https://github.com/keyzori/Keyzori/commit/93b5d75ac8e5a4cd0740bfe1a46b5663674767fb))
+
 ## [1.2.0](https://github.com/keyzori/Keyzori/compare/v1.1.0...v1.2.0) (2026-09-17)
 
 
