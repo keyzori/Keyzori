@@ -177,13 +177,14 @@ export class SessionService {
 		);
 	}
 	async terminateAll(id: string) {
-		return this.database.orm.transaction(async (tx) => {
+		const revision = await this.database.orm.transaction(async (tx) => {
 			const row = await this.licenses.lock(tx, id);
 			await this.licenses.update(tx, id, {});
-			await this.repository.removeAll(id, row.policyRevision);
 			await this.activity.write(tx, "session.terminated_all", id);
-			return { terminated: true };
+			return row.policyRevision;
 		});
+		await this.repository.removeAll(id, revision);
+		return { terminated: true };
 	}
 	async terminate(id: string, sessionId: string) {
 		return this.database.orm.transaction(async (tx) => {
