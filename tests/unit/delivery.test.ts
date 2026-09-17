@@ -170,10 +170,7 @@ test("Compose isolates storage and waits for healthy dependencies before serving
 	expect(migrate).toBeUndefined();
 	expect(server?.read_only).toBe(true);
 	expect(server?.command).toEqual(["serve"]);
-	expect(server?.ports).toEqual([
-		// biome-ignore lint/suspicious/noTemplateCurlyInString: Docker Compose interpolation, not JavaScript.
-		"${KEYZORI_BIND_ADDRESS:-127.0.0.1}:6284:6284",
-	]);
+	expect(server?.ports).toEqual(["127.0.0.1:6284:6284"]);
 	expect(server?.depends_on?.postgres?.condition).toBe("service_healthy");
 	expect(server?.depends_on?.redis?.condition).toBe("service_healthy");
 	expect(postgres?.ports).toBeUndefined();
