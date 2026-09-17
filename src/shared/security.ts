@@ -24,7 +24,7 @@ export function metadata(value: Record<string, unknown> = {}) {
 }
 
 const sensitive =
-	/(?:^|[^a-z0-9])(?:secret|token|password|authorization|cookie|credential|api[^a-z0-9]*key|license[^a-z0-9]*key|key[^a-z0-9]*hash|device[^a-z0-9]*id|ip[^a-z0-9]*address)(?:$|[^a-z0-9])|^device$/i;
+	/(?:^|[^a-z0-9])(?:secrets?|tokens?|passwords?|authorizations?|cookies?|credentials?|api[^a-z0-9]*keys?|license[^a-z0-9]*keys?|key[^a-z0-9]*hash(?:es)?|device[^a-z0-9]*ids?|ip[^a-z0-9]*address(?:es)?)(?:$|[^a-z0-9])|^device$/i;
 function sensitiveKey(key: string) {
 	return sensitive.test(
 		key

@@ -89,6 +89,13 @@ test.each([
 	"keyHash",
 	"deviceId",
 	"ipAddress",
+	"secrets",
+	"tokens",
+	"passwords",
+	"credentials",
+	"api_keys",
+	"deviceIds",
+	"ipAddresses",
 ])("redacts sensitive field %s recursively", (key) => {
 	expect(redact({ nested: [{ [key]: "private", safe: "ok" }] })).toEqual({
 		nested: [{ [key]: "[REDACTED]", safe: "ok" }],
