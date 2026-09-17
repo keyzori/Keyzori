@@ -23,7 +23,6 @@ export class TestContext {
 			KEYZORI_DATABASE_URL: url.href,
 			KEYZORI_REDIS_URL: process.env.KEYZORI_TEST_REDIS_URL,
 			KEYZORI_ADMIN_KEY: adminKey,
-			KEYZORI_PORT: "0",
 			KEYZORI_PLUGINS: "",
 			KEYZORI_RATE_LIMIT: "100000",
 			...overrides,
@@ -32,7 +31,7 @@ export class TestContext {
 	}
 	async start() {
 		await this.control.unsafe(`CREATE DATABASE "${this.name}"`);
-		await this.app.start();
+		await this.app.start(0);
 		return this;
 	}
 	get url() {
@@ -42,7 +41,7 @@ export class TestContext {
 		await this.app.stop();
 		Object.assign(this.env, overrides);
 		this.app = new Application(new Config(this.env), root);
-		await this.app.start();
+		await this.app.start(0);
 	}
 	async close() {
 		await this.app.stop();

@@ -19,7 +19,7 @@ services:
       timeout: 5s
       retries: 20
   redis:
-    image: redis:8-alpine
+    image: redis:8
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
     volumes: ["redis-data:/data"]
@@ -34,7 +34,7 @@ services:
       timeout: 5s
       retries: 20
   server:
-    image: ${KEYZORI_IMAGE:-keyzori:local}
+    image: ghcr.io/keyzori/keyzori:latest
     build: .
     env_file:
       - path: .env
@@ -52,8 +52,6 @@ services:
       KEYZORI_DATABASE_URL: postgresql://keyzori:${KEYZORI_POSTGRES_PASSWORD:?Set KEYZORI_POSTGRES_PASSWORD}@postgres:5432/keyzori
       KEYZORI_REDIS_URL: redis://redis:6379
       KEYZORI_ADMIN_KEY: ${KEYZORI_ADMIN_KEY:?Set KEYZORI_ADMIN_KEY}
-      KEYZORI_HOST: 0.0.0.0
-      KEYZORI_PORT: "3000"
       KEYZORI_PLUGINS: ${KEYZORI_PLUGINS:-}
       KEYZORI_TRUSTED_PROXIES: ${KEYZORI_TRUSTED_PROXIES:-}
       KEYZORI_SESSION_TTL: ${KEYZORI_SESSION_TTL:-60}
@@ -62,7 +60,8 @@ services:
       NODE_ENV: production
     command: ["serve"]
     restart: unless-stopped
-    ports: ["${KEYZORI_BIND_ADDRESS:-127.0.0.1}:${KEYZORI_PUBLISHED_PORT:-3001}:3000"]
+    ports:
+      - "${KEYZORI_BIND_ADDRESS:-127.0.0.1}:6284:6284"
     stop_grace_period: 30s
     depends_on:
       postgres: { condition: service_healthy }

@@ -104,13 +104,19 @@ try {
 		"--security-opt",
 		"no-new-privileges:true",
 		"-p",
-		"127.0.0.1::3000",
+		"127.0.0.1::6284",
 		"-e",
 		`KEYZORI_DATABASE_URL=postgresql://postgres:smoke-only@${names.postgres}:5432/keyzori`,
 		"-e",
 		`KEYZORI_REDIS_URL=redis://${names.redis}:6379`,
 		"-e",
 		`KEYZORI_ADMIN_KEY=${admin}`,
+		"-e",
+		"KEYZORI_HOST=127.0.0.1",
+		"-e",
+		"KEYZORI_PORT=3000",
+		"-e",
+		"KEYZORI_URL=https://unused.invalid",
 		"-e",
 		"KEYZORI_PLUGINS=stripe",
 		"-e",
@@ -119,7 +125,7 @@ try {
 		"KEYZORI_STRIPE_WEBHOOK_SECRET=whsec_smoke",
 		image,
 	);
-	const port = (await docker("port", names.server, "3000/tcp"))
+	const port = (await docker("port", names.server, "6284/tcp"))
 		.split(":")
 		.at(-1);
 	let url = `http://127.0.0.1:${port}`;
@@ -138,7 +144,7 @@ try {
 		"--network",
 		id,
 		"-e",
-		`KEYZORI_URL=http://${names.server}:3000`,
+		`KEYZORI_URL=http://${names.server}:6284`,
 		"-e",
 		`KEYZORI_ADMIN_KEY=${admin}`,
 		image,
@@ -174,7 +180,7 @@ try {
 	if (!(await fetch(`${url}/openapi.json`)).ok)
 		throw new Error("Container OpenAPI failed.");
 	await docker("restart", "--time", "20", names.server);
-	url = `http://127.0.0.1:${(await docker("port", names.server, "3000/tcp")).split(":").at(-1)}`;
+	url = `http://127.0.0.1:${(await docker("port", names.server, "6284/tcp")).split(":").at(-1)}`;
 	await ready(url);
 	if (
 		!(

@@ -8,8 +8,17 @@ const base = {
 	KEYZORI_REDIS_URL: "redis://localhost",
 };
 describe("configuration boundaries", () => {
+	test("obsolete listener environment cannot change the container endpoint", () => {
+		const config = new Config({
+			...base,
+			KEYZORI_HOST: "127.0.0.1",
+			KEYZORI_PORT: "3000",
+			PORT: "8080",
+		});
+		expect(config.host).toBe("0.0.0.0");
+		expect(config.port).toBe(6284);
+	});
 	for (const [name, min, max] of [
-		["KEYZORI_PORT", 0, 65535],
 		["KEYZORI_SESSION_TTL", 5, 3600],
 		["KEYZORI_ACTIVITY_RETENTION_DAYS", 1, 3650],
 		["KEYZORI_RATE_LIMIT", 1, 100000],

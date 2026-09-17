@@ -5,8 +5,8 @@ export class Config {
 	readonly adminKey: string;
 	readonly databaseUrl: string;
 	readonly redisUrl: string;
-	readonly port: number;
-	readonly host: string;
+	readonly port = 6284;
+	readonly host = "0.0.0.0";
 	readonly sessionTtl: number;
 	readonly retentionDays: number;
 	readonly rateLimit: number;
@@ -29,8 +29,6 @@ export class Config {
 			"postgresql:",
 		]);
 		this.redisUrl = this.url("KEYZORI_REDIS_URL", ["redis:", "rediss:"]);
-		this.port = this.integer("KEYZORI_PORT", 3000, 0, 65535);
-		this.host = env.KEYZORI_HOST ?? "0.0.0.0";
 		this.sessionTtl = this.integer("KEYZORI_SESSION_TTL", 60, 5, 3600);
 		this.retentionDays = this.integer(
 			"KEYZORI_ACTIVITY_RETENTION_DAYS",

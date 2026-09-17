@@ -63,16 +63,17 @@ export async function composeSmoke(
 	server.image = image;
 	const defaults = server.environment as Record<string, string>;
 	if (
-		defaults.KEYZORI_PORT !== "3000" ||
+		defaults.KEYZORI_PORT !== undefined ||
+		defaults.KEYZORI_HOST !== undefined ||
 		defaults.KEYZORI_REDIS_URL !== "redis://redis:6379"
 	)
 		throw new Error("Compose defaults were not supplied.");
 	server.restart = "no";
-	server.ports = ["127.0.0.1::3000"];
+	server.ports = ["127.0.0.1::6284"];
 	const compose = (...args: string[]) =>
 		docker("compose", "--project-name", project, "--file", file, ...args);
 	async function ready() {
-		const port = (await compose("port", "server", "3000")).split(":").at(-1);
+		const port = (await compose("port", "server", "6284")).split(":").at(-1);
 		const url = `http://127.0.0.1:${port}`;
 		for (let attempt = 0; attempt < 80; attempt++) {
 			try {

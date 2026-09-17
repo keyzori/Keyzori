@@ -46,7 +46,7 @@ export class Application {
 			await this.stop();
 		}
 	}
-	async start() {
+	async start(port: number = this.config.port) {
 		if (this.started || this.stopping)
 			throw new Error("Application lifecycle cannot be started twice.");
 		this.started = true;
@@ -67,7 +67,7 @@ export class Application {
 			for (const hook of startHooks) await hook.fn(this.app);
 			this.state.ready = true;
 
-			this.app.listen({ hostname: this.config.host, port: this.config.port });
+			this.app.listen({ hostname: this.config.host, port });
 
 			let lastPrune = Date.now();
 			let running = false;
