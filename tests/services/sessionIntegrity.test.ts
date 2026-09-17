@@ -84,6 +84,54 @@ describe.skipIf(!integrationAvailable)("session storage integrity", () => {
 			(await ctx.app.services.sessions.list({ licenseId: license.id })).items,
 		).toHaveLength(0);
 	});
+	test("admission builds an absent index and enforces its limit", async () => {
+		const record = {
+			licenseId: crypto.randomUUID(),
+			revision: 1,
+			deviceHash: digest("device"),
+			ip: "127.0.0.1",
+		};
+		const id = digest(crypto.randomUUID());
+		const index = repository.index(record);
+		try {
+			expect(await ctx.app.services.redis.send("EXISTS", [index])).toBe(0);
+			await repository.admit(id, record, 60, 1);
+			expect(
+				await repository.list(record.licenseId, 1, { limit: 10, offset: 0 }),
+			).toHaveLength(1);
+			expect(
+				Number(await ctx.app.services.redis.send("PTTL", [index])),
+			).toBeGreaterThan(0);
+			await expect(
+				repository.admit(digest(crypto.randomUUID()), record, 60, 1),
+			).rejects.toMatchObject({ code: "SESSION_LIMIT" });
+		} finally {
+			await repository.remove(id, record);
+		}
+	});
+	test("refresh rebuilds a removed index with membership and expiry", async () => {
+		const license = await ctx.license();
+		const session = await ctx.activate(license.key);
+		const id = digest(session.token);
+		const { record, raw } = await repository.get(id);
+		const index = repository.index(record);
+		try {
+			await ctx.app.services.redis.del(index);
+			await repository.refresh(id, record, raw, 60);
+			expect((await repository.get(id)).raw).toBe(raw);
+			expect(
+				await repository.list(license.id, record.revision, {
+					limit: 10,
+					offset: 0,
+				}),
+			).toHaveLength(1);
+			expect(
+				Number(await ctx.app.services.redis.send("PTTL", [index])),
+			).toBeGreaterThan(0);
+		} finally {
+			await repository.remove(id, record);
+		}
+	});
 	test("terminate-all physically deletes the previous revision's keys", async () => {
 		const license = await ctx.license();
 		await ctx.app.services.access.policy(license.id, { maxSessions: 2 });
