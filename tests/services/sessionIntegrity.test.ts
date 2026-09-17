@@ -155,6 +155,52 @@ describe.skipIf(!integrationAvailable)("session storage integrity", () => {
 			record.revision + 1,
 		);
 	});
+	test("terminate-all succeeds when cleanup fails after invalidation commits", async () => {
+		const license = await ctx.license();
+		const session = await ctx.activate(license.key);
+		const id = digest(session.token);
+		const { record, raw } = await repository.get(id);
+		const { database, redis, logger } = ctx.app.services;
+		const cleanup = spyOn(repository, "removeAll").mockRejectedValue(
+			new Error("forced cleanup failure"),
+		);
+		const log = spyOn(logger, "error").mockImplementation(() => {});
+		const service = new SessionService({
+			database,
+			repository,
+			licenses: new LicenseRepository(database),
+			policy: new LicensePolicy(),
+			access: new AccessRepository(database.orm),
+			activity: new ActivityRepository(database.orm),
+			ttl: 60,
+			logger,
+		});
+		try {
+			await expect(service.terminateAll(license.id)).resolves.toEqual({
+				terminated: true,
+			});
+			expect(cleanup).toHaveBeenCalledWith(license.id, record.revision);
+			expect(log).toHaveBeenCalledWith(
+				"session.bulk_cleanup_failed_ttl_cleanup_pending",
+			);
+			expect(
+				(await ctx.app.services.licenses.get(license.id)).policyRevision,
+			).toBe(record.revision + 1);
+			expect(await redis.get(repository.key(id))).toBe(raw);
+			await expect(
+				service.heartbeat({
+					token: session.token,
+					deviceId: "test-device",
+					ip: "127.0.0.1",
+				}),
+			).rejects.toMatchObject({ code: "SESSION_STALE" });
+			await expect(ctx.activate(license.key)).resolves.toBeDefined();
+		} finally {
+			cleanup.mockRestore();
+			log.mockRestore();
+			await repository.removeAll(license.id, record.revision);
+		}
+	});
 	test.each(["audit", "commit"])(
 		"terminate-all preserves sessions when %s fails",
 		async (stage) => {

@@ -183,7 +183,12 @@ export class SessionService {
 			await this.activity.write(tx, "session.terminated_all", id);
 			return row.policyRevision;
 		});
-		await this.repository.removeAll(id, revision);
+		try {
+			await this.repository.removeAll(id, revision);
+		} catch {
+			// The committed revision already invalidates these sessions.
+			this.logger.error("session.bulk_cleanup_failed_ttl_cleanup_pending");
+		}
 		return { terminated: true };
 	}
 	async terminate(id: string, sessionId: string) {
