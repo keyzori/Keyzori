@@ -91,31 +91,14 @@ jobs:
             name: Plugin tests
           - suite: cli
             name: CLI tests
-    services:
-      postgres:
-        image: postgres:18-alpine
-        env:
-          POSTGRES_PASSWORD: keyzori-ci-only
-        ports: ["5432/tcp"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s --health-timeout 5s --health-retries 20
-      redis:
-        image: redis:8-alpine
-        ports: ["6379/tcp"]
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - run: bun run test:integration tests/${{ matrix.suite }} --coverage
-        env:
-          KEYZORI_TEST_DATABASE_URL: postgresql://postgres:keyzori-ci-only@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/postgres
-          KEYZORI_TEST_REDIS_URL: redis://127.0.0.1:${{ job.services.redis.ports['6379'] }}
+      - name: Run integration tests on an isolated Docker network
+        run: bun run test:local tests/${{ matrix.suite }} --coverage
   compose:
     name: Docker Compose checks
     runs-on: self-hosted
