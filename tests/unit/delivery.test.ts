@@ -15,6 +15,7 @@ type Job = {
 	if?: string;
 	permissions?: Record<string, string>;
 	steps?: Step[];
+	services?: Record<string, unknown>;
 	"continue-on-error"?: boolean;
 	strategy?: { matrix?: { include?: { suite: string; name: string }[] } };
 	with?: Record<string, unknown>;
@@ -121,9 +122,10 @@ test("checks run independently and real infrastructure jobs cannot silently skip
 	).toEqual(["cli", "database", "http", "plugins", "services"]);
 	expect(
 		file.jobs.integration?.steps?.some((step) =>
-			step.run?.startsWith("bun run test:integration"),
+			step.run?.startsWith("bun run test:local"),
 		),
 	).toBe(true);
+	expect(file.jobs.integration?.services).toBeUndefined();
 	for (const job of Object.values(file.jobs))
 		expect(job.steps?.some((step) => step.run?.includes("docker build"))).toBe(
 			false,
