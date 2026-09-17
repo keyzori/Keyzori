@@ -20,7 +20,7 @@ jobs:
   release:
     name: Version, tag, and release
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main') }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 20
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}

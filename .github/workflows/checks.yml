@@ -10,7 +10,7 @@ permissions:
 jobs:
   workflows:
     name: Workflow checks
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -20,7 +20,7 @@ jobs:
       - run: docker run --rm --volume "$PWD:/repo:ro" --workdir /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
   typecheck:
     name: Type checks
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -31,7 +31,7 @@ jobs:
       - run: bun run typecheck
   lint:
     name: Lint and formatting
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -42,7 +42,7 @@ jobs:
       - run: bun run lint
   migrations:
     name: Migration checks
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -53,7 +53,7 @@ jobs:
       - run: bun run db:check
   metadata:
     name: Release checks
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -64,7 +64,7 @@ jobs:
       - run: bun run release:verify
   unit:
     name: Unit tests
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -75,7 +75,7 @@ jobs:
       - run: bun run test:unit --coverage
   integration:
     name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -118,7 +118,7 @@ jobs:
       - run: bun run test:integration tests/${{ matrix.suite }} --coverage
   compose:
     name: Docker Compose checks
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
