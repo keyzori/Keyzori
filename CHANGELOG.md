@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/keyzori/Keyzori/compare/v1.0.0...v1.1.0) (2026-09-13)
+
+
+### Features
+
+* **docs:** redesign OpenAPI reference ([#106](https://github.com/keyzori/Keyzori/issues/106)) ([164c706](https://github.com/keyzori/Keyzori/commit/164c7069073dad2c1c8cb9f70f1e51fbe060bd86))
+
+
+### Bug Fixes
+
+* **docs:** identify session license parameter ([#107](https://github.com/keyzori/Keyzori/issues/107)) ([862c29d](https://github.com/keyzori/Keyzori/commit/862c29d33cbadb816a150b98d0c0e90ce1d6d8a4))
+
 ## [1.0.0](https://github.com/keyzori/Keyzori/compare/v0.5.3...v1.0.0) (2026-09-13)
 
 

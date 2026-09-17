@@ -6,7 +6,9 @@ if redis.call('ZCARD', KEYS[2]) >= tonumber(ARGV[3]) then return 0 end
 if not redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') then return -1 end
 redis.call('ZADD', KEYS[2], now + tonumber(ARGV[2]), ARGV[4])
 local latest = redis.call('ZREVRANGE', KEYS[2], 0, 0, 'WITHSCORES')
-redis.call('PEXPIREAT', KEYS[2], latest[2])
+if latest and latest[2] then
+    redis.call('PEXPIREAT', KEYS[2], latest[2])
+end
 return 1
 `;
 
@@ -17,7 +19,9 @@ local now = time[1] * 1000 + math.floor(time[2] / 1000)
 redis.call('PEXPIRE', KEYS[1], ARGV[2])
 redis.call('ZADD', KEYS[2], now + tonumber(ARGV[2]), ARGV[3])
 local latest = redis.call('ZREVRANGE', KEYS[2], 0, 0, 'WITHSCORES')
-redis.call('PEXPIREAT', KEYS[2], latest[2])
+if latest and latest[2] then
+    redis.call('PEXPIREAT', KEYS[2], latest[2])
+end
 return 1
 `;
 
@@ -25,6 +29,15 @@ export const removeSession = `
 redis.call('DEL', KEYS[1])
 redis.call('ZREM', KEYS[2], ARGV[1])
 return 1
+`;
+
+export const removeAllSessions = `
+local ids = redis.call('ZRANGE', KEYS[1], 0, -1)
+for i = 1, #ids do
+    redis.call('DEL', ARGV[1] .. ids[i])
+end
+redis.call('DEL', KEYS[1])
+return #ids
 `;
 
 export const listSessions = `

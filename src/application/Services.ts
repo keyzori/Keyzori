@@ -54,17 +54,16 @@ export class Services {
 			meters,
 		);
 		this.access = new AccessService(this.database, access, licenses, activity);
-		this.sessions = new SessionService(
-			this.database,
-			new SessionRepository(this.redis),
+		this.sessions = new SessionService({
+			database: this.database,
+			repository: new SessionRepository(this.redis),
 			licenses,
 			policy,
 			access,
 			activity,
-			config.sessionTtl,
-			this.logger,
-			new SessionWorkQueue(),
-		);
+			ttl: config.sessionTtl,
+			logger: this.logger,
+		});
 		this.meters = new MeterService(this.database, meters, licenses, activity);
 		this.activity = new ActivityService(activity, config.retentionDays);
 	}

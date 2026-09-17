@@ -34,8 +34,12 @@ export class LicenseRepository {
 			with: { subscription: true, trial: true, blocks: true },
 		});
 	}
-	list(query: typeof licenseQuery.infer, page: Page) {
-		return this.database.orm
+	list(
+		query: typeof licenseQuery.infer,
+		page: Page,
+		tx: Executor = this.database.orm,
+	) {
+		return tx
 			.select()
 			.from(licenses)
 			.where(

@@ -1,3 +1,4 @@
+import { apiDescription, apiTags, apiTagGroups, scalarConfig } from "./docs.ts";
 import { Elysia } from "elysia";
 import { openapi } from "@elysia/openapi";
 import type { Type } from "arktype";
@@ -115,6 +116,7 @@ export function createHttp(
 			openapi({
 				path: "/docs",
 				specPath: "/openapi.json",
+				scalar: scalarConfig,
 				mapJsonSchema: {
 					arktype: (schema: unknown) =>
 						(schema as Type).toJsonSchema({
@@ -130,20 +132,62 @@ export function createHttp(
 				},
 				documentation: {
 					openapi: "3.1.0",
-					info: { title: "Keyzori", version: "2.0.0" },
+					info: {
+						title: "Keyzori API reference",
+						version: "2.0.0",
+						description: apiDescription,
+					},
+					tags: [
+						...apiTags,
+						...config.plugins.map((name) => ({
+							name,
+							description:
+								"Optional plugin endpoints, available while this plugin is enabled.",
+						})),
+					],
+					...{
+						"x-tagGroups": [
+							...apiTagGroups,
+							...(config.plugins.length
+								? [{ name: "Plugins", tags: config.plugins }]
+								: []),
+						],
+					},
+					servers: [{ url: "/", description: "This Keyzori server" }],
 					components: {
 						schemas: {
 							Error: errorResponse.toJsonSchema() as OpenAPIV3.SchemaObject,
 						},
 						securitySchemes: {
-							adminKey: { type: "apiKey", in: "header", name: "X-Admin-Key" },
-							session: { type: "http", scheme: "bearer" },
+							adminKey: {
+								type: "apiKey",
+								in: "header",
+								name: "X-Admin-Key",
+								description:
+									"Server administration secret. Never distribute this key in client applications.",
+							},
+							session: {
+								type: "http",
+								scheme: "bearer",
+								description:
+									"Session token returned by activation. Also send X-Device-Id and use the original client IP.",
+							},
 						},
 					},
 				},
 			}),
 		)
-		.get("/health", () => ({ status: "ok" }), { response: statusResponse })
+		.get("/health", () => ({ status: "ok" }), {
+			response: statusResponse,
+			detail: {
+				tags: ["Health"],
+				operationId: "getHealth",
+				summary: "Check liveness",
+				description:
+					"Confirm that the HTTP process responds. This does not check PostgreSQL, Redis, or readiness.",
+				security: [],
+			},
+		})
 		.get(
 			"/ready",
 			async () => {
@@ -155,7 +199,17 @@ export function createHttp(
 				]);
 				return { status: "ready" };
 			},
-			{ response: statusResponse },
+			{
+				response: statusResponse,
+				detail: {
+					tags: ["Health"],
+					operationId: "getReadiness",
+					summary: "Check readiness",
+					description:
+						"Confirm startup readiness and connectivity to PostgreSQL and Redis. Returns 503 when the server cannot serve requests.",
+					security: [],
+				},
+			},
 		)
 		.use(customerRoutes(services.customers, guard))
 		.use(licenseRoutes(services.licenses, services.access, guard))
