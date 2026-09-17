@@ -24,12 +24,16 @@ export function metadata(value: Record<string, unknown> = {}) {
 }
 
 const sensitive =
-	/(?:^|[^a-z0-9])(?:secrets?|tokens?|passwords?|authorizations?|cookies?|credentials?|api[^a-z0-9]*keys?|license[^a-z0-9]*keys?|key[^a-z0-9]*hash(?:es)?|device[^a-z0-9]*ids?|ip[^a-z0-9]*address(?:es)?)(?:$|[^a-z0-9])|^device$/i;
+	/(?:^|[^a-z0-9])(?:secrets?|tokens?|passwords?|authorizations?|cookies?|credentials?|api[^a-z0-9]*keys?|license[^a-z0-9]*keys?|key[^a-z0-9]*hash(?:es)?|device[^a-z0-9]*(?:ids?|hash(?:es)?)|ip[^a-z0-9]*address(?:es)?)(?:$|[^a-z0-9])|^device$/i;
+const sensitiveSuffix =
+	/(?:secret|token|password|authorization|cookie|credential|apikey|licensekey|keyhash|deviceid|devicehash|ipaddress)\d*$/i;
 function sensitiveKey(key: string) {
-	return sensitive.test(
-		key
-			.replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-			.replace(/([a-z0-9])([A-Z])/g, "$1_$2"),
+	const normalized = key
+		.replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+		.replace(/([a-z0-9])([A-Z])/g, "$1_$2");
+	return (
+		sensitive.test(normalized) ||
+		sensitiveSuffix.test(normalized.replace(/[^a-z0-9]/gi, ""))
 	);
 }
 export function redact(value: unknown, depth = 0): unknown {
