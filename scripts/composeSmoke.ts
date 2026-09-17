@@ -1,6 +1,7 @@
 import { mkdtemp, rmdir, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Config } from "../src/shared/Config.ts";
 
 /**
  * Exercises the repository Compose file with only its required secrets.
@@ -34,24 +35,25 @@ export async function composeSmoke(
 		source,
 		await Bun.file(resolve(import.meta.dir, "../compose.yml")).text(),
 	);
-	await Bun.write(
-		envFile,
-		`KEYZORI_ADMIN_KEY=${environment.KEYZORI_ADMIN_KEY}\nKEYZORI_POSTGRES_PASSWORD=compose-only\n`,
-	);
-	const config = JSON.parse(
-		await docker(
-			"compose",
-			"--project-name",
-			project,
-			"--env-file",
-			envFile,
-			"--file",
-			source,
-			"config",
-			"--format",
-			"json",
-		),
-	) as { services: Record<string, Record<string, unknown>> };
+	const secrets = `KEYZORI_ADMIN_KEY=${environment.KEYZORI_ADMIN_KEY}\nKEYZORI_POSTGRES_PASSWORD=compose-only\n`;
+	await Bun.write(envFile, secrets);
+	async function render() {
+		return JSON.parse(
+			await docker(
+				"compose",
+				"--project-name",
+				project,
+				"--env-file",
+				envFile,
+				"--file",
+				source,
+				"config",
+				"--format",
+				"json",
+			),
+		) as { services: Record<string, Record<string, unknown>> };
+	}
+	const config = await render();
 	const postgres = config.services.postgres;
 	if (!postgres) throw new Error("Missing Compose PostgreSQL service");
 
@@ -62,6 +64,37 @@ export async function composeSmoke(
 	delete server.env_file;
 	server.image = image;
 	const defaults = server.environment as Record<string, string>;
+	const settings = new Config(defaults);
+	if (
+		settings.sessionTtl !== 60 ||
+		settings.rateLimit !== 120 ||
+		settings.retentionDays !== 30 ||
+		settings.plugins.length !== 0
+	)
+		throw new Error(
+			"Server defaults must work with only the two Compose secrets.",
+		);
+	await Bun.write(
+		envFile,
+		`${secrets}KEYZORI_SESSION_TTL=90\nKEYZORI_RATE_LIMIT=240\nKEYZORI_ACTIVITY_RETENTION_DAYS=7\nKEYZORI_PLUGINS=stripe\nKEYZORI_TRUSTED_PROXIES=10.0.0.1\nKEYZORI_STRIPE_SECRET_KEY=sk_test_fake\n`,
+	);
+	const overridden = (await render()).services.server?.environment as Record<
+		string,
+		string
+	>;
+	const overrides = new Config(overridden);
+	if (
+		overrides.sessionTtl !== 90 ||
+		overrides.rateLimit !== 240 ||
+		overrides.retentionDays !== 7 ||
+		overrides.plugins[0] !== "stripe" ||
+		!overrides.trustedProxies.check("10.0.0.1", "ipv4") ||
+		overridden.KEYZORI_STRIPE_SECRET_KEY !== "sk_test_fake"
+	)
+		throw new Error(
+			"Optional settings must pass through the Compose env_file.",
+		);
+	await Bun.write(envFile, secrets);
 	if (
 		defaults.KEYZORI_PORT !== undefined ||
 		defaults.KEYZORI_HOST !== undefined ||

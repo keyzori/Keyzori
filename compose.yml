@@ -1,3 +1,9 @@
+x-logging: &logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:18-alpine
@@ -8,11 +14,7 @@ services:
       POSTGRES_PASSWORD: ${KEYZORI_POSTGRES_PASSWORD:?Set KEYZORI_POSTGRES_PASSWORD}
       POSTGRES_INITDB_ARGS: "-c shared_preload_libraries=pg_stat_statements -c max_connections=200"
     volumes: ["postgres-data:/var/lib/postgresql"]
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U keyzori -d keyzori"]
       interval: 5s
@@ -23,11 +25,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
     volumes: ["redis-data:/data"]
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -43,25 +41,15 @@ services:
     tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
     environment:
       KEYZORI_DATABASE_URL: postgresql://keyzori:${KEYZORI_POSTGRES_PASSWORD:?Set KEYZORI_POSTGRES_PASSWORD}@postgres:5432/keyzori
       KEYZORI_REDIS_URL: redis://redis:6379
       KEYZORI_ADMIN_KEY: ${KEYZORI_ADMIN_KEY:?Set KEYZORI_ADMIN_KEY}
-      KEYZORI_PLUGINS: ${KEYZORI_PLUGINS:-}
-      KEYZORI_TRUSTED_PROXIES: ${KEYZORI_TRUSTED_PROXIES:-}
-      KEYZORI_SESSION_TTL: ${KEYZORI_SESSION_TTL:-60}
-      KEYZORI_ACTIVITY_RETENTION_DAYS: ${KEYZORI_ACTIVITY_RETENTION_DAYS:-30}
-      KEYZORI_RATE_LIMIT: ${KEYZORI_RATE_LIMIT:-120}
-      NODE_ENV: production
     command: ["serve"]
     restart: unless-stopped
     ports:
-      - "${KEYZORI_BIND_ADDRESS:-127.0.0.1}:6284:6284"
+      - "127.0.0.1:6284:6284"
     stop_grace_period: 30s
     depends_on:
       postgres: { condition: service_healthy }

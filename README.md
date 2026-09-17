@@ -61,7 +61,11 @@ docker compose exec server bun src/main.ts admin --help
 
 In Dokploy, select this repository and `compose.yml`, enter the same two secrets in Environment, and deploy. For domain routing, select the `server` service on container port `6284`.
 
-Compose starts PostgreSQL, Redis, and the API. The server applies pending core and enabled-plugin migrations before accepting requests; migration failures prevent startup. It supplies the internal database URLs and stores data in named volumes. The API is available at `http://localhost:6284` and is bound to localhost by default. Only the two secrets are required; leave the optional settings commented out. The server always listens on `0.0.0.0:6284`; configure reverse proxies to target container port `6284`. For admin CLI commands outside Docker, set `KEYZORI_URL=http://localhost:6284`.
+Compose starts PostgreSQL, Redis, and the API, supplies internal database URLs, and stores data in named volumes. The server applies pending migrations before accepting requests; migration failures prevent startup.
+
+Only the two secrets are required. Optional settings use the server's defaults; put overrides and plugin settings in `.env` (Dokploy writes its Environment values to this file). There is no need to repeat them in Compose. Shell-only optional variables are not forwarded to the container.
+
+The API is available at `http://localhost:6284`. The server and reverse proxies use container port `6284`; the host port is bound to `127.0.0.1:6284`. `KEYZORI_BIND_ADDRESS` is no longer used; use a Compose override file if you need a different host binding. For admin CLI commands outside Docker, set `KEYZORI_URL=http://localhost:6284`.
 
 The container runs TypeScript directly with Bun as a non-root user. See [Deployment](https://github.com/keyzori/Keyzori/wiki/Deployment) for upgrades, HTTPS, and image settings.
 
