@@ -37,6 +37,11 @@ export async function composeSmoke(
 	);
 	const secrets = `KEYZORI_ADMIN_KEY=${environment.KEYZORI_ADMIN_KEY}\nKEYZORI_POSTGRES_PASSWORD=compose-only\n`;
 	await Bun.write(envFile, secrets);
+	/**
+	 * Renders the isolated Compose configuration using the current environment file.
+	 *
+	 * @returns The parsed Compose services configuration.
+	 */
 	async function render() {
 		return JSON.parse(
 			await docker(
