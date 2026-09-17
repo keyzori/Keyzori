@@ -1,6 +1,12 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { sql } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { integrationAvailable, TestContext } from "../helpers/TestContext.ts";
 import { SessionRepository } from "../../src/sessions/SessionRepository.ts";
+import { ActivityRepository } from "../../src/activity/ActivityRepository.ts";
+import { LicenseRepository } from "../../src/licenses/LicenseRepository.ts";
+import { LicensePolicy } from "../../src/licenses/LicensePolicy.ts";
+import { AccessRepository } from "../../src/access/AccessRepository.ts";
+import { SessionService } from "../../src/sessions/SessionService.ts";
 import { digest } from "../../src/shared/security.ts";
 
 describe.skipIf(!integrationAvailable)("session storage integrity", () => {
@@ -126,4 +132,89 @@ describe.skipIf(!integrationAvailable)("session storage integrity", () => {
 			await repository.remove(id, record);
 		}
 	});
+	test("terminate-all physically deletes the previous revision's keys", async () => {
+		const license = await ctx.license();
+		await ctx.app.services.access.policy(license.id, { maxSessions: 2 });
+		const sessions = await Promise.all([
+			ctx.activate(license.key),
+			ctx.activate(license.key),
+		]);
+		const ids = sessions.map((session) => digest(session.token));
+		const first = ids[0];
+		if (!first) throw new Error("Missing session");
+		const { record } = await repository.get(first);
+		const index = repository.index(record);
+		expect(Number(await ctx.app.services.redis.send("ZCARD", [index]))).toBe(2);
+		await ctx.app.services.sessions.terminateAll(license.id);
+		for (const id of ids)
+			expect(await ctx.app.services.redis.get(repository.key(id))).toBeNull();
+		expect(await ctx.app.services.redis.send("EXISTS", [index])).toBe(0);
+		const next = await ctx.activate(license.key);
+		await repository.removeAll(license.id, record.revision);
+		expect((await repository.get(digest(next.token))).record.revision).toBe(
+			record.revision + 1,
+		);
+	});
+	test.each(["audit", "commit"])(
+		"terminate-all preserves sessions when %s fails",
+		async (stage) => {
+			const license = await ctx.license();
+			const session = await ctx.activate(license.key);
+			const id = digest(session.token);
+			const { record, raw } = await repository.get(id);
+			const { database, redis, logger } = ctx.app.services;
+			const activity = new ActivityRepository(database.orm);
+			const failure =
+				stage === "audit"
+					? spyOn(activity, "write").mockImplementation(() => {
+							throw new Error("forced audit failure");
+						})
+					: undefined;
+			if (stage === "commit") {
+				await database.orm.execute(
+					sql`CREATE FUNCTION fail_termination_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'session.terminated_all' THEN RAISE EXCEPTION 'forced commit failure'; END IF; RETURN NEW; END $$`,
+				);
+				await database.orm.execute(
+					sql`CREATE CONSTRAINT TRIGGER fail_termination_commit AFTER INSERT ON activity DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fail_termination_commit()`,
+				);
+			}
+			const service = new SessionService({
+				database,
+				repository,
+				licenses: new LicenseRepository(database),
+				policy: new LicensePolicy(),
+				access: new AccessRepository(database.orm),
+				activity,
+				ttl: 60,
+				logger,
+			});
+			try {
+				await expect(service.terminateAll(license.id)).rejects.toThrow();
+			} finally {
+				failure?.mockRestore();
+				if (stage === "commit") {
+					await database.orm.execute(
+						sql`DROP TRIGGER fail_termination_commit ON activity`,
+					);
+					await database.orm.execute(
+						sql`DROP FUNCTION fail_termination_commit()`,
+					);
+				}
+			}
+			expect(
+				(await ctx.app.services.licenses.get(license.id)).policyRevision,
+			).toBe(record.revision);
+			expect(await redis.get(repository.key(id))).toBe(raw);
+			expect(
+				Number(await redis.send("ZCARD", [repository.index(record)])),
+			).toBe(1);
+			await expect(
+				ctx.app.services.sessions.heartbeat({
+					token: session.token,
+					deviceId: "test-device",
+					ip: "127.0.0.1",
+				}),
+			).resolves.toBeDefined();
+		},
+	);
 });

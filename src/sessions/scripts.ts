@@ -31,6 +31,15 @@ redis.call('ZREM', KEYS[2], ARGV[1])
 return 1
 `;
 
+export const removeAllSessions = `
+local ids = redis.call('ZRANGE', KEYS[1], 0, -1)
+for i = 1, #ids do
+    redis.call('DEL', ARGV[1] .. ids[i])
+end
+redis.call('DEL', KEYS[1])
+return #ids
+`;
+
 export const listSessions = `
 local time = redis.call('TIME')
 local now = time[1] * 1000 + math.floor(time[2] / 1000)
