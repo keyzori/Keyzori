@@ -112,8 +112,6 @@ try {
 		"-e",
 		`KEYZORI_ADMIN_KEY=${admin}`,
 		"-e",
-		"KEYZORI_HOST=127.0.0.1",
-		"-e",
 		"KEYZORI_PORT=3000",
 		"-e",
 		"KEYZORI_URL=https://unused.invalid",
