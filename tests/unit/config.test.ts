@@ -8,14 +8,22 @@ const base = {
 	KEYZORI_REDIS_URL: "redis://localhost",
 };
 describe("configuration boundaries", () => {
-	test("obsolete listener environment cannot change the container endpoint", () => {
-		const config = new Config({
-			...base,
-			KEYZORI_HOST: "127.0.0.1",
-			KEYZORI_PORT: "3000",
-			PORT: "8080",
-		});
-		expect(config.host).toBe("0.0.0.0");
+	test("listener host defaults to all interfaces and accepts an IP override", () => {
+		expect(new Config(base).host).toBe("0.0.0.0");
+		expect(new Config({ ...base, KEYZORI_HOST: "127.0.0.1" }).host).toBe(
+			"127.0.0.1",
+		);
+		expect(new Config({ ...base, KEYZORI_HOST: "::1" }).host).toBe("::1");
+	});
+	test.each(["", "localhost", "127.0.0.1:6284", "fe80::1%eth0"])(
+		"rejects invalid listener host %s",
+		(value) =>
+			expect(() => new Config({ ...base, KEYZORI_HOST: value })).toThrow(
+				"KEYZORI_HOST",
+			),
+	);
+	test("obsolete port environment cannot change the container endpoint", () => {
+		const config = new Config({ ...base, KEYZORI_PORT: "3000", PORT: "8080" });
 		expect(config.port).toBe(6284);
 	});
 	for (const [name, min, max] of [
