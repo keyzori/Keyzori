@@ -7,6 +7,12 @@ import { redact } from "./shared/security.ts";
 
 const root = resolve(import.meta.dir, "..");
 const logger = createLogger();
+
+export function healthcheckUrl(config: { host: string; port: number }) {
+	const host = config.host.includes(":") ? `[${config.host}]` : config.host;
+	return `http://${host}:${config.port}`;
+}
+
 async function main() {
 	const [command = "serve", ...args] = process.argv.slice(2);
 	if (command === "admin") {
@@ -40,8 +46,8 @@ async function main() {
 			},
 		);
 	} else if (command === "healthcheck") {
-		const url = "http://127.0.0.1:6284";
-		const response = await fetch(new URL("/ready", url), {
+		const config = new Config(process.env);
+		const response = await fetch(new URL("/ready", healthcheckUrl(config)), {
 			signal: AbortSignal.timeout(5000),
 			redirect: "error",
 		});
