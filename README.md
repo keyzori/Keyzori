@@ -8,6 +8,11 @@
 
 </div>
 
+> [!IMPORTANT]
+> Keyzori is currently undergoing a **v2** rebuild! Currently not accept PR's for the current branch `main` due to it being overwritten when v2 is complete. Feature requests always welcome!
+> 
+> The current code on `main` and all documentation including everything below this message is to be taken as **reference only**.
+
 > [!WARNING]
 > The current release changes the API, settings, and database format. Start with a fresh PostgreSQL database; older databases and client integrations are not compatible.
 
