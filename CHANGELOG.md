@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/keyzori/Keyzori/compare/v1.2.1...v1.2.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* restore listener host isolation ([#135](https://github.com/keyzori/Keyzori/issues/135)) ([ba3ba16](https://github.com/keyzori/Keyzori/commit/ba3ba16fc0ce9b586b73103bd83502213fcb8be0))
+
 ## [1.2.1](https://github.com/keyzori/Keyzori/compare/v1.2.0...v1.2.1) (2026-09-17)
 
 
