@@ -6,7 +6,7 @@ export class Config {
 	readonly databaseUrl: string;
 	readonly redisUrl: string;
 	readonly port = 6284;
-	readonly host = "0.0.0.0";
+	readonly host: string;
 	readonly sessionTtl: number;
 	readonly retentionDays: number;
 	readonly rateLimit: number;
@@ -29,6 +29,9 @@ export class Config {
 			"postgresql:",
 		]);
 		this.redisUrl = this.url("KEYZORI_REDIS_URL", ["redis:", "rediss:"]);
+		this.host = env.KEYZORI_HOST ?? "0.0.0.0";
+		if (!isIP(this.host) || this.host.includes("%"))
+			throw new Error("KEYZORI_HOST must be an IPv4 or IPv6 address.");
 		this.sessionTtl = this.integer("KEYZORI_SESSION_TTL", 60, 5, 3600);
 		this.retentionDays = this.integer(
 			"KEYZORI_ACTIVITY_RETENTION_DAYS",

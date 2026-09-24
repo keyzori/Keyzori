@@ -43,7 +43,7 @@ bun run setup
 bun run start
 ```
 
-The default address is `http://localhost:6284`. For automatic restarts while developing, use `bun run dev` instead of `bun run start`.
+The default address is `http://localhost:6284`. Direct Bun deployments can set `KEYZORI_HOST` to an IPv4 or IPv6 address such as `127.0.0.1` to restrict the listening interface. For automatic restarts while developing, use `bun run dev` instead of `bun run start`.
 
 | URL | Purpose |
 | --- | --- |
@@ -70,7 +70,7 @@ Compose starts PostgreSQL, Redis, and the API, supplies internal database URLs, 
 
 Only the two secrets are required. Optional settings use the server's defaults; put overrides and plugin settings in `.env` (Dokploy writes its Environment values to this file). There is no need to repeat them in Compose. Shell-only optional variables are not forwarded to the container.
 
-The API is available at `http://localhost:6284`. The server and reverse proxies use container port `6284`; the host port is bound to `127.0.0.1:6284`. `KEYZORI_BIND_ADDRESS` is no longer used; use a Compose override file if you need a different host binding. For admin CLI commands outside Docker, set `KEYZORI_URL=http://localhost:6284`.
+The API is available at `http://localhost:6284`. The server and reverse proxies use container port `6284`; the container listener defaults to `0.0.0.0` and the host port is bound to `127.0.0.1:6284`. Use a Compose override file if you need a different host binding. For admin CLI commands outside Docker, set `KEYZORI_URL=http://localhost:6284`.
 
 The container runs TypeScript directly with Bun as a non-root user. See [Deployment](https://github.com/keyzori/Keyzori/wiki/Deployment) for upgrades, HTTPS, and image settings.
 
