@@ -48,7 +48,9 @@ export class ApiKeyService {
 						name: input.name,
 						scopes: input.scopes,
 						secretHash: this.hashes.hash(generated.secret),
-						expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
+						expiresAt: input.expiresAt
+							? this.input.timestamp(input.expiresAt)
+							: null,
 						createdBy: "root",
 						updatedBy: "root",
 					})
@@ -116,7 +118,7 @@ export class ApiKeyService {
 							input.changes.expiresAt === undefined
 								? row.expiresAt
 								: input.changes.expiresAt
-									? new Date(input.changes.expiresAt)
+									? this.input.timestamp(input.changes.expiresAt)
 									: null,
 					};
 					const diff = this.audit.changes(

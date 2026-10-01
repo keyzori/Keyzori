@@ -68,7 +68,9 @@ export class LicenseService {
 							keyFormat: format,
 							userId: input.userId,
 							itemId: input.itemId,
-							expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
+							expiresAt: input.expiresAt
+								? this.input.timestamp(input.expiresAt)
+								: null,
 							deviceLimit: input.deviceLimit,
 							ipLimit: input.ipLimit,
 							allowedIps: input.allowedIps ?? [],
@@ -212,7 +214,11 @@ export class LicenseService {
 							.set({
 								...changes,
 								...(expiresAt !== undefined
-									? { expiresAt: expiresAt ? new Date(expiresAt) : null }
+									? {
+											expiresAt: expiresAt
+												? this.input.timestamp(expiresAt)
+												: null,
+										}
 									: {}),
 								updatedBy: operation.principal.id,
 								updatedAt: now,

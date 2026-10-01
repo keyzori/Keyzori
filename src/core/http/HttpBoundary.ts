@@ -62,7 +62,9 @@ export class HttpBoundary {
 			}
 			try {
 				const body: unknown = JSON.parse(
-					Buffer.concat(chunks).toString("utf8"),
+					new TextDecoder("utf-8", { fatal: true }).decode(
+						Buffer.concat(chunks),
+					),
 				);
 				if (body && typeof body === "object" && !Array.isArray(body)) {
 					if ("metadata" in body) this.input.metadata(body.metadata);
@@ -74,6 +76,7 @@ export class HttpBoundary {
 					)
 						this.input.metadata(body.changes.metadata);
 				}
+				this.input.jsonText(body);
 				return body;
 			} catch {
 				throw new HttpError("INVALID_REQUEST");

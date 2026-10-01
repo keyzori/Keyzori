@@ -1,6 +1,43 @@
 import { HttpError } from "./HttpError";
+import { TypeBoxValidator } from "elysia";
+import { httpModel } from "./model";
+
+const timestampValidator = new TypeBoxValidator(httpModel.expiresAt);
 
 export class InputPolicy {
+	text(value: string) {
+		if (!value.isWellFormed() || value.includes("\0"))
+			throw new HttpError("INVALID_REQUEST");
+	}
+	jsonText(value: unknown) {
+		const pending = [value];
+		const seen = new WeakSet<object>();
+		while (pending.length) {
+			const item = pending.pop();
+			if (typeof item === "string") this.text(item);
+			else if (item && typeof item === "object" && !seen.has(item)) {
+				seen.add(item);
+				for (const [key, child] of Object.entries(item)) {
+					this.text(key);
+					pending.push(child);
+				}
+			}
+		}
+	}
+	timestamp(value: string) {
+		const offset = /[+-](\d{2}):\d{2}$/.exec(value);
+		const date = new Date(value);
+		if (
+			!timestampValidator.Check(value) ||
+			value.startsWith("0000-") ||
+			(offset && Number(offset[1]) > 15) ||
+			!Number.isFinite(date.getTime()) ||
+			date.getUTCFullYear() < 1 ||
+			date.getUTCFullYear() > 9999
+		)
+			throw new HttpError("INVALID_REQUEST");
+		return date;
+	}
 	metadata(value?: unknown) {
 		if (value === undefined) return;
 		if (!value || typeof value !== "object" || Array.isArray(value))
@@ -71,6 +108,7 @@ export class InputPolicy {
 		visit(value, 0);
 	}
 	notes(value?: string | null) {
+		if (value !== undefined && value !== null) this.text(value);
 		if (value && Buffer.byteLength(value, "utf8") > 16384)
 			throw new HttpError("INVALID_REQUEST");
 	}

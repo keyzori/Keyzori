@@ -1,5 +1,6 @@
 import { and, eq, ilike, or, sql } from "drizzle-orm";
 import { HttpError } from "./HttpError";
+import { InputPolicy } from "./InputPolicy";
 import type { $QueryColumns, $ResourceSort } from "../../types/query";
 
 export class ResourceQuery {
@@ -14,11 +15,16 @@ export class ResourceQuery {
 		columns: $QueryColumns,
 		defaultLimit = 10,
 	) {
-		for (const key of query.keys())
+		const policy = new InputPolicy();
+		for (const [key, value] of query) {
+			policy.text(key);
+			policy.text(value);
 			if (query.getAll(key).length !== 1)
 				throw new HttpError("INVALID_REQUEST");
+		}
 		this.id = query.get("id");
-		if (this.id && !this.uuid(this.id)) throw new HttpError("INVALID_REQUEST");
+		if (this.id !== null && !this.uuid(this.id))
+			throw new HttpError("INVALID_REQUEST");
 		const limit = query.get("limit");
 		if (limit && !/^[1-9]\d*$/.test(limit))
 			throw new HttpError("INVALID_REQUEST");
@@ -53,11 +59,7 @@ export class ResourceQuery {
 				const name = key.slice(numeric ? 15 : 9);
 				if (!name || Array.from(name).length > 128)
 					throw new HttpError("INVALID_REQUEST");
-				if (
-					numeric &&
-					(!/^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$/.test(value) ||
-						!Number.isFinite(Number(value)))
-				)
+				if (numeric && !this.numeric(value))
 					throw new HttpError("INVALID_REQUEST");
 				filters.push(
 					numeric
@@ -106,12 +108,8 @@ export class ResourceQuery {
 				const field = key.startsWith("expires")
 					? columns.expiresAt
 					: columns.createdAt;
-				if (
-					!field ||
-					!/^\d{4}-\d{2}-\d{2}T/.test(value) ||
-					!Number.isFinite(Date.parse(value))
-				)
-					throw new HttpError("INVALID_REQUEST");
+				if (!field) throw new HttpError("INVALID_REQUEST");
+				policy.timestamp(value);
 				filters.push(
 					key.endsWith("Before")
 						? sql`${field} < ${value}::timestamptz`
@@ -149,15 +147,14 @@ export class ResourceQuery {
 				typeof decoded.id !== "string" ||
 				!this.uuid(decoded.id) ||
 				!("value" in decoded) ||
-				(decoded.value !== null &&
-					(typeof decoded.value !== "string" ||
-						!Number.isFinite(Date.parse(decoded.value)))) ||
+				(decoded.value !== null && typeof decoded.value !== "string") ||
 				!("sort" in decoded) ||
 				decoded.sort !== sort ||
 				!("direction" in decoded) ||
 				decoded.direction !== this.direction
 			)
 				throw new HttpError("INVALID_REQUEST");
+			if (decoded.value !== null) policy.timestamp(decoded.value);
 			const idComparison =
 				this.direction === "asc"
 					? sql`${columns.id} > ${decoded.id}`
@@ -194,6 +191,17 @@ export class ResourceQuery {
 				direction: this.direction,
 			}),
 		).toString("base64url");
+	}
+	private numeric(value: string) {
+		const parts = /^-?(0|[1-9]\d*)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(value);
+		if (!parts || !Number.isFinite(Number(value))) return false;
+		const exponent = Number(parts[3] ?? 0);
+		// Bound PostgreSQL numeric's integer digits and scale without rounding input.
+		return (
+			Number.isSafeInteger(exponent) &&
+			(parts[1]?.length ?? 0) + exponent <= 131072 &&
+			(parts[2]?.length ?? 0) - exponent <= 16383
+		);
 	}
 	private uuid(value: string) {
 		return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(

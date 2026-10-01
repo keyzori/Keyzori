@@ -21,7 +21,9 @@ export class IdempotencyService {
 		mutation: (tx: $Transaction, now: Date) => Promise<T>,
 		options: $AdminOptions<T> = {},
 	) {
-		const key = new InputPolicy().idempotency(
+		const policy = new InputPolicy();
+		policy.jsonText(input);
+		const key = policy.idempotency(
 			context.idempotencyKey,
 			options.secretIds !== undefined,
 		);

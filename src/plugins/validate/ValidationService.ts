@@ -36,6 +36,8 @@ export class ValidationService {
 		input: $ValidationInput,
 		context: $RequestContext & { idempotencyKey?: string },
 	) {
+		const policy = new InputPolicy();
+		policy.jsonText(input);
 		try {
 			if (!(await this.redis.ping(context.deadlineAt)))
 				throw new Error("Redis unavailable");
@@ -44,10 +46,7 @@ export class ValidationService {
 		}
 		const usageChanging =
 			input.usage !== undefined && Object.keys(input.usage).length > 0;
-		const key = new InputPolicy().idempotency(
-			context.idempotencyKey,
-			usageChanging,
-		);
+		const key = policy.idempotency(context.idempotencyKey, usageChanging);
 		let licenseId: string | undefined;
 		try {
 			const result = await this.database.transaction(

@@ -41,6 +41,8 @@ Run `bun run openapi` for the full API reference in `dist/server/openapi.json`.
 
 License-key prefixes and separators use printable ASCII so issued credentials can be sent in bearer headers. Spaces and punctuation are preserved. Correct any older incompatible format before issuing or rotating licenses; existing credentials are not changed automatically.
 
+JSON and query text must contain well-formed Unicode without NUL characters. Timestamps require a real calendar date and an explicit timezone, within UTC years 1–9999 and PostgreSQL's supported timezone offsets. Invalid filters and unsupported numeric ranges return `400 INVALID_REQUEST` before storage; numeric filters retain their exact decimal values.
+
 ## Usage, capacity and replay
 
 Add expiry dates, device/IP caps or usage meters as needed. No cap means unlimited; a cap of zero allows nothing.
@@ -54,7 +56,7 @@ Check the response's `code` and `reason`: a rejected license still returns HTTP 
 - Use HTTPS when exposing the server online.
 - Back up PostgreSQL and keep your root key safe. `docker compose down -v` deletes stored data.
 - Webhooks get one attempt, with no retries or signatures.
-- Use Linux for deployment. Windows builds are experimental and don't yet have verified graceful shutdown.
+- Use Linux for deployment. Windows builds are experimental: graceful shutdown is unverified, and Bun 1.4.2 has crashed during PostgreSQL outage testing.
 
 ## Verification
 
