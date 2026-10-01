@@ -1,29 +1,19 @@
 # Contributing
 
-Use Bun 1.3.14+, TypeScript, ArkType, Drizzle, and Biome. Read [AGENTS.md](AGENTS.md) and the [Architecture wiki](https://github.com/keyzori/keyzori/wiki/Architecture).
+Use Bun 1.4.2 and Docker. Server code lives in `src/`.
 
-```powershell
-bun run setup
-bun run typecheck
-bun run test
-bun run lint
-bun run db:check
+```sh
+bun install --frozen-lockfile
+bun run dev
+bun run check
 ```
 
-Run `bun run test:unit` for independent tests, or `bun run test:local` for the complete suite with isolated Docker PostgreSQL/Redis and coverage. The latter requires installed dependencies and Docker; it runs Bun tests on Linux and removes its containers/network afterward. Optional arguments select a suite, for example `bun run test:local tests/http`.
+Set up `.env` using the [server guide](src/README.md). Development runs from TypeScript source. `bun run check` covers types, lint, migrations and tests with temporary PostgreSQL/Redis containers. `bun run test:unit` needs no services.
 
-Alternatively, set `KEYZORI_TEST_DATABASE_URL` and `KEYZORI_TEST_REDIS_URL` to isolated local services, then run `bun run test:integration` or `bun run test:coverage`. Both require the URLs; coverage writes `coverage/lcov.info`. Tests provision uniquely named databases and clean them up. `bun run test` skips infrastructure when URLs are absent. Run `bun run docker:build` and `bun run docker:smoke` for distribution changes.
+Use extensionless code imports, tabs, double quotes and small services with explicit dependencies. Add tests when changing behaviour. Keep API schemas and docs in sync, and never commit secrets or production data.
 
-CI runs typecheck, lint, migration integrity, release metadata, unit tests, Compose validation, and five independent infrastructure suites. Only after every check succeeds does the final Docker job build an image, smoke-test it, and publish that same image. Pull requests verify without publishing. Release tags are pinned to the exact verified commit.
+For database changes, run `bun run db:generate` and `bun run db:check`. Review the generated SQL; never edit an applied migration. This rewrite starts with a fresh database.
 
-Keep handlers thin, schemas declarative, and service/repository classes small. Use constructor injection; avoid generic repositories and framework-dependent controller classes. Authored files must remain below 500 lines. Plugin-specific code belongs under `plugins/<name>`.
+`bun run build` creates a Linux x64 binary and API reference in `dist/server/`; use `bun run build linux-arm64` for ARM64. Docker deploys the binary. `bun run build:verify` checks all supported build targets for leaked build settings. CI also checks startup, HTTPS, scheduled work, shutdown and Compose persistence.
 
-Bun runs TypeScript directly. Do not add compilation, transpilation, bundling, or a dist directory. Docker installs production dependencies and copies the source once.
-
-Generate migrations with `bun run db:generate`; review SQL and snapshots. Never rewrite applied migration history or use `db:push`. Core and plugins have separate journals. A fresh database is required for this rebuild.
-
-Add behavioral and regression tests. Keep API schemas, CLI commands, environment examples, and wiki documentation synchronized. The separate SDK is out of scope for this rebuild.
-
-Document every HTTP operation with a summary, description, and tag. Use the configured plugin name as the tag for plugin routes so they appear in the Plugins group on `/docs`. Keep field descriptions alongside their ArkType schemas; documentation must preserve validation and authentication contracts.
-
-Do not include credentials, license keys, customer data, or production logs in commits. Report vulnerabilities according to [SECURITY.md](SECURITY.md).
+Use conventional commit messages such as `fix: correct usage reset`. [Release Please](.github/RELEASE_POLICY.md) manages v2 releases from `main`. Report security issues privately using [SECURITY.md](SECURITY.md).

@@ -2,13 +2,40 @@
 	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
 	"extends": ["config:best-practices"],
 	"timezone": "Australia/Sydney",
-	"baseBranch": "dev",
+	"baseBranchPatterns": ["$default"],
+	"enabledManagers": [
+		"bun",
+		"bun-version",
+		"github-actions",
+		"dockerfile",
+		"docker-compose",
+		"custom.regex"
+	],
+	"ignorePaths": [
+		"--github/**",
+		"**/node_modules/**",
+		"**/bower_components/**",
+		".cache/**",
+		"dist/**"
+	],
 	"reviewers": ["lilsnibbi"],
 	"labels": ["dependencies", "renovate"],
-	"dependencyDashboardLabels": ["dependencies", "renovate"],
 	"prBodyTemplate": "{{{header}}}{{{table}}}{{{warnings}}}{{{notes}}}{{{changelogs}}}{{{controls}}}",
 	"prCreation": "immediate",
 	"automerge": false,
+	"ignoreUnstable": true,
+	"lockFileMaintenance": { "enabled": true },
+	"customManagers": [
+		{
+			"customType": "regex",
+			"managerFilePatterns": ["src/scripts/test-services.ts"],
+			"matchStrings": [
+				"\"(?<depName>postgres|redis):(?<currentValue>[0-9]+\\.[0-9]+(?:\\.[0-9]+)?)\""
+			],
+			"datasourceTemplate": "docker",
+			"versioningTemplate": "docker"
+		}
+	],
 	"vulnerabilityAlerts": {
 		"assignees": ["lilsnibbi"],
 		"labels": ["dependencies", "renovate", "security"]
@@ -27,37 +54,63 @@
 			"addLabels": ["bun"]
 		},
 		{
-			"description": "Group GitHub Actions updates",
+			"description": "Group non-major GitHub Actions updates",
 			"matchManagers": ["github-actions"],
+			"matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
 			"groupName": "GitHub Actions",
 			"addLabels": ["github-actions"]
 		},
 		{
-			"description": "Group Docker image updates",
+			"description": "Keep existing Docker tag update policy",
 			"matchDatasources": ["docker"],
-			"groupName": "Docker images",
 			"addLabels": ["docker"],
 			"pinDigests": false
 		},
 		{
-			"description": "Highlight major updates",
-			"matchUpdateTypes": ["major"],
-			"addLabels": ["major-update"]
+			"description": "Group non-major Docker image updates",
+			"matchDatasources": ["docker"],
+			"matchUpdateTypes": ["minor", "patch", "digest"],
+			"groupName": "Docker images"
+		},
+		{
+			"description": "Keep Bun runtime, types, CI and image versions together",
+			"matchPackageNames": ["bun", "oven-sh/bun", "@types/bun", "oven/bun"],
+			"groupName": "Bun runtime",
+			"addLabels": ["bun"]
+		},
+		{
+			"description": "Review Elysia and its schema peers together",
+			"matchPackageNames": ["elysia", "@elysia/*", "typebox", "exact-mirror"],
+			"groupName": "Elysia ecosystem"
+		},
+		{
+			"description": "Track compatible Elysia 2 prereleases and stable releases",
+			"matchPackageNames": ["elysia", "@elysia/*"],
+			"allowedVersions": "/^2\\./",
+			"ignoreUnstable": false,
+			"respectLatest": false,
+			"rangeStrategy": "pin"
 		},
 		{
 			"description": "Postgres/Redis: stable numeric tags only, no beta/arch variants",
 			"matchDatasources": ["docker"],
 			"matchPackageNames": ["postgres", "redis"],
-			"ignoreUnstable": true,
-			"enabled": false
+			"allowedVersions": "/^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$/",
+			"ignoreUnstable": true
 		},
 		{
-			"description": "Track drizzle prerelease builds together",
+			"description": "Track compatible Drizzle 1 ORM/Kit prereleases together",
 			"matchPackageNames": ["drizzle-orm", "drizzle-kit"],
 			"groupName": "Drizzle",
-			"rangeStrategy": "bump",
-			"enabled": false
+			"allowedVersions": "/^1\\./",
+			"ignoreUnstable": false,
+			"respectLatest": false,
+			"rangeStrategy": "pin"
+		},
+		{
+			"description": "Highlight major updates for manual review",
+			"matchUpdateTypes": ["major"],
+			"addLabels": ["major-update"]
 		}
-	],
-	"ignoreUnstable": false
+	]
 }

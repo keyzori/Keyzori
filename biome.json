@@ -6,7 +6,8 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"ignoreUnknown": false
+		"ignoreUnknown": true,
+		"includes": ["**", "!!**/node_modules", "!!dist", "!!.cache", "!!--github"]
 	},
 	"formatter": {
 		"enabled": true,
@@ -34,7 +35,9 @@
 	"overrides": [
 		{
 			"includes": ["**/migrations/**/snapshot.json"],
-			"formatter": { "enabled": false }
+			"formatter": {
+				"enabled": false
+			}
 		},
 		{
 			"includes": ["renovate.json"],

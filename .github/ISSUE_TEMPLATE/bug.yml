@@ -10,14 +10,14 @@ body:
     id: version
     attributes:
       label: Version
-      placeholder: v1.0.0 or commit
+      placeholder: v2.0.0 or commit
     validations:
       required: true
   - type: dropdown
     id: component
     attributes:
       label: Component
-      options: [Server, Admin CLI, SDK, Migrations, Docker, Documentation]
+      options: [Server, Migrations, Docker, Documentation]
     validations:
       required: true
   - type: textarea

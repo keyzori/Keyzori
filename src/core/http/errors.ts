@@ -1,0 +1,22 @@
+export const errors = {
+	INVALID_REQUEST: [400, "Request validation failed"],
+	USER_ID_REQUIRED: [400, "User ID is required"],
+	ITEM_ID_REQUIRED: [400, "Item ID is required"],
+	HARDWARE_ID_REQUIRED: [400, "Hardware ID is required"],
+	INVALID_USAGE_METER: [400, "Usage meter is invalid"],
+	IDEMPOTENCY_KEY_REUSED: [
+		400,
+		"Idempotency key was used for a different request",
+	],
+	UNAUTHORIZED: [401, "Authentication is required"],
+	FORBIDDEN: [403, "Access is forbidden"],
+	NOT_FOUND: [404, "Resource was not found"],
+	CONFLICT: [409, "Operation conflicts with current state"],
+	SECRET_ALREADY_ISSUED: [409, "Credential was already issued"],
+	BULK_OPERATION_FAILED: [400, "Bulk operation failed"],
+	PAYLOAD_TOO_LARGE: [413, "Request body is too large"],
+	UNSUPPORTED_MEDIA_TYPE: [415, "Content-Type must be application/json"],
+	RATE_LIMITED: [429, "Rate limit exceeded"],
+	SERVICE_UNAVAILABLE: [503, "Required service is unavailable"],
+	INTERNAL_ERROR: [500, "Internal server error"],
+} as const;

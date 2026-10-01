@@ -5,7 +5,6 @@
 		"module": "Preserve",
 		"moduleResolution": "bundler",
 		"moduleDetection": "force",
-		"allowImportingTsExtensions": true,
 		"verbatimModuleSyntax": true,
 		"noEmit": true,
 		"strict": true,
@@ -15,13 +14,6 @@
 		"noImplicitOverride": true,
 		"types": ["bun"]
 	},
-	"include": [
-		"src/**/*.ts",
-		"plugins/**/*.ts",
-		"tests/**/*.ts",
-		"scripts/**/*.ts",
-		"drizzle.config.ts",
-		"commitlint.config.ts"
-	],
-	"exclude": ["node_modules", "plugins/*/node_modules", "dist"]
+	"include": ["src/**/*.ts", "commitlint.config.ts", "src/drizzle.config.ts"],
+	"exclude": ["node_modules", "dist"]
 }

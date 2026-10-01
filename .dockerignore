@@ -6,12 +6,7 @@
 !LICENSE
 !src/
 !src/**
-!plugins/
-!plugins/**
-!migrations/
-!migrations/**
-!scripts/
-!scripts/plugins.ts
+**/tests
 **/node_modules
 **/.env
 **/.env.*

@@ -1,56 +1,48 @@
 {
 	"name": "keyzori",
-	"version": "1.2.1",
+	"version": "2.0.0",
 	"private": true,
 	"type": "module",
 	"license": "Apache-2.0",
-	"description": "Self-hosted software licensing API and HTTP administration CLI.",
+	"description": "Self hosted software licensing",
 	"packageManager": "bun@1.4.2",
 	"engines": {
-		"bun": ">=1.3.14"
+		"bun": ">=1.4.2"
 	},
 	"scripts": {
-		"setup": "bun install --frozen-lockfile && bun run scripts/plugins.ts install",
-		"dev": "bun --watch src/main.ts serve",
-		"start": "bun src/main.ts serve",
-		"cli": "bun src/main.ts admin",
-		"cli:help": "bun src/main.ts admin --help",
-		"typecheck": "bunx --bun tsc --noEmit",
-		"test": "bun test tests",
-		"test:unit": "bun test tests/unit tests/http/responses.test.ts tests/plugins/loader.test.ts tests/services/policy.test.ts",
-		"test:coverage": "bun run scripts/integration.ts tests --coverage --coverage-reporter=text --coverage-reporter=lcov",
-		"test:local": "bun run scripts/testLocal.ts",
-		"test:integration": "bun run scripts/integration.ts",
-		"lint": "bunx --bun biome check .",
-		"format": "bunx --bun biome format --write .",
-		"check": "bun run typecheck && bun run test && bun run lint && bun run db:check",
-		"check:server": "bun run typecheck && bun test tests/http tests/services",
-		"check:cli": "bun test tests/cli",
-		"db:generate": "bunx --bun drizzle-kit generate && bun run scripts/plugins.ts generate",
+		"prepare": "husky",
+		"dev": "bun --watch src/main.ts",
+		"start": "bun src/main.ts",
+		"master-key": "bun src/main.ts master-key",
+		"check": "bun run typecheck && bun run lint && bun run db:check && bun run test",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"format": "biome check --write .",
+		"test": "bun src/scripts/test-services.ts exec bun test",
+		"test:unit": "bun test src/tests/unit",
+		"db:generate": "bunx --bun drizzle-kit generate --config=src/drizzle.config.ts",
 		"db:migrate": "bun src/main.ts migrate",
-		"db:check": "bunx --bun drizzle-kit check && bun run scripts/plugins.ts check && bun run scripts/checkMigrations.ts",
-		"docker:build": "docker build --tag keyzori-rebuild .",
-		"docker:smoke": "bun run scripts/dockerSmoke.ts",
-		"release:verify": "bun run scripts/verifyRelease.ts",
-		"audit": "bun audit --audit-level=high",
-		"prepare": "husky"
-	},
-	"dependencies": {
-		"@elysia/openapi": "1.4.16",
-		"@lilsnibbi/logger": "1.1.1",
-		"arktype": "^2.2.0",
-		"commander": "15.0.0",
-		"drizzle-orm": "1.0.0-rc.5-ab785fc",
-		"elysia": "1.4.30"
+		"db:check": "bun src/scripts/check-migrations.ts",
+		"openapi": "bun src/scripts/openapi.ts",
+		"build": "bun run openapi && bun src/scripts/build.ts",
+		"build:verify": "bun src/scripts/verify-build.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.13",
-		"@commitlint/cli": "^21.2.2",
-		"@commitlint/config-conventional": "^21.2.2",
+		"@commitlint/cli": "21.2.2",
+		"@commitlint/config-conventional": "21.2.2",
+		"@commitlint/types": "21.2.0",
 		"@types/bun": "1.4.2",
-		"@types/node": "22.20.2",
 		"drizzle-kit": "1.0.0-rc.5-ab785fc",
-		"husky": "^9.1.7",
-		"typescript": "7.0.2"
+		"husky": "9.1.7",
+		"typescript": "7.0.2",
+		"@elysia/openapi": "2.0.0-beta.4"
+	},
+	"dependencies": {
+		"@elysia/cors": "2.0.0-beta.1",
+		"drizzle-orm": "1.0.0-rc.5-ab785fc",
+		"elysia": "2.0.0-beta.16",
+		"exact-mirror": "1.2.6",
+		"typebox": "1.3.0"
 	}
 }

@@ -1,59 +1,57 @@
-x-logging: &logging
-  driver: "json-file"
-  options:
-    max-size: "10m"
-    max-file: "3"
-
 services:
+  server:
+    image: ghcr.io/keyzori/server:${KZ_VERSION:-2.0.0}
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "6284:6284"
+    environment:
+      KZ_DATABASE_URL: postgresql://keyzori_server:${KZ_SERVER_DATABASE_PASSWORD:?Set KZ_SERVER_DATABASE_PASSWORD}@postgres:5432/keyzori
+      KZ_REDIS_URL: redis://redis:6379
+      KZ_MASTER_KEY: ${KZ_MASTER_KEY:?Generate KZ_MASTER_KEY}
+      KZ_API_HOST: 0.0.0.0
+      KZ_API_PORT: 6284
+      KZ_DATABASE_POOL_SIZE: ${KZ_DATABASE_POOL_SIZE:-10}
+      KZ_LOG_LEVEL: ${KZ_LOG_LEVEL:-info}
+      KZ_TRUSTED_PROXIES: ${KZ_TRUSTED_PROXIES:-}
+      KZ_CLIENT_IP_HEADERS: ${KZ_CLIENT_IP_HEADERS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stop_grace_period: 30s
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
   postgres:
-    image: postgres:18-alpine
+    image: postgres:18.0
     restart: unless-stopped
     environment:
-      POSTGRES_USER: keyzori
       POSTGRES_DB: keyzori
-      POSTGRES_PASSWORD: ${KEYZORI_POSTGRES_PASSWORD:?Set KEYZORI_POSTGRES_PASSWORD}
-      POSTGRES_INITDB_ARGS: "-c shared_preload_libraries=pg_stat_statements -c max_connections=200"
-    volumes: ["postgres-data:/var/lib/postgresql"]
-    logging: *logging
+      POSTGRES_USER: keyzori
+      POSTGRES_PASSWORD: ${KZ_POSTGRES_PASSWORD:?Set KZ_POSTGRES_PASSWORD}
+      KZ_SERVER_DATABASE_PASSWORD: ${KZ_SERVER_DATABASE_PASSWORD:?Set KZ_SERVER_DATABASE_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql
+      - ./deploy/postgres/01-roles.sh:/docker-entrypoint-initdb.d/01-roles.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U keyzori -d keyzori"]
       interval: 5s
-      timeout: 5s
-      retries: 20
+      timeout: 3s
+      retries: 12
   redis:
-    image: redis:8
+    image: redis:8.2.1
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
-    volumes: ["redis-data:/data"]
-    logging: *logging
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "PING"]
       interval: 5s
-      timeout: 5s
-      retries: 20
-  server:
-    image: ghcr.io/keyzori/keyzori:latest
-    build: .
-    env_file:
-      - path: .env
-        required: false
-    read_only: true
-    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    logging: *logging
-    environment:
-      KEYZORI_DATABASE_URL: postgresql://keyzori:${KEYZORI_POSTGRES_PASSWORD:?Set KEYZORI_POSTGRES_PASSWORD}@postgres:5432/keyzori
-      KEYZORI_REDIS_URL: redis://redis:6379
-      KEYZORI_ADMIN_KEY: ${KEYZORI_ADMIN_KEY:?Set KEYZORI_ADMIN_KEY}
-    command: ["serve"]
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:6284:6284"
-    stop_grace_period: 30s
-    depends_on:
-      postgres: { condition: service_healthy }
-      redis: { condition: service_healthy }
+      timeout: 3s
+      retries: 12
 volumes:
-  postgres-data:
-  redis-data:
+  postgres:
