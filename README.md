@@ -39,7 +39,7 @@ bun run master-key
 bun run start
 ```
 
-The default address is `http://localhost:6284`. For automatic restarts while developing, use `bun run dev` instead of `bun run start`.
+The default address is `http://localhost:6284`. Direct Bun or binary deployments can set `KZ_API_HOST` to an IPv4 or IPv6 address such as `127.0.0.1` or `::1` to restrict the listening interface. The `healthcheck` command probes that configured address and port. For automatic restarts while developing, use `bun run dev` instead of `bun run start`.
 
 | URL | Purpose |
 | --- | --- |
@@ -66,6 +66,8 @@ Compose starts PostgreSQL 18.0, Redis 8.2.1, and the API. It supplies internal d
 The API is available at `http://localhost:6284`. Only the API port is published. The container runs a standalone Linux executable as a non-root user with a read-only filesystem.
 
 See the [server guide](src/README.md#environment) for environment settings and [operations](src/README.md#operations) for backups, HTTPS proxy configuration and shutdown behaviour.
+
+Keep `KZ_API_HOST=0.0.0.0` inside the Compose container so its healthcheck and reverse proxy can reach the server. Restrict access through the published host port or proxy; a loopback listener inside the container is separate from a loopback binding on the host.
 
 ## Plugins
 

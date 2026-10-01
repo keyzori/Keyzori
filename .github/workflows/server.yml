@@ -10,6 +10,19 @@ concurrency:
   group: server-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  required:
+    name: Required checks
+    needs: [workflows, verify]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require workflow validation and both Linux architectures
+        env:
+          WORKFLOW_RESULT: ${{ needs.workflows.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: test "$WORKFLOW_RESULT" = success && test "$VERIFY_RESULT" = success
+
   workflows:
     name: Workflow checks
     runs-on: ubuntu-24.04

@@ -55,6 +55,20 @@ describe("environment configuration", () => {
 		).toThrow("unsupported");
 	});
 
+	test.each(["127.0.0.1", "127.0.0.2", "::", "::1"])(
+		"preserves the configured listener address %s",
+		(host) =>
+			expect(new Config({ ...environment, KZ_API_HOST: host }).host).toBe(host),
+	);
+
+	test.each(["", "localhost", "127.0.0.1:6284", "fe80::1%eth0"])(
+		"rejects invalid listener address %s",
+		(host) =>
+			expect(() => new Config({ ...environment, KZ_API_HOST: host })).toThrow(
+				"KZ_API_HOST",
+			),
+	);
+
 	test("rejects malformed configuration without echoing secret values", () => {
 		for (const value of ["0", "01", "6284junk", "65536", "1.5", ""]) {
 			expect(() => new Config({ ...environment, KZ_API_PORT: value })).toThrow(

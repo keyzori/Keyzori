@@ -28,7 +28,8 @@ export class Config {
 			);
 		}
 		this.host = environment.KZ_API_HOST ?? "0.0.0.0";
-		if (!isIP(this.host)) throw new Error("KZ_API_HOST must be an IP address");
+		if (!isIP(this.host) || this.host.includes("%"))
+			throw new Error("KZ_API_HOST must be an IP address");
 		this.port = this.integer(environment, "KZ_API_PORT", 6284, 65535);
 		this.poolSize = this.integer(
 			environment,

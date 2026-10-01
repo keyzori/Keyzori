@@ -4,6 +4,7 @@ import { ServerLifecycle } from "./core/ServerLifecycle";
 import { Database } from "./core/database/Database";
 import { MigrationService } from "./core/database/MigrationService";
 import { KeyGenerator } from "./core/security/KeyGenerator";
+import { healthcheckUrl } from "./core/http/healthcheckUrl";
 import { version } from "./version";
 
 async function run() {
@@ -13,10 +14,17 @@ async function run() {
 		else if (command === "master-key") console.log(new KeyGenerator().master());
 		else if (command === "healthcheck") {
 			const port = Bun.env.KZ_API_PORT ?? "6284";
-			if (!/^[0-9]+$/.test(port)) throw new Error("Invalid port");
-			const response = await fetch(`http://127.0.0.1:${port}/health`, {
-				signal: AbortSignal.timeout(4000),
-			});
+			if (!/^[1-9][0-9]*$/.test(port)) throw new Error("Invalid port");
+			const response = await fetch(
+				healthcheckUrl({
+					host: Bun.env.KZ_API_HOST ?? "0.0.0.0",
+					port: Number(port),
+				}),
+				{
+					signal: AbortSignal.timeout(4000),
+					redirect: "error",
+				},
+			);
 			if (!response.ok) process.exitCode = 1;
 		} else if (command === "migrate") {
 			const config = new Config();
