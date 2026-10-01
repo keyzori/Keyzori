@@ -101,7 +101,7 @@ The [server guide](src/README.md) describes the current rewrite. The existing [K
 | 🔑 | [Licensing model](src/README.md#usage-capacity-and-replay) | Expiry, limits, meters and idempotent usage. |
 | 🔄 | [First license](src/README.md#first-licence) | Issue, enable and validate a license. |
 | 🌐 | [HTTP API](src/README.md#administration) | Routes, authentication, scopes and queries. |
-| 🏗️ | [Implementation](src/IMPLEMENTATION.md) | Architecture decisions and approved contracts. |
+| 🏗️ | [Implementation](src/IMPLEMENTATION.md) | Architecture, runtime lifecycle and persistence. |
 | 📊 | [Operations](src/README.md#operations) | Monitor, back up and maintain the server. |
 | 🧪 | [Verification](src/README.md#verification) | Checks and build commands. |
 

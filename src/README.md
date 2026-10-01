@@ -11,7 +11,9 @@ bun install --frozen-lockfile
 bun run master-key
 ```
 
-Copy `.env.example` to `.env`. Save the generated key as `KZ_MASTER_KEY` and set a random `KZ_POSTGRES_PASSWORD`, then:
+Copy `.env.example` to `.env`. Save the generated key as `KZ_MASTER_KEY`.
+
+Set `KZ_POSTGRES_PASSWORD` and `KZ_SERVER_DATABASE_PASSWORD` to independent random, URL-safe passwords. For example, generate 32 random bytes encoded as 64 hexadecimal characters for each password. The first password belongs to the PostgreSQL administrator; the second belongs to the restricted server role and is inserted directly into Compose's database URL. Then:
 
 ```sh
 docker compose up --build -d
