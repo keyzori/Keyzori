@@ -34,6 +34,12 @@
 	},
 	"overrides": [
 		{
+			"includes": [".release-please-manifest.json"],
+			"formatter": {
+				"enabled": false
+			}
+		},
+		{
 			"includes": ["**/migrations/**/snapshot.json"],
 			"formatter": {
 				"enabled": false
