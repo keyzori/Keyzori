@@ -68,6 +68,61 @@ describe("credential security", () => {
 		expect(() => generator.license(unexpected)).toThrow("format");
 	});
 
+	test("printable ASCII formatting survives an Authorization header verbatim", () => {
+		for (let code = 0x20; code <= 0x7e; code++) {
+			const text = String.fromCharCode(code);
+			const credential = generator.license({
+				...KeyGenerator.defaultFormat,
+				prefix: text,
+				separator: text,
+			});
+			expect(
+				new Headers({ Authorization: `Bearer ${credential}` }).get(
+					"Authorization",
+				),
+			).toBe(`Bearer ${credential}`);
+		}
+	});
+
+	test("rejects control and non-ASCII text at every prefix and separator boundary", () => {
+		const invalid = [
+			...Array.from({ length: 32 }, (_, code) => String.fromCharCode(code)),
+			"\x7f",
+			"\x80",
+			"\u00e9",
+			"\u4f60\u597d",
+			"\ud83d\ude00",
+			"\ud800",
+		];
+		for (const field of ["prefix", "separator"] as const)
+			for (const text of invalid)
+				for (const value of [text, `safe${text}`, `${text}safe`])
+					expect(() =>
+						generator.license({
+							...KeyGenerator.defaultFormat,
+							[field]: value,
+						}),
+					).toThrow("format");
+	});
+
+	test("accepts an empty format prefix and separator at exactly 4096 characters", () => {
+		const format = {
+			...KeyGenerator.defaultFormat,
+			prefix: "",
+			separator: "",
+			groups: 32,
+			length: 128,
+		};
+		const credential = generator.license(format);
+		expect(credential).toHaveLength(4096);
+		expect(
+			new Headers({ Authorization: `Bearer ${credential}` }).get(
+				"Authorization",
+			),
+		).toBe(`Bearer ${credential}`);
+		expect(() => generator.license({ ...format, prefix: "x" })).toThrow("4096");
+	});
+
 	test("rejects bytes outside the unbiased alphabet range", () => {
 		const randomness = spyOn(crypto, "getRandomValues").mockImplementationOnce(
 			(array: Parameters<Crypto["getRandomValues"]>[0]) => {

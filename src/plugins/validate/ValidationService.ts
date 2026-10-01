@@ -68,7 +68,7 @@ export class ValidationService {
 					if (license.expiresAt && now >= license.expiresAt)
 						throw new Decision("LICENSE_EXPIRED");
 					if (license.userId) {
-						if (input.userId && input.userId !== license.userId)
+						if (input.userId && input.userId.toLowerCase() !== license.userId)
 							throw new Decision("USER_NOT_ALLOWED");
 						const [user] = await tx
 							.select({ enabled: users.enabled })
@@ -77,7 +77,7 @@ export class ValidationService {
 						if (!user?.enabled) throw new Decision("USER_DISABLED");
 					}
 					if (license.itemId) {
-						if (input.itemId && input.itemId !== license.itemId)
+						if (input.itemId && input.itemId.toLowerCase() !== license.itemId)
 							throw new Decision("ITEM_NOT_ALLOWED");
 						const [item] = await tx
 							.select({ enabled: items.enabled })
@@ -90,11 +90,12 @@ export class ValidationService {
 					if (license.itemId && !input.itemId)
 						throw new HttpError("ITEM_ID_REQUIRED");
 					const { license: credential, ...body } = input;
-					const fingerprint = this.idempotency.fingerprint({
+					const fingerprintInput = {
 						body,
 						clientIp: context.clientIp,
 						credentialHash: this.hasher.hash(credential),
-					});
+					};
+					const fingerprint = this.idempotency.fingerprint(fingerprintInput);
 					const receipt =
 						usageChanging && key
 							? await this.idempotency.existing(
@@ -103,6 +104,7 @@ export class ValidationService {
 									license.id,
 									key,
 									fingerprint,
+									fingerprintInput,
 								)
 							: undefined;
 					if (!receipt) {

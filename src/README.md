@@ -39,6 +39,8 @@ Manage licenses, users, items, API keys and webhooks through the API. Everything
 
 Run `bun run openapi` for the full API reference in `dist/server/openapi.json`.
 
+License-key prefixes and separators use printable ASCII so issued credentials can be sent in bearer headers. Spaces and punctuation are preserved. Correct any older incompatible format before issuing or rotating licenses; existing credentials are not changed automatically.
+
 ## Usage, capacity and replay
 
 Add expiry dates, device/IP caps or usage meters as needed. No cap means unlimited; a cap of zero allows nothing.

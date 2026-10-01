@@ -25,7 +25,7 @@ const value = t.Object(
 			t.Integer({ minimum: 1, maximum: 36500 }),
 			t.Null(),
 		]),
-		defaultPageLimit: t.Integer({ minimum: 1, maximum: 2147483647 }),
+		defaultPageLimit: t.Integer({ minimum: 1, maximum: 2147483646 }),
 	},
 	{ additionalProperties: false },
 );

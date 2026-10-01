@@ -79,7 +79,7 @@ export class UserService {
 		if (
 			principal.kind === "license" &&
 			(params.size !== 1 ||
-				params.get("id") !== principal.userId ||
+				params.get("id")?.toLowerCase() !== principal.userId ||
 				!principal.userId)
 		) {
 			throw new HttpError("FORBIDDEN");
@@ -87,7 +87,7 @@ export class UserService {
 		return this.database.transaction(
 			async (tx) => {
 				const license = await this.auth.assertLicense(tx, principal);
-				if (license && params.get("id") !== license.userId)
+				if (license && params.get("id")?.toLowerCase() !== license.userId)
 					throw new HttpError("FORBIDDEN");
 				const settings = await this.settings.read(tx);
 				const query = new ResourceQuery(

@@ -39,6 +39,7 @@ export class IdempotencyService {
 						context.principal.id,
 						key,
 						fingerprint,
+						input,
 					);
 					if (receipt?.result) throw new Replay(receipt.result);
 				}
@@ -64,17 +65,25 @@ export class IdempotencyService {
 		);
 	}
 	fingerprint(value: unknown): string {
+		return this.hash(value, false);
+	}
+	private hash(value: unknown, legacy: boolean): string {
 		return new Bun.CryptoHasher("sha256")
-			.update(this.canonical(value))
+			.update(this.canonical(value, legacy))
 			.digest("hex");
 	}
-	private canonical(value: unknown): string {
+	private canonical(value: unknown, legacy: boolean): string {
 		if (Array.isArray(value))
-			return `[${value.map((item) => this.canonical(item)).join(",")}]`;
+			return `[${value.map((item) => this.canonical(item, legacy)).join(",")}]`;
 		if (value && typeof value === "object") {
 			return `{${Object.entries(value)
-				.sort(([a], [b]) => a.localeCompare(b))
-				.map(([key, item]) => `${JSON.stringify(key)}:${this.canonical(item)}`)
+				.sort(([a], [b]) =>
+					legacy ? a.localeCompare(b) : a < b ? -1 : a > b ? 1 : 0,
+				)
+				.map(
+					([key, item]) =>
+						`${JSON.stringify(key)}:${this.canonical(item, legacy)}`,
+				)
 				.join(",")}}`;
 		}
 		return JSON.stringify(value) ?? "null";
@@ -85,6 +94,7 @@ export class IdempotencyService {
 		principalId: string,
 		key: string,
 		fingerprint: string,
+		input?: unknown,
 	) {
 		await tx.execute(
 			sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([operation, principalId, key])}, 0))`,
@@ -107,7 +117,11 @@ export class IdempotencyService {
 			await tx.delete(receipts).where(where);
 			return;
 		}
-		if (receipt.fingerprint !== fingerprint)
+		// Keep pre-fix receipts replayable without writing locale-dependent hashes.
+		if (
+			receipt.fingerprint !== fingerprint &&
+			(input === undefined || receipt.fingerprint !== this.hash(input, true))
+		)
 			throw new HttpError("IDEMPOTENCY_KEY_REUSED");
 		if (receipt.secretIssued)
 			throw new HttpError(

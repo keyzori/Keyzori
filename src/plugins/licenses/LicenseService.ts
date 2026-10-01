@@ -114,7 +114,10 @@ export class LicenseService {
 				if (params.size) throw new HttpError("INVALID_REQUEST");
 				params = new URLSearchParams({ id: operation.principal.id });
 			}
-			if (params.get("id") !== operation.principal.id || params.size !== 1)
+			if (
+				params.get("id")?.toLowerCase() !== operation.principal.id ||
+				params.size !== 1
+			)
 				throw new HttpError("FORBIDDEN");
 		}
 		const settings = await this.settings.read(undefined, operation.deadlineAt);
