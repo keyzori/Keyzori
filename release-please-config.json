@@ -6,6 +6,7 @@
 	"packages": {
 		".": {
 			"initial-version": "2.0.0",
+			"release-as": "2.0.0",
 			"package-name": "keyzori",
 			"release-type": "node"
 		}

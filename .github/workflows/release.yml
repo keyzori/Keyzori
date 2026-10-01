@@ -18,6 +18,36 @@ concurrency:
   group: release-please-main
   cancel-in-progress: false
 jobs:
+  v2-release-pr:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/v2' && inputs.release-tag == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require successful checks for current v2
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { data: branch } = await github.rest.git.getRef({ ...context.repo, ref: 'heads/v2' });
+            if (context.sha !== branch.object.sha)
+              throw new Error('Requested commit is no longer the current v2 head');
+            for (const workflow_id of ['server.yml', 'codeql.yml']) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                ...context.repo, workflow_id, head_sha: context.sha,
+                branch: 'v2', event: 'push', per_page: 100
+              });
+              const latest = data.workflow_runs.sort((a, b) => b.id - a.id)[0];
+              if (latest?.conclusion !== 'success')
+                throw new Error(`Current v2 commit has no successful ${workflow_id} checks`);
+            }
+      - name: Update v2 release pull request
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+          target-branch: v2
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true
+
   release:
     outputs:
       sha: ${{ steps.artifacts.outputs.sha }}
