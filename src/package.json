@@ -1,0 +1,5 @@
+{
+	"name": "@keyzori/server",
+	"private": true,
+	"type": "module"
+}

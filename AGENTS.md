@@ -1,36 +1,36 @@
-# AGENTS.md
+# Repository Guidelines
 
-These instructions apply to the entire repository. Keep responses minimal.
+## Project Structure & Module Organization
 
-## Project
+Keyzori is a Bun/TypeScript licensing server built with Elysia, PostgreSQL and Redis. `src/main.ts` handles commands and startup; `src/app.ts` composes HTTP routes. Shared infrastructure lives in `src/core/`, feature modules in `src/plugins/`, and shared types in `src/types/`. Keep feature routes, models and services together.
 
-Keyzori is one root Bun/TypeScript application:
+Tests live in `src/tests/{unit,http,integration}`, with shared helpers in `src/tests/fixtures/`. Build and verification tools live in `src/scripts/`. Database migrations belong in `src/core/database/migrations/`. Active workflows and repository assets live in `.github/`; `--github/` is archived reference material. Generated binaries and OpenAPI output go to `dist/server/`.
 
-- `src/<feature>`: customers, licenses, access, sessions, meters, activity; routes, ArkType schemas, service and repository classes, Drizzle tables.
-- `src/application`: composition, HTTP, lifecycle; `src/database`: Bun SQL, relations, migrations.
-- `src/cli`: class-based commands using one HTTP admin client.
-- `plugins/<name>`: independently configured plugins with their own dependencies, tables, migrations, workers, and optional CLI commands.
-- `tests`: service, HTTP, plugin, CLI, and real PostgreSQL/Redis tests.
-- Prose documentation lives in the separate [wiki repository](https://github.com/keyzori/keyzori/wiki).
+## Build, Test, and Development Commands
 
-The separate TypeScript SDK is outside this rebuild. Read README.md, CONTRIBUTING.md, and the Architecture wiki before broad changes.
+Use Bun 1.4.2 and `bunx --bun`, not npm or npx.
 
-## Working rules
+- `bun install --frozen-lockfile`: install locked dependencies.
+- `bun run dev`: run source with automatic restarts; `bun run start` runs once.
+- `bun run check`: check types, formatting, migrations and the full test suite.
+- `bun run test`: run tests with temporary PostgreSQL/Redis containers; Docker must be running.
+- `bun run test:unit`: run tests without external services.
+- `bun run format`: apply Biome formatting and fixes.
+- `bun run build linux-arm64`: build an ARM64 binary and OpenAPI reference; the default target is Linux x64.
+- `bun run build:verify`: build all supported targets and check for leaked build settings.
 
-- Use Bun 1.3.14+, bunx --bun, and bun:test. Do not introduce npm, pnpm, yarn, Turbo, ESLint, or Prettier workflows.
-- Run TypeScript directly with Bun. Do not compile, transpile, bundle, or generate dist artifacts. Docker installs dependencies and copies source once.
-- Preserve unrelated changes. Keep public HTTP, CLI, configuration, database, and documentation contracts synchronized.
-- Use small classes and constructor injection. Keep Elysia handlers thin and inferred, ArkType schemas and Drizzle tables declarative. Avoid controller inheritance, generic repositories, DI frameworks, duplicate interfaces, and unnecessary wrappers.
-- Keep authored files below 500 lines; generated artifacts are exempt.
-- Keep all plugin-specific imports, configuration, tables, migrations, and workers out of core. Plugin Elysia instances declare their own /plugins/<name> constructor prefix; the loader never rewrites routes.
-- Licensing, authentication, sessions, metering, billing, and migrations are security-sensitive. Do not weaken validation, binding, revisions, locks, idempotency, redaction, or transaction guarantees without explicit approval.
-- Add behavioral tests and regression coverage for fixes.
-- Generate migrations with bun run db:generate and review the generated SQL. Do not use db:push. Never erase an existing database to make startup succeed.
-- Server startup applies core and enabled-plugin migrations under the database lock before opening HTTP or starting workers. Missing or modified migration history and migration failures must prevent startup. The standalone migrate command remains available; Compose runs migrations within the server container.
-- Never commit secrets, license keys, credentials, customer data, or production logs.
+## Coding Style & Naming Conventions
 
-## Style and validation
+Use tabs, double quotes and extensionless TypeScript imports. Biome enforces formatting and lint rules. Use PascalCase for classes and their files, camelCase for functions and variables, and existing feature folder conventions. Prefer small services with explicit dependencies. Keep runtime configuration separate from build-time capture.
 
-Use strict TypeScript, tabs, double quotes, and Biome. Run the narrowest relevant checks first, then bun run check. Real infrastructure tests require KEYZORI_TEST_DATABASE_URL and KEYZORI_TEST_REDIS_URL. Run Docker smoke tests for distribution changes and report unrun checks accurately.
+## Testing Guidelines
 
-Before completion, review git diff and git status. Report behavior changes, verification, and remaining limitations. Do not commit, push, publish, deploy, migrate a live database, or contact external services unless explicitly requested. Local isolated verification is allowed when implementing an authorized change.
+Use Bun's test runner and `*.test.ts` filenames. Add regression tests for behaviour changes. Run subsets with `bun run test ./src/tests/http`. No numeric coverage threshold is configured. Runtime packaging changes also require container and Compose smoke checks.
+
+## Commit & Pull Request Guidelines
+
+Use Conventional Commits, such as `fix: correct usage reset`; history includes `chore(main): release ...`. Husky runs commitlint. PRs should explain the change, report verification, update relevant documentation, and identify migration or compatibility effects. Release Please manages changelogs and releases.
+
+## Security & Configuration
+
+Copy `.env.example` to `.env` and generate credentials with `bun run master-key`. Never commit secrets or production data. Generate and check migrations with `bun run db:generate` and `bun run db:check`; never edit applied migrations. Follow `SECURITY.md` for private vulnerability reports.

@@ -1,0 +1,15 @@
+export const validationCodes = {
+	VALID: "License is valid",
+	LICENSE_INVALID: "License key is invalid",
+	LICENSE_DISABLED: "License is disabled",
+	LICENSE_EXPIRED: "License has expired",
+	USER_NOT_ALLOWED: "User does not match this license",
+	USER_DISABLED: "User is disabled",
+	ITEM_NOT_ALLOWED: "Item does not match this license",
+	ITEM_DISABLED: "Item is disabled",
+	IP_BLOCKED: "Request IP is blocked",
+	IP_NOT_ALLOWED: "Request IP is not allowed",
+	IP_LIMIT_REACHED: "IP limit has been reached",
+	DEVICE_LIMIT_REACHED: "Device limit has been reached",
+	USAGE_LIMIT_REACHED: "Usage limit has been reached",
+} as const;
