@@ -5,7 +5,7 @@ export class Config {
 	readonly databaseUrl;
 	readonly redisUrl;
 	readonly masterKey;
-	readonly host;
+	readonly host: string;
 	readonly port;
 	readonly poolSize;
 	readonly trustedProxies;

@@ -62,11 +62,13 @@ test("healthcheck command refuses HTTP redirects", async () => {
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port: 0,
-		fetch: () =>
-			new Response(null, {
-				status: 302,
-				headers: { location: "http://127.0.0.1:1/health" },
-			}),
+		fetch: (request) =>
+			new URL(request.url).pathname === "/health"
+				? new Response(null, {
+						status: 302,
+						headers: { location: "/redirected" },
+					})
+				: new Response(null, { status: 200 }),
 	});
 	try {
 		const child = Bun.spawn([process.execPath, "src/main.ts", "healthcheck"], {
