@@ -9,7 +9,7 @@
 </div>
 
 > [!WARNING]
-> This rewrite changes the API, settings, and database format. Start with a fresh PostgreSQL database; older databases and client integrations are not compatible. It remains a development prerelease using Elysia 2 beta.
+> V2 changes the API, settings, and database format. Start with a fresh PostgreSQL database; older databases and client integrations are not compatible. Linux is the supported deployment platform. The server uses Elysia 2 beta; see the [platform limitations](src/README.md#operations) before choosing a deployment.
 
 Keyzori is a self-hosted license server for software products. Create users, items and licenses, control device and IP access, and track usage through an HTTP API.
 

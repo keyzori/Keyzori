@@ -59,6 +59,7 @@ Check the response's `code` and `reason`: a rejected license still returns HTTP 
 - Back up PostgreSQL and keep your root key safe. `docker compose down -v` deletes stored data.
 - Webhooks get one attempt, with no retries or signatures.
 - Use Linux for deployment. Windows builds are experimental: graceful shutdown is unverified, and Bun 1.4.2 has crashed during PostgreSQL outage testing.
+- macOS binaries receive native build and version checks, but macOS runtime behaviour is untested.
 
 ## Verification
 
