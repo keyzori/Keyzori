@@ -2,6 +2,12 @@
 
 ## [2.0.1](https://github.com/keyzori/Keyzori/compare/v2.0.0...v2.0.1) (2026-10-04)
 
+This patch completes the server-only v2 distribution. The original v2.0.0 GitHub release became immutable before asset upload and has no downloadable binaries or release image. New releases stage all binaries, checksums and verified Linux AMD64/ARM64 images before publishing. Compose and `.env.example` now track the released version automatically.
+
+Stable deployment support is Linux x64 and ARM64. Windows binaries remain experimental: Bun 1.4.2 has crashed during PostgreSQL outage testing, and graceful shutdown is unverified. macOS binaries receive native build and version checks only; runtime behaviour is untested. Elysia 2 beta remains pinned.
+
+V2 replaces the v1 API, settings, credentials and database schema. Back up v1 and deploy v2 with a separate fresh database; no in-place v1 upgrade is supported. The console, installable plugins and Stripe integration are not included. Existing v2 deployments need no database schema changes for this patch.
+
 
 ### Bug Fixes
 
