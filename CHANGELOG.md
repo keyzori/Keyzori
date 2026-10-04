@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2](https://github.com/keyzori/Keyzori/compare/v2.0.1...v2.0.2) (2026-10-04)
+
+
+### Bug Fixes
+
+* **release:** locate staged drafts through the release list ([c0f60fd](https://github.com/keyzori/Keyzori/commit/c0f60fd43495ca649e641d5873493e058aec9666))
+
 ## [2.0.1](https://github.com/keyzori/Keyzori/compare/v2.0.0...v2.0.1) (2026-10-04)
 
 This patch completes the server-only v2 distribution. The original v2.0.0 GitHub release became immutable before asset upload and has no downloadable binaries or release image. New releases stage all binaries, checksums and verified Linux AMD64/ARM64 images before publishing. Compose and `.env.example` now track the released version automatically.

@@ -1,6 +1,6 @@
 services:
   server:
-    image: ghcr.io/keyzori/server:${KZ_VERSION:-2.0.1} # x-release-please-version
+    image: ghcr.io/keyzori/server:${KZ_VERSION:-2.0.2} # x-release-please-version
     build:
       context: .
       dockerfile: src/Dockerfile
