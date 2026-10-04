@@ -16,6 +16,8 @@ Publication then reads every release image tag back from GHCR, requires both Lin
 
 Only after binaries, asset uploads and image publication all succeed does the final job publish the GitHub release. It verifies the tag still points to the checked commit and all seven expected assets are uploaded and nonempty. GitHub can then make the complete release immutable; stable releases become the latest release.
 
+Draft verification uses GitHub's paginated release list and exact tag matching. The get-by-tag REST endpoint only returns published releases and cannot locate a staged draft. Publication and asset verification use the matched release ID.
+
 Configure `RELEASE_TOKEN` with repository Contents, Issues and Pull requests write access so release PRs can trigger CI. The `v2` branch runs checks without publishing releases. The first changelog includes changes after the final v1 release commit.
 
 If a build, upload or image publication fails, verify the release is still a draft, then run Release Please manually on `main` with the existing `release-tag`. It verifies successful Server and CodeQL checks for the tagged commit, rebuilds binaries, replaces draft assets, republishes tested images and completes publication. This also works after CI artifacts expire. Published immutable releases cannot receive replacement assets; fixes require a new version through a release PR. Do not disable immutability or move published tags to recover a failed release.
