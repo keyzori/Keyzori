@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       release-tag:
-        description: Existing release tag whose binaries and Docker images should be rebuilt
+        description: Existing draft release tag whose publication should be completed
         required: false
         type: string
 permissions:
@@ -22,6 +22,7 @@ jobs:
     outputs:
       sha: ${{ steps.artifacts.outputs.sha }}
       tag: ${{ steps.artifacts.outputs.tag }}
+      release-id: ${{ steps.artifacts.outputs.release-id }}
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.event == 'push' &&
@@ -69,7 +70,7 @@ jobs:
           target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      - name: Verify the exact released commit
+      - name: Verify the draft and exact release commit
         id: artifacts
         if: steps.release.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.release-tag != '')
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -79,7 +80,9 @@ jobs:
         with:
           script: |
             const tag = process.env.RELEASE_TAG;
-            await github.rest.repos.getReleaseByTag({ ...context.repo, tag });
+            const { data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag });
+            if (!release.draft || release.immutable)
+              throw new Error('Only draft releases can receive publication artifacts; published immutable releases require a new version');
             const { data: commit } = await github.rest.repos.getCommit({ ...context.repo, ref: `tags/${tag}` });
             const sha = commit.sha;
             if (process.env.RELEASE_SHA && process.env.RELEASE_SHA !== sha)
@@ -95,6 +98,7 @@ jobs:
             }
             core.setOutput('sha', sha);
             core.setOutput('tag', tag);
+            core.setOutput('release-id', release.id);
 
   binaries:
     needs: release
@@ -136,3 +140,42 @@ jobs:
     with:
       ref: ${{ needs.release.outputs.sha }}
       release-tag: ${{ needs.release.outputs.tag }}
+
+  publish:
+    needs: [release, assets, docker]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the complete release
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          RELEASE_ID: ${{ needs.release.outputs.release-id }}
+          RELEASE_SHA: ${{ needs.release.outputs.sha }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        with:
+          script: |
+            const release_id = Number(process.env.RELEASE_ID);
+            const { data: release } = await github.rest.repos.getRelease({ ...context.repo, release_id });
+            if (!release.draft || release.immutable || release.tag_name !== process.env.RELEASE_TAG)
+              throw new Error('Release must remain an unpublished draft until artifacts are complete');
+            const { data: commit } = await github.rest.repos.getCommit({ ...context.repo, ref: `tags/${release.tag_name}` });
+            if (commit.sha !== process.env.RELEASE_SHA)
+              throw new Error('Release tag changed during publication');
+            const expected = [
+              'keyzori-linux-x64.tar.gz', 'keyzori-linux-arm64.tar.gz',
+              'keyzori-darwin-x64.tar.gz', 'keyzori-darwin-arm64.tar.gz',
+              'keyzori-windows-x64.zip', 'openapi.json', 'SHA256SUMS'
+            ].sort();
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, { ...context.repo, release_id, per_page: 100 });
+            if (JSON.stringify(assets.map(asset => asset.name).sort()) !== JSON.stringify(expected) ||
+                assets.some(asset => asset.state !== 'uploaded' || asset.size <= 0))
+              throw new Error('Release does not contain every completed binary, API reference and checksum asset');
+            const { data: published } = await github.rest.repos.updateRelease({
+              ...context.repo, release_id, draft: false,
+              make_latest: release.prerelease ? 'false' : 'true'
+            });
+            if (published.draft)
+              throw new Error('GitHub did not publish the release');
+            await core.summary.addLink('Published release', published.html_url).write();
