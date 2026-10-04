@@ -1,107 +1,138 @@
 name: Release Please
-
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [Server, CodeQL]
     types: [completed]
   workflow_dispatch:
-
+    inputs:
+      release-tag:
+        description: Existing release tag whose binaries and Docker images should be rebuilt
+        required: false
+        type: string
 permissions:
   actions: read
   contents: write
   issues: write
   pull-requests: write
-
 concurrency:
-  group: release-please-${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-  cancel-in-progress: true
-
+  group: release-please-main
+  cancel-in-progress: false
 jobs:
   release:
-    name: Version, tag, and release
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main') }}
-    runs-on: self-hosted
-    timeout-minutes: 20
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      sha: ${{ steps.release.outputs.sha }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-    env:
-      RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      sha: ${{ steps.artifacts.outputs.sha }}
+      tag: ${{ steps.artifacts.outputs.tag }}
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - id: gate
-        name: Require successful CI and CodeQL runs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in {1..60}; do
-            main_sha="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
-            if [[ "${RELEASE_SHA}" != "${main_sha}" ]]; then
-              echo "Skipping superseded main commit ${RELEASE_SHA}; current main is ${main_sha}."
-              echo "eligible=false" >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-
-            runs="$(gh api \
-              -H "Accept: application/vnd.github+json" \
-              "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${RELEASE_SHA}&event=push&per_page=100")"
-
-            waiting=false
-            for workflow in CI CodeQL; do
-              status="$(jq -r --arg workflow "${workflow}" '
-                [.workflow_runs[] | select(.name == $workflow)]
-                | sort_by(.created_at)
-                | last
-                | if . == null then "missing" else "\(.status):\(.conclusion // "")" end
-              ' <<<"${runs}")"
-
-              case "${status}" in
-                completed:success) ;;
-                missing|queued:*|in_progress:*|requested:*|waiting:*|pending:*) waiting=true ;;
-                *) echo "${workflow} is not green for ${RELEASE_SHA}: ${status}" >&2; exit 1 ;;
-              esac
-            done
-
-            if [[ "${waiting}" == false ]]; then
-              echo "CI and CodeQL are green for ${RELEASE_SHA}."
-              echo "eligible=true" >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-
-            if [[ "${attempt}" == 60 ]]; then
-              echo "Timed out waiting for CI and CodeQL for ${RELEASE_SHA}." >&2
-              exit 1
-            fi
-            sleep 15
-          done
-
+      - name: Require successful checks for current main
+        id: gate
+        if: github.event_name != 'workflow_dispatch' || inputs.release-tag == ''
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { data: main } = await github.rest.git.getRef({ owner, repo, ref: 'heads/main' });
+            const requested = context.payload.workflow_run?.head_sha ?? context.sha;
+            if (requested !== main.object.sha) {
+              core.setOutput('eligible', 'false');
+              return;
+            }
+            for (const workflow_id of ['server.yml', 'codeql.yml']) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id, head_sha: requested,
+                branch: 'main', event: 'push', per_page: 100
+              });
+              const latest = data.workflow_runs.sort((a, b) => b.id - a.id)[0];
+              if (latest?.conclusion !== 'success') {
+                core.setOutput('eligible', 'false');
+                return;
+              }
+            }
+            core.setOutput('eligible', 'true');
       - name: Require release token
         if: steps.gate.outputs.eligible == 'true'
         env:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        run: test -n "${RELEASE_TOKEN}" || { echo "RELEASE_TOKEN is not configured." >&2; exit 1; }
-
-      - name: Run Release Please
+        run: test -n "$RELEASE_TOKEN" || { echo 'Configure RELEASE_TOKEN for release pull requests.' >&2; exit 1; }
+      - name: Update release pull request or create release
         id: release
         if: steps.gate.outputs.eligible == 'true'
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+          target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-          target-branch: main
-          token: ${{ secrets.RELEASE_TOKEN }}
+      - name: Verify the exact released commit
+        id: artifacts
+        if: steps.release.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.release-tag != '')
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name || inputs.release-tag }}
+        with:
+          script: |
+            const tag = process.env.RELEASE_TAG;
+            await github.rest.repos.getReleaseByTag({ ...context.repo, tag });
+            const { data: commit } = await github.rest.repos.getCommit({ ...context.repo, ref: `tags/${tag}` });
+            const sha = commit.sha;
+            if (process.env.RELEASE_SHA && process.env.RELEASE_SHA !== sha)
+              throw new Error('Release commit does not match its tag');
+            for (const workflow_id of ['server.yml', 'codeql.yml']) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                ...context.repo, workflow_id, head_sha: sha,
+                branch: 'main', event: 'push', per_page: 100
+              });
+              const latest = data.workflow_runs.sort((a, b) => b.id - a.id)[0];
+              if (latest?.conclusion !== 'success')
+                throw new Error(`Released commit has no successful ${workflow_id} checks`);
+            }
+            core.setOutput('sha', sha);
+            core.setOutput('tag', tag);
 
-  docker:
-    name: Publish release image
+  binaries:
     needs: release
-    if: needs.release.outputs.release_created == 'true'
-    uses: ./.github/workflows/docker.yml
+    if: needs.release.outputs.tag != ''
+    uses: ./.github/workflows/binaries.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.release.outputs.sha }}
+
+  assets:
+    needs: [release, binaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-artifacts
+      - name: Attach binaries, checksums and API reference
+        working-directory: release-artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          sha256sum keyzori-*.tar.gz keyzori-*.zip openapi.json > SHA256SUMS
+          gh release upload "$RELEASE_TAG" keyzori-*.tar.gz keyzori-*.zip openapi.json SHA256SUMS --clobber
+
+  docker:
+    needs: [release, assets]
+    uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
       packages: write
     with:
       ref: ${{ needs.release.outputs.sha }}
-      release_tag: ${{ needs.release.outputs.tag_name }}
-      publish: true
+      release-tag: ${{ needs.release.outputs.tag }}

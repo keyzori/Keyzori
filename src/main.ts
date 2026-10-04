@@ -1,80 +1,58 @@
-import { resolve } from "node:path";
-import { CommanderError } from "commander";
-import { Config } from "./shared/Config.ts";
-import { AppError } from "./shared/errors.ts";
-import { createLogger } from "./shared/logging.ts";
-import { redact } from "./shared/security.ts";
+import { Manifest } from "elysia";
+import { Config } from "./core/config/Config";
+import { ServerLifecycle } from "./core/ServerLifecycle";
+import { Database } from "./core/database/Database";
+import { MigrationService } from "./core/database/MigrationService";
+import { KeyGenerator } from "./core/security/KeyGenerator";
+import { healthcheckUrl } from "./core/http/healthcheckUrl";
+import { version } from "./version";
 
-const root = resolve(import.meta.dir, "..");
-const logger = createLogger();
-
-export function healthcheckUrl(config: { host: string; port: number }) {
-	const host = config.host.includes(":") ? `[${config.host}]` : config.host;
-	return `http://${host}:${config.port}`;
-}
-
-async function main() {
-	const [command = "serve", ...args] = process.argv.slice(2);
-	if (command === "admin") {
-		const { Cli } = await import("./cli/Cli.ts");
-		await new Cli(process.env, root).run(args);
-	} else if (command === "migrate") {
-		const { Application } = await import("./application/Application.ts");
-		await new Application(new Config(process.env), root).migrate();
-		logger.notif("Migrations complete.", { name: "migrate" });
-	} else if (command === "serve") {
-		const { Application } = await import("./application/Application.ts");
-		const application = await new Application(
-			new Config(process.env),
-			root,
-		).start();
-		for (const signal of ["SIGTERM", "SIGINT"] as const)
-			process.once(signal, () => {
-				void application.stop().catch(() => {
-					process.exitCode = 1;
-				});
-			});
-		application.services.logger.notif(
-			`Listening on ${application.config.host}:${application.app.server?.port ?? application.config.port}\nPlugins: ${application.config.plugins.join(", ") || "none"}`,
-			{
-				layout: "box",
-				box: {
-					topRight: "Keyzori",
-					bottomLeft: "ready",
-					bottomRight: `Bun ${Bun.version}`,
-				},
-			},
-		);
-	} else if (command === "healthcheck") {
-		const config = new Config(process.env);
-		const response = await fetch(new URL("/ready", healthcheckUrl(config)), {
-			signal: AbortSignal.timeout(5000),
-			redirect: "error",
-		});
-		if (!response.ok) throw new Error("Server is not ready.");
-		process.stdout.write("ready\n");
-	} else if (["--help", "-h"].includes(command))
-		process.stdout.write(
-			"bun src/main.ts <serve | migrate | admin | healthcheck>\n",
-		);
-	else throw new Error("Expected serve, migrate, admin, or healthcheck.");
-}
-
-if (import.meta.main) {
+async function run() {
+	const command = Bun.argv[2] ?? "serve";
 	try {
-		await main();
-	} catch (error) {
-		if (error instanceof CommanderError && error.exitCode === 0)
-			process.exitCode = 0;
-		else {
-			logger.error(
-				error instanceof AppError
-					? `${error.code}: ${String(redact(error.message))}`
-					: error instanceof Error && !error.message.includes("://")
-						? String(redact(error.message))
-						: "Command failed. Check configuration and service availability.",
+		if (command === "version" || command === "--version") console.log(version);
+		else if (command === "master-key") console.log(new KeyGenerator().master());
+		else if (command === "healthcheck") {
+			const port = Bun.env.KZ_API_PORT ?? "6284";
+			if (!/^[1-9][0-9]*$/.test(port)) throw new Error("Invalid port");
+			const response = await fetch(
+				healthcheckUrl({
+					host: Bun.env.KZ_API_HOST ?? "0.0.0.0",
+					port: Number(port),
+				}),
+				{
+					signal: AbortSignal.timeout(4000),
+					redirect: "error",
+				},
 			);
-			process.exitCode = 1;
-		}
+			if (!response.ok) process.exitCode = 1;
+		} else if (command === "migrate") {
+			const config = new Config();
+			const database = new Database(config.databaseUrl, config.poolSize);
+			try {
+				await new MigrationService(database).run();
+			} finally {
+				await database.close();
+			}
+		} else if (command === "serve") {
+			const lifecycle = new ServerLifecycle(new Config());
+			process.once("SIGINT", () => {
+				void lifecycle.stop().then(() => process.exit(0));
+			});
+			process.once("SIGTERM", () => {
+				void lifecycle.stop().then(() => process.exit(0));
+			});
+			await lifecycle.start();
+			return lifecycle.app;
+		} else throw new Error("Unknown command");
+	} catch {
+		console.error(
+			"Keyzori could not complete the command. Check configuration and dependency availability.",
+		);
+		process.exitCode = 1;
 	}
 }
+
+export const app = Manifest.isCapturing()
+	? (await import("./scripts/capture")).app
+	: await run();

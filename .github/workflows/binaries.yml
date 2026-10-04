@@ -1,0 +1,75 @@
+name: Server binaries
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+          - runner: windows-2025
+            target: windows-x64
+          - runner: macos-15-intel
+            target: darwin-x64
+          - runner: macos-15
+            target: darwin-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      HUSKY: "0"
+      TARGET: ${{ matrix.target }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run build:verify "$TARGET"
+      - name: Smoke test native binary
+        run: |
+          binary="keyzori-${TARGET}"
+          if [[ "$TARGET" == windows-* ]]; then binary+=".exe"; fi
+          expected="$(bun -p 'require("./package.json").version')"
+          cd dist/server
+          test "$(./"$binary" --version)" = "$expected"
+      - name: Smoke test Linux runtime
+        if: runner.os == 'Linux'
+        run: bun src/scripts/test-services.ts exec bun src/scripts/container-smoke.ts "$TARGET"
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        run: tar -C dist/server -czf "dist/server/keyzori-${TARGET}.tar.gz" "keyzori-${TARGET}"
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -LiteralPath "dist/server/keyzori-$env:TARGET.exe" -DestinationPath "dist/server/keyzori-$env:TARGET.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/server/keyzori-*.tar.gz
+            dist/server/keyzori-*.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: matrix.target == 'linux-x64'
+        with:
+          name: release-openapi
+          path: dist/server/openapi.json
+          if-no-files-found: error
+      - if: always() && runner.os == 'Linux'
+        run: bun src/scripts/test-services.ts stop

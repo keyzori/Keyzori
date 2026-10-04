@@ -1,118 +1,109 @@
 <div align="center">
 
-<img width="2560" height="720" alt="Keyzori banner" src="https://raw.githubusercontent.com/keyzori/Keyzori/main/.github/assets/banner.png" />
+<img width="2560" height="720" alt="Keyzori banner" src=".github/assets/banner.png" />
 
-[`📖 Documentation`](https://github.com/keyzori/Keyzori/wiki) · [`🌐 API`](https://github.com/keyzori/Keyzori/wiki/API-Reference) · [`💻 Deployment`](https://github.com/keyzori/Keyzori/wiki/Deployment)
+[`📖 Documentation`](src/README.md) · [`💻 Deployment`](src/README.md#run)
 
 <br />
 
 </div>
 
-> [!IMPORTANT]
-> Keyzori is currently undergoing a **v2** rebuild! Currently not accept PR's for the current branch `main` due to it being overwritten when v2 is complete. Feature requests always welcome!
-> 
-> The current code on `main` and all documentation including everything below this message is to be taken as **reference only**.
-
 > [!WARNING]
-> The current release changes the API, settings, and database format. Start with a fresh PostgreSQL database; older databases and client integrations are not compatible.
+> V2 changes the API, settings, and database format. Start with a fresh PostgreSQL database; older databases and client integrations are not compatible. Linux is the supported deployment platform. The server uses Elysia 2 beta; see the [platform limitations](src/README.md#operations) before choosing a deployment.
 
-Keyzori is a self-hosted license server for software products. Create customers and licenses, control which devices can connect, and track usage through an HTTP API or command-line tool.
+Keyzori is a self-hosted license server for software products. Create users, items and licenses, control device and IP access, and track usage through an HTTP API.
 
-You host the server, PostgreSQL, and Redis, and keep control of your licensing data.
+You host the server, PostgreSQL, and Redis, and keep control of your licensing data. Server code lives in [`src`](src/).
 
 ## License types
 
-| Type | How it works |
-| --- | --- |
-| `lifetime` | Stays valid without an expiry date, unless you block access. |
-| `subscription` | Works until a set expiry date. Renew it yourself or sync an existing Stripe subscription. |
-| `metered` | Tracks usage against limits you set, such as 1,000 exports. |
-| `trial` | Runs for a set number of seconds, starting at the first successful activation. |
+Licenses combine expiry, usage meters and access limits instead of selecting a fixed type.
 
-Every type supports device, IP, and active-session limits, allowlists, and custom metadata. By default, a license allows one registered device, one registered IP, and one active session.
+| Use case | How it works |
+| --- | --- |
+| Lifetime | Leave expiry unset; the license remains eligible while it and its related resources are enabled. |
+| Subscription or trial | Set an expiry date and extend it through administration when required. |
+| Metered | Add usage limits, optional overage and calendar resets, such as 1,000 exports per month. |
+
+Licenses support optional device/IP caps, IP allowlists and custom metadata. Caps are unrestricted when omitted; zero means zero capacity. Resources start disabled and must be explicitly enabled.
 
 ## Quick start
 
-Use **Bun 1.3.14 or newer**, **PostgreSQL**, and **Redis**. Start PostgreSQL and Redis before running these commands from the repository root:
+Use **Bun 1.4.2**, **PostgreSQL 17+**, and **Redis**. Start PostgreSQL and Redis before running these commands from the repository root:
 
 ```powershell
+bun install --frozen-lockfile
 Copy-Item .env.example .env
-# Edit .env: set your database and Redis URLs and a random KEYZORI_ADMIN_KEY.
-# The admin key must contain at least 32 characters.
-bun run setup
+bun run master-key
+# Save the generated KZ_MASTER_KEY in .env and set KZ_DATABASE_URL and KZ_REDIS_URL.
 bun run start
 ```
 
-The default address is `http://localhost:6284`. Direct Bun deployments can set `KEYZORI_HOST` to an IPv4 or IPv6 address such as `127.0.0.1` to restrict the listening interface. For automatic restarts while developing, use `bun run dev` instead of `bun run start`.
+The default address is `http://localhost:6284`. Direct Bun or binary deployments can set `KZ_API_HOST` to an IPv4 or IPv6 address such as `127.0.0.1` or `::1` to restrict the listening interface. The `healthcheck` command probes that configured address and port. For automatic restarts while developing, use `bun run dev` instead of `bun run start`.
 
 | URL | Purpose |
 | --- | --- |
-| `/health` | Check that the server responds. |
-| `/ready` | Check that the server can reach PostgreSQL and Redis. |
-| `/docs` | Browse and try the HTTP API. |
+| `/health` | Check server readiness and PostgreSQL/Redis availability. |
+| `/validate` | Validate a license and optionally record usage. |
+| `/licenses/self` | Discover the current license through its bearer credential. |
 
-Use `bun run cli -- --help` to view admin commands. [Create your first customer and license](https://github.com/keyzori/Keyzori/wiki/Product-Flow), then connect your application using the [runtime guide](https://github.com/keyzori/Keyzori/wiki/Runtime-Flow).
+Follow the [first license example](src/README.md#first-licence), then connect your application using the [usage and replay guide](src/README.md#usage-capacity-and-replay). Generate the OpenAPI file with `bun run openapi`; it is not exposed by the running server.
 
-**Save each `lic_...` key when you create or rotate it.** Keyzori cannot show the full key again.
+**Save each credential when you create or rotate it.** Keyzori cannot show the full key again.
 
 ## Docker
 
-Copy `.env.example` to `.env` and set `KEYZORI_ADMIN_KEY` and `KEYZORI_POSTGRES_PASSWORD`. Use a random admin key of at least 32 characters and a URL-safe database password, such as a random hexadecimal value.
+Copy `.env.example` to `.env` and set `KZ_MASTER_KEY`, `KZ_POSTGRES_PASSWORD`, and `KZ_SERVER_DATABASE_PASSWORD`. Generate the root key with `bun run master-key` and use independent random, URL-safe database passwords.
 
 ```powershell
 docker compose up --build -d
-docker compose exec server bun src/main.ts admin --help
 ```
 
-In Dokploy, select this repository and `compose.yml`, enter the same two secrets in Environment, and deploy. For domain routing, select the `server` service on container port `6284`.
+For repository-based deployment, select `compose.yml` and supply those secrets. Route your domain to the `server` service on container port `6284`, with HTTPS for remote access.
 
-Compose starts PostgreSQL, Redis, and the API, supplies internal database URLs, and stores data in named volumes. The server applies pending migrations before accepting requests; migration failures prevent startup.
+Compose starts PostgreSQL 18.0, Redis 8.2.1, and the API. It supplies internal database URLs and retains PostgreSQL data in a named volume. The server applies pending migrations before accepting requests; migration failures prevent startup.
 
-Only the two secrets are required. Optional settings use the server's defaults; put overrides and plugin settings in `.env` (Dokploy writes its Environment values to this file). There is no need to repeat them in Compose. Shell-only optional variables are not forwarded to the container.
+The API is available at `http://localhost:6284`. Only the API port is published. The container runs a standalone Linux executable as a non-root user with a read-only filesystem.
 
-The API is available at `http://localhost:6284`. The server and reverse proxies use container port `6284`; the container listener defaults to `0.0.0.0` and the host port is bound to `127.0.0.1:6284`. Use a Compose override file if you need a different host binding. For admin CLI commands outside Docker, set `KEYZORI_URL=http://localhost:6284`.
+See the [server guide](src/README.md#environment) for environment settings and [operations](src/README.md#operations) for backups, HTTPS proxy configuration and shutdown behaviour.
 
-The container runs TypeScript directly with Bun as a non-root user. See [Deployment](https://github.com/keyzori/Keyzori/wiki/Deployment) for upgrades, HTTPS, and image settings.
+Keep `KZ_API_HOST=0.0.0.0` inside the Compose container so its healthcheck and reverse proxy can reach the server. Restrict access through the published host port or proxy; a loopback listener inside the container is separate from a loopback binding on the host.
 
 ## Plugins
 
-Plugins are off by default. To enable the included Stripe plugin, set `KEYZORI_PLUGINS=stripe` along with `KEYZORI_STRIPE_SECRET_KEY` and `KEYZORI_STRIPE_WEBHOOK_SECRET`, then install dependencies and restart the server. Startup applies the plugin migrations automatically.
-
-Stripe syncs existing subscriptions with subscription licenses. It does not create a checkout or customer portal. See [Plugins](https://github.com/keyzori/Keyzori/wiki/Plugins) for setup and examples.
+Installable plugins and Stripe integration are not part of this rewrite. Use the HTTP API and [webhook integrations](src/README.md#operations); webhooks are unsigned and make one delivery attempt without automatic retries.
 
 ## Development
 
 | Command | Purpose |
 | --- | --- |
 | `bun run dev` | Start the server and restart it when source files change. |
-| `bun run cli:help` | Show admin commands. |
-| `bun run check` | Check types, run tests, lint code, and check migrations. |
+| `bun run master-key` | Generate a root credential without connecting to services. |
+| `bun run check` | Check types, lint, verify migrations and run the full test suite. |
 | `bun run test:unit` | Run tests that do not need PostgreSQL or Redis. |
-| `bun run test:local` | Run the full test suite with temporary Docker services and coverage. |
+| `bun run test` | Run the full test suite with temporary Docker services. |
 | `bun run db:generate` | Generate migrations after database schema changes. |
-| `bun run db:migrate` | Apply pending migrations for the server and enabled plugins. |
-| `bun run docker:build` | Build the server image. |
-| `bun run docker:smoke` | Check the container and Compose setup using temporary services. |
+| `bun run db:migrate` | Apply pending server migrations. |
+| `bun run openapi` | Generate `dist/server/openapi.json` without live services. |
+| `bun run build` | Build the Linux x64 binary and API reference. |
+| `bun run build linux-arm64` | Build the Linux ARM64 binary and API reference. |
 
-Tests that need PostgreSQL and Redis are skipped by `bun run check` unless test URLs are configured. Use `bun run test:local` for the full suite. See [Contributing](CONTRIBUTING.md) for development guidance.
+Docker must be running for `bun run check` and `bun run test`. Tests use isolated PostgreSQL/Redis fixtures and fail if dependencies are unavailable. To run a subset, use `bun run test ./src/tests/http` or `bun run test ./src/tests/integration`. The [CI workflow](.github/workflows/server.yml) checks Linux x64 and ARM64. [Releases](.github/RELEASE_POLICY.md) build Linux, macOS and Windows binaries and publish binary-based Docker images.
 
 ## Documentation
 
-The **[Keyzori Wiki](https://github.com/keyzori/Keyzori/wiki)** covers setup, integration, and day-to-day use.
+The [server guide](src/README.md) describes the current rewrite. The existing [Keyzori Wiki](https://github.com/keyzori/Keyzori/wiki) documents the previous server.
 
 | | Guide | What it covers |
 | :-: | --- | --- |
-| 💻 | [Deployment](https://github.com/keyzori/Keyzori/wiki/Deployment) | Run and update the server. |
-| ⚙️ | [Configuration](https://github.com/keyzori/Keyzori/wiki/Configuration) | Settings, defaults, and allowed values. |
-| 🔑 | [Licensing model](https://github.com/keyzori/Keyzori/wiki/Licensing-Model) | License types, limits, and usage. |
-| 🔄 | [First license](https://github.com/keyzori/Keyzori/wiki/Product-Flow) | Create a customer and issue a key. |
-| ⏱️ | [Runtime flow](https://github.com/keyzori/Keyzori/wiki/Runtime-Flow) | Connect your application and keep a session active. |
-| 🌐 | [HTTP API](https://github.com/keyzori/Keyzori/wiki/API-Reference) | Routes, authentication, and request examples. |
-| 💾 | [Admin CLI](https://github.com/keyzori/Keyzori/wiki/CLI-Reference) | Manage Keyzori from a terminal. |
-| 🧩 | [Plugins](https://github.com/keyzori/Keyzori/wiki/Plugins) | Enable Stripe or build a plugin. |
-| 🏗️ | [Architecture](https://github.com/keyzori/Keyzori/wiki/Architecture) | Where the code and data live. |
-| 📊 | [Operations](https://github.com/keyzori/Keyzori/wiki/Operations) | Monitor, back up, and maintain the server. |
-| 🩺 | [Troubleshooting](https://github.com/keyzori/Keyzori/wiki/Troubleshooting) | Find the cause of common errors. |
+| 💻 | [Deployment](src/README.md#run) | Run source, binaries or Compose. |
+| ⚙️ | [Configuration](src/README.md#environment) | Environment variables and proxy settings. |
+| 🔑 | [Licensing model](src/README.md#usage-capacity-and-replay) | Expiry, limits, meters and idempotent usage. |
+| 🔄 | [First license](src/README.md#first-licence) | Issue, enable and validate a license. |
+| 🌐 | [HTTP API](src/README.md#administration) | Routes, authentication, scopes and queries. |
+| 🏗️ | [Implementation](src/IMPLEMENTATION.md) | Architecture, runtime lifecycle and persistence. |
+| 📊 | [Operations](src/README.md#operations) | Monitor, back up and maintain the server. |
+| 🧪 | [Verification](src/README.md#verification) | Checks and build commands. |
 
 ## Community
 

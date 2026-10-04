@@ -1,0 +1,64 @@
+name: Server
+on:
+  push:
+    branches: [main, v2]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: server-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  required:
+    name: Required checks
+    needs: [workflows, verify]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require workflow validation and both Linux architectures
+        env:
+          WORKFLOW_RESULT: ${{ needs.workflows.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: test "$WORKFLOW_RESULT" = success && test "$VERIFY_RESULT" = success
+
+  workflows:
+    name: Workflow checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: docker run --rm --volume "$PWD:/repo:ro" --workdir /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      HUSKY: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run build:verify ${{ matrix.target }}
+      - run: bun src/scripts/test-services.ts exec bun src/scripts/artifact-smoke.ts source
+      - run: bun src/scripts/test-services.ts exec bun src/scripts/container-smoke.ts ${{ matrix.target }}
+      - run: docker build -f src/Dockerfile -t keyzori-server:test .
+      - run: bun src/scripts/test-services.ts exec bun src/scripts/container-smoke.ts image
+      - run: bun src/scripts/compose-smoke.ts
+      - if: always()
+        run: bun src/scripts/test-services.ts stop
