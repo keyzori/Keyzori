@@ -80,7 +80,12 @@ jobs:
         with:
           script: |
             const tag = process.env.RELEASE_TAG;
-            const { data: release } = await github.rest.repos.getReleaseByTag({ ...context.repo, tag });
+            // GitHub's get-by-tag endpoint only returns published releases.
+            const releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });
+            const matches = releases.filter(release => release.tag_name === tag);
+            if (matches.length !== 1)
+              throw new Error('Expected exactly one release for the requested tag');
+            const release = matches[0];
             if (!release.draft || release.immutable)
               throw new Error('Only draft releases can receive publication artifacts; published immutable releases require a new version');
             const { data: commit } = await github.rest.repos.getCommit({ ...context.repo, ref: `tags/${tag}` });
