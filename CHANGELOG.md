@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/keyzori/Keyzori/compare/v2.0.0...v2.0.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **release:** stage immutable release assets before publication ([d705316](https://github.com/keyzori/Keyzori/commit/d705316975e642af213a8d210e43bab643cc2b26))
+
 ## 2.0.0 (2026-10-04)
 
 
