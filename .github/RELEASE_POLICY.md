@@ -10,6 +10,8 @@ After uploading the assets, the workflow publishes Linux AMD64/ARM64 images to `
 
 Each architecture is built once on a native runner, passes container and Compose smoke tests, and is pushed under a unique build tag. Release tags are created from those exact digests only after both architectures pass. Third-party workflow actions are pinned to commit SHAs.
 
+Publication then reads every release image tag back from GHCR, requires both Linux architectures, and verifies that all tags resolve to the same image index. The `published-server-images` workflow artifact records the inspected manifests and tag digests so publication can be verified without adding package credentials to an operator's laptop.
+
 Configure `RELEASE_TOKEN` with repository Contents, Issues and Pull requests write access so release PRs can trigger CI. The `v2` branch runs checks without publishing releases. The first changelog includes changes after the final v1 release commit.
 
 If a build, upload or image publication fails, run Release Please manually on `main` with the existing `release-tag`. It verifies successful Server and CodeQL checks for the tagged commit, rebuilds the binaries, replaces release assets and republishes tested images. This also works after CI artifacts expire.

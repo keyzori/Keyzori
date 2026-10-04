@@ -113,3 +113,28 @@ jobs:
           done <<< "$TAGS"
           docker buildx imagetools create "${args[@]}" \
             "$(cat digests/amd64.txt)" "$(cat digests/arm64.txt)"
+      - name: Verify published release tags and platforms
+        env:
+          TAGS: ${{ steps.metadata.outputs.tags }}
+        run: |
+          expected=""
+          count=0
+          mkdir -p published-images
+          while IFS= read -r tag; do
+            if [[ -z "$tag" ]]; then continue; fi
+            manifest="$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}')"
+            jq -e '[.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort == ["amd64", "arm64"]' \
+              <<< "$manifest" > /dev/null
+            digest="$(jq -er '.digest | select(test("^sha256:[a-f0-9]{64}$"))' <<< "$manifest")"
+            if [[ -z "$expected" ]]; then expected="$digest"; else test "$digest" = "$expected"; fi
+            count=$((count + 1))
+            printf '%s\n' "$manifest" > "published-images/${count}.json"
+            printf '%s %s\n' "$tag" "$digest" | tee -a published-images/tags.txt
+          done <<< "$TAGS"
+          test "$count" -gt 0
+          cat published-images/tags.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: published-server-images
+          path: published-images
+          if-no-files-found: error
