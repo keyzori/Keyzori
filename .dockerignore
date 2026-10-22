@@ -1,6 +1,8 @@
 *
 !package.json
 !bun.lock
+!.bun-version
+!.bun-revision
 !bunfig.toml
 !tsconfig.json
 !LICENSE

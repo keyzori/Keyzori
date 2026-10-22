@@ -1,5 +1,13 @@
-FROM --platform=$BUILDPLATFORM oven/bun:1.4.2-slim AS build
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.4-slim AS build
 WORKDIR /app
+# The stable image only bootstraps installation of the exact canary package.
+COPY .bun-version .bun-revision ./
+RUN BUN_INSTALL=/opt/keyzori-bun \
+    BUN_INSTALL_GLOBAL_DIR=/opt/keyzori-bun/install/global \
+    BUN_INSTALL_BIN=/opt/keyzori-bun/bin \
+    bun add --global --trust "bun@$(cat .bun-version)" && \
+    test "$(/opt/keyzori-bun/bin/bun --revision)" = "$(cat .bun-revision)"
+ENV PATH="/opt/keyzori-bun/bin:${PATH}"
 COPY package.json bun.lock tsconfig.json ./
 COPY src/package.json ./src/package.json
 RUN HUSKY=0 bun install --frozen-lockfile

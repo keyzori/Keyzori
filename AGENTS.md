@@ -8,7 +8,7 @@ Tests live in `src/tests/{unit,http,integration}`, with shared helpers in `src/t
 
 ## Build, Test, and Development Commands
 
-Use Bun 1.4.2 and `bunx --bun`, not npm or npx.
+Use the Bun 1.4.4 canary pinned in `.bun-version` and `.bun-revision`, and `bunx --bun`, not npm or npx. See `CONTRIBUTING.md` for the runtime installation policy.
 
 - `bun install --frozen-lockfile`: install locked dependencies.
 - `bun run dev`: run source with automatic restarts; `bun run start` runs once.

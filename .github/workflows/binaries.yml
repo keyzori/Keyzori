@@ -9,6 +9,7 @@ permissions:
   contents: read
 jobs:
   build:
+    name: Build ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
@@ -32,13 +33,11 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.4.2
+      - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun run build:verify "$TARGET"
       - name: Smoke test native binary
@@ -58,18 +57,46 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: Compress-Archive -LiteralPath "dist/server/keyzori-$env:TARGET.exe" -DestinationPath "dist/server/keyzori-$env:TARGET.zip"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ matrix.target }}
           path: |
             dist/server/keyzori-*.tar.gz
             dist/server/keyzori-*.zip
           if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          compression-level: 0
+          retention-days: ${{ github.event_name == 'pull_request' && 7 || 30 }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.target == 'linux-x64'
         with:
           name: release-openapi
           path: dist/server/openapi.json
           if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 7 || 30 }}
       - if: always() && runner.os == 'Linux'
         run: bun src/scripts/test-services.ts stop
+
+  checksums:
+    name: Verify packaged artifacts
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-artifacts
+      - name: Prepare release checksums
+        working-directory: release-artifacts
+        run: |
+          sha256sum keyzori-linux-x64.tar.gz keyzori-linux-arm64.tar.gz \
+            keyzori-darwin-x64.tar.gz keyzori-darwin-arm64.tar.gz \
+            keyzori-windows-x64.zip openapi.json > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-checksums
+          path: release-artifacts/SHA256SUMS
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 7 || 30 }}

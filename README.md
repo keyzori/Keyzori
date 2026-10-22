@@ -29,7 +29,7 @@ Licenses support optional device/IP caps, IP allowlists and custom metadata. Cap
 
 ## Quick start
 
-Use **Bun 1.4.2**, **PostgreSQL 17+**, and **Redis**. Start PostgreSQL and Redis before running these commands from the repository root:
+Use the pinned **[Bun 1.4.4 canary](CONTRIBUTING.md#bun-runtime)**, **PostgreSQL 17+**, and **Redis**. Start PostgreSQL and Redis before running these commands from the repository root:
 
 ```powershell
 bun install --frozen-lockfile
@@ -88,7 +88,7 @@ Installable plugins and Stripe integration are not part of this rewrite. Use the
 | `bun run build` | Build the Linux x64 binary and API reference. |
 | `bun run build linux-arm64` | Build the Linux ARM64 binary and API reference. |
 
-Docker must be running for `bun run check` and `bun run test`. Tests use isolated PostgreSQL/Redis fixtures and fail if dependencies are unavailable. To run a subset, use `bun run test ./src/tests/http` or `bun run test ./src/tests/integration`. The [CI workflow](.github/workflows/server.yml) checks Linux x64 and ARM64. [Releases](.github/RELEASE_POLICY.md) build Linux, macOS and Windows binaries and publish binary-based Docker images.
+Docker must be running for `bun run check` and `bun run test`. Tests use isolated PostgreSQL/Redis fixtures and fail if dependencies are unavailable. To run a subset, use `bun run test ./src/tests/http` or `bun run test ./src/tests/integration`. The [CI workflow](.github/workflows/server.yml) checks Linux x64 and ARM64 runtime behaviour and builds native Linux, macOS and Windows packages. [Releases](.github/RELEASE_POLICY.md) publish those binary formats and binary-based Docker images.
 
 ## Documentation
 
