@@ -12,6 +12,8 @@ After uploading the assets, the workflow publishes Linux AMD64/ARM64 images to `
 
 Each architecture is built once on a native runner, passes container and Compose smoke tests, and is pushed under a unique build tag. Release tags are created from those exact digests only after both architectures pass. Third-party workflow actions are pinned to commit SHAs.
 
+Reusable builds validate immutable commit IDs before checkout. Binary CI may build its triggering commit; other binary builds and all release image builds require a commit already on `main`. This preserves recovery of older drafts while rejecting unrelated revisions. The release trigger also requires the completed workflow to originate in this repository. Bun setup does not restore or save a shared Actions cache.
+
 Publication then reads every release image tag back from GHCR, requires both Linux architectures, and verifies that all tags resolve to the same image index. The `published-server-images` workflow artifact records the inspected manifests and tag digests so publication can be verified without adding package credentials to an operator's laptop.
 
 Only after binaries, asset uploads and image publication all succeed does the final job publish the GitHub release. It verifies the tag still points to the checked commit and all seven expected assets are uploaded and nonempty. GitHub can then make the complete release immutable; stable releases become the latest release.

@@ -29,9 +29,26 @@ jobs:
       SOURCE_SHA: ${{ inputs.ref }}
       RELEASE_TAG: ${{ inputs.release-tag }}
     steps:
+      - name: Validate the release revision before checkout
+        id: trust
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REQUESTED_REVISION: ${{ inputs.ref }}
+        with:
+          script: |
+            const revision = process.env.REQUESTED_REVISION;
+            if (!/^[a-f0-9]{40}$/.test(revision))
+              throw new Error('Release builds require an immutable commit SHA');
+            const { data: main } = await github.rest.git.getRef({ ...context.repo, ref: 'heads/main' });
+            const { data } = await github.rest.repos.compareCommitsWithBasehead({
+              ...context.repo, basehead: `${revision}...${main.object.sha}`
+            });
+            if (data.base_commit.sha !== revision || !['ahead', 'identical'].includes(data.status))
+              throw new Error('Release revision is not an ancestor of main');
+            core.setOutput('revision', revision);
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ steps.trust.outputs.revision }}
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
