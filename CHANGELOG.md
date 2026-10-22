@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.3](https://github.com/keyzori/Keyzori/compare/v2.0.2...v2.0.3) (2026-10-22)
+
+
+### Bug Fixes
+
+* handle auth edge cases and refresh bun workflows ([#143](https://github.com/keyzori/Keyzori/issues/143)) ([6bf99c1](https://github.com/keyzori/Keyzori/commit/6bf99c17ded544b42b236d4255de57ea29acc081))
+
 ## [2.0.2](https://github.com/keyzori/Keyzori/compare/v2.0.1...v2.0.2) (2026-10-04)
 
 
