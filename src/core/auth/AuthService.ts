@@ -26,7 +26,7 @@ export class AuthService {
 	): Promise<$Principal> {
 		if (deadlineAt !== undefined && Date.now() >= deadlineAt)
 			throw new HttpError("SERVICE_UNAVAILABLE");
-		const match = header?.match(/^Bearer ([^\r\n]+)$/);
+		const match = header?.match(/^Bearer ([^\r\n]+)$/i);
 		const credential = match?.[1];
 		if (!credential || credential.length > 4096)
 			throw new HttpError("UNAUTHORIZED");

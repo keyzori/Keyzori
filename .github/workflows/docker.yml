@@ -29,13 +29,28 @@ jobs:
       SOURCE_SHA: ${{ inputs.ref }}
       RELEASE_TAG: ${{ inputs.release-tag }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate the release revision before checkout
+        id: trust
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REQUESTED_REVISION: ${{ inputs.ref }}
         with:
-          ref: ${{ inputs.ref }}
+          script: |
+            const revision = process.env.REQUESTED_REVISION;
+            if (!/^[a-f0-9]{40}$/.test(revision))
+              throw new Error('Release builds require an immutable commit SHA');
+            const { data: main } = await github.rest.git.getRef({ ...context.repo, ref: 'heads/main' });
+            const { data } = await github.rest.repos.compareCommitsWithBasehead({
+              ...context.repo, basehead: `${revision}...${main.object.sha}`
+            });
+            if (data.base_commit.sha !== revision || !['ahead', 'identical'].includes(data.status))
+              throw new Error('Release revision is not an ancestor of main');
+            core.setOutput('revision', revision);
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.trust.outputs.revision }}
           persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.4.2
+      - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build binary runtime once
         run: |
@@ -47,7 +62,7 @@ jobs:
         run: bun src/scripts/test-services.ts exec bun src/scripts/container-smoke.ts image
       - name: Verify Compose deployment
         run: bun src/scripts/compose-smoke.ts
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -65,7 +80,7 @@ jobs:
           docker inspect --format '{{json .RepoDigests}}' "$image:$tag" \
             | jq -er --arg image "$image" '.[] | select(startswith($image + "@sha256:"))' \
             > "digests/${ARCH}.txt"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docker-digest-${{ matrix.arch }}
           path: digests/*.txt
@@ -78,13 +93,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Image name
         id: image
         env:
           OWNER: ${{ github.repository_owner }}
         run: echo "name=ghcr.io/${OWNER,,}/server" >> "$GITHUB_OUTPUT"
-      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: metadata
         with:
           images: ${{ steps.image.outputs.name }}
@@ -93,12 +108,12 @@ jobs:
             type=semver,pattern={{version}},value=${{ inputs.release-tag }}
           flavor: |
             latest=${{ !contains(inputs.release-tag, '-') }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: docker-digest-*
           merge-multiple: true
           path: digests
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -133,7 +148,7 @@ jobs:
           done <<< "$TAGS"
           test "$count" -gt 0
           cat published-images/tags.txt >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: published-server-images
           path: published-images

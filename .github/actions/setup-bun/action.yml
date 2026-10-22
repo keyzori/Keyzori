@@ -1,0 +1,25 @@
+name: Set up pinned Bun canary
+description: Install the immutable npm canary and verify its runtime revision
+runs:
+  using: composite
+  steps:
+    - name: Bootstrap the package installer
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: 1.4.4
+        no-cache: true
+    - name: Install the pinned canary
+      shell: bash
+      env:
+        BUN_INSTALL: ${{ runner.temp }}/keyzori-bun
+        BUN_INSTALL_GLOBAL_DIR: ${{ runner.temp }}/keyzori-bun/install/global
+        BUN_INSTALL_BIN: ${{ runner.temp }}/keyzori-bun/bin
+      run: |
+        bun add --global --trust "bun@$(cat .bun-version)"
+        echo "$BUN_INSTALL_BIN" >> "$GITHUB_PATH"
+    - name: Verify the selected runtime
+      shell: bash
+      run: |
+        bun --revision
+        test "$(bun --revision)" = "$(cat .bun-revision)"
+        test "$(bun -p 'require("./package.json").packageManager')" = "bun@$(cat .bun-version)"

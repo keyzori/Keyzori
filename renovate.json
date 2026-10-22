@@ -79,6 +79,11 @@
 			"addLabels": ["bun"]
 		},
 		{
+			"description": "Review the pinned canary package and runtime revision together manually",
+			"matchPackageNames": ["bun", "oven-sh/bun"],
+			"enabled": false
+		},
+		{
 			"description": "Review Elysia and its schema peers together",
 			"matchPackageNames": ["elysia", "@elysia/*", "typebox", "exact-mirror"],
 			"groupName": "Elysia ecosystem"
