@@ -2,7 +2,7 @@
 
 <img width="2560" height="720" alt="Keyzori banner" src=".github/assets/banner.png" />
 
-[Documentation](src/README.md) · [Deployment](src/README.md#run) · [Implementation](src/IMPLEMENTATION.md)
+[Documentation](src/README.md) · [Deployment](src/README.md#run)
 
 </div>
 
@@ -68,7 +68,6 @@ Database checks and runtime smoke checks require Docker. Follow the task's valid
 ## Documentation
 
 - [Developer and deployment guide](src/README.md)
-- [Architecture and audit decisions](src/IMPLEMENTATION.md)
 - [Contributing](CONTRIBUTING.md), [security](SECURITY.md), [support](SUPPORT.md), [governance](GOVERNANCE.md)
 - [Changelog](CHANGELOG.md)
 

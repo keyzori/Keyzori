@@ -29,13 +29,9 @@ test.each([
 	},
 );
 
-test("local README and implementation guide links resolve", async () => {
+test("local README links resolve", async () => {
 	const missing: string[] = [];
-	for (const source of [
-		"README.md",
-		"src/README.md",
-		"src/IMPLEMENTATION.md",
-	]) {
+	for (const source of ["README.md", "src/README.md"]) {
 		const path = resolve(root, source);
 		const content = await Bun.file(path).text();
 		const links = Array.from(content.matchAll(/\[[^\]]*\]\(([^\s)]+)\)/g));
