@@ -1,5 +1,7 @@
 import { asc, eq, inArray } from "drizzle-orm";
 import { apiKeys } from "../../core/database/schema/apiKeys";
+import { apiKeyGroups } from "../../core/database/schema/apiKeyGroups";
+import { groups } from "../../core/database/schema/groups";
 import { KeyGenerator } from "../../core/security/KeyGenerator";
 import { SecretHasher } from "../../core/security/SecretHasher";
 import { ScopeService } from "../../core/auth/ScopeService";
@@ -33,7 +35,6 @@ export class ApiKeyService {
 	) {}
 	async create(input: $ApiKeyCreate, operation: $Operation) {
 		this.root(operation);
-		this.validateScopes(input.scopes);
 		return this.idempotency.admin(
 			operation,
 			"api-key.create",
@@ -46,7 +47,9 @@ export class ApiKeyService {
 					.values({
 						id,
 						name: input.name,
-						scopes: input.scopes,
+						description: input.description ?? null,
+						scopes: [],
+						allGroups: false,
 						secretHash: this.hashes.hash(generated.secret),
 						expiresAt: input.expiresAt
 							? this.input.timestamp(input.expiresAt)
@@ -56,7 +59,7 @@ export class ApiKeyService {
 					})
 					.returning();
 				if (!row) throw new Error("API key creation failed");
-				const data = this.view(row);
+				const data = this.view(row, []);
 				await this.audit.record(tx, {
 					...operation,
 					actor: operation.principal,
@@ -85,14 +88,19 @@ export class ApiKeyService {
 					.where(query.where)
 					.orderBy(...query.order)
 					.limit(query.id ? 1 : query.limit + 1);
+				const grants = await this.grants(
+					tx,
+					rows.map((row) => row.id),
+				);
 				if (query.id) {
 					if (!rows[0]) throw new HttpError("NOT_FOUND");
-					return { data: this.view(rows[0]) };
+					return { data: this.view(rows[0], grants.get(rows[0].id) ?? []) };
 				}
 				const page = rows.slice(0, query.limit);
 				const last = page.at(-1);
 				return {
-					data: page.map((row) => this.view(row)),
+					data: page.map((row) => this.view(row, grants.get(row.id) ?? [])),
+					pageLimit: query.limit,
 					nextCursor:
 						rows.length > query.limit && last ? query.cursor(last) : null,
 				};
@@ -103,17 +111,50 @@ export class ApiKeyService {
 	}
 	async update(input: $ApiKeyUpdate, operation: $Operation) {
 		this.root(operation);
-		if (input.changes.scopes) this.validateScopes(input.changes.scopes);
+		const scopes =
+			input.changes.scopes === undefined
+				? undefined
+				: this.validateScopes(input.changes.scopes);
+		const selectedGroups =
+			input.changes.groupIds === undefined
+				? undefined
+				: this.groupIds(input.changes.groupIds);
 		const ids = this.input.ids(input.ids);
 		return this.idempotency.admin(
 			operation,
 			"api-key.update",
 			input,
 			async (tx, now) => {
-				for (const row of await this.lock(tx, ids)) {
+				const rows = await this.lock(tx, ids);
+				const grants = await this.grants(tx, ids);
+				if (selectedGroups?.length) {
+					const existing = await tx
+						.select({ id: groups.id })
+						.from(groups)
+						.where(inArray(groups.id, selectedGroups))
+						.orderBy(asc(groups.id))
+						.for("key share");
+					if (existing.length !== selectedGroups.length)
+						throw new HttpError("INVALID_REQUEST", {
+							groupIds: "Unknown group",
+						});
+				}
+				for (const row of rows) {
+					const beforeGroups = grants.get(row.id) ?? [];
+					const groupIds = selectedGroups ?? beforeGroups;
+					const allGroups = input.changes.allGroups ?? row.allGroups;
+					if (allGroups && groupIds.length)
+						throw new HttpError("INVALID_REQUEST", {
+							groupIds: "All-group access requires an empty groupIds list",
+						});
 					const changes = {
 						name: input.changes.name ?? row.name,
-						scopes: input.changes.scopes ?? row.scopes,
+						description:
+							input.changes.description === undefined
+								? row.description
+								: input.changes.description,
+						scopes: scopes ?? row.scopes,
+						allGroups,
 						expiresAt:
 							input.changes.expiresAt === undefined
 								? row.expiresAt
@@ -122,14 +163,32 @@ export class ApiKeyService {
 									: null,
 					};
 					const diff = this.audit.changes(
-						{ name: row.name, scopes: row.scopes, expiresAt: row.expiresAt },
-						changes,
+						{
+							name: row.name,
+							description: row.description,
+							scopes: row.scopes,
+							allGroups: row.allGroups,
+							groupIds: beforeGroups,
+							expiresAt: row.expiresAt,
+						},
+						{ ...changes, groupIds },
 					);
 					if (!diff.changed) continue;
 					await tx
 						.update(apiKeys)
 						.set({ ...changes, updatedAt: now, updatedBy: "root" })
 						.where(eq(apiKeys.id, row.id));
+					if (selectedGroups !== undefined) {
+						await tx
+							.delete(apiKeyGroups)
+							.where(eq(apiKeyGroups.apiKeyId, row.id));
+						if (groupIds.length)
+							await tx
+								.insert(apiKeyGroups)
+								.values(
+									groupIds.map((groupId) => ({ apiKeyId: row.id, groupId })),
+								);
+					}
 					await this.audit.record(tx, {
 						...operation,
 						actor: operation.principal,
@@ -193,7 +252,9 @@ export class ApiKeyService {
 			"api-key.delete",
 			input,
 			async (tx) => {
-				for (const row of await this.lock(tx, ids)) {
+				const rows = await this.lock(tx, ids);
+				const grants = await this.grants(tx, ids);
+				for (const row of rows) {
 					await this.audit.record(tx, {
 						...operation,
 						actor: operation.principal,
@@ -201,7 +262,7 @@ export class ApiKeyService {
 						targetType: "api-key",
 						targetId: row.id,
 						reason: input.reason,
-						before: this.view(row),
+						before: this.view(row, grants.get(row.id) ?? []),
 					});
 					await tx.delete(apiKeys).where(eq(apiKeys.id, row.id));
 				}
@@ -219,7 +280,16 @@ export class ApiKeyService {
 			async (tx, now) => {
 				const data = [];
 				for (const row of await this.lock(tx, ids)) {
-					const generated = this.keys.api(row.id);
+					let generated = this.keys.api(row.id);
+					for (
+						let attempt = 1;
+						this.hashes.hash(generated.secret) === row.secretHash &&
+						attempt < 5;
+						attempt++
+					)
+						generated = this.keys.api(row.id);
+					if (this.hashes.hash(generated.secret) === row.secretHash)
+						throw new Error("Credential generation collision limit reached");
 					await tx
 						.update(apiKeys)
 						.set({
@@ -243,11 +313,14 @@ export class ApiKeyService {
 			{ secretIds: (result) => result.data.map((row) => row.id) },
 		);
 	}
-	private view(row: $ApiKey) {
+	private view(row: $ApiKey, groupIds: string[]) {
 		return {
 			id: row.id,
 			name: row.name,
+			description: row.description,
 			scopes: row.scopes,
+			allGroups: row.allGroups,
+			groupIds,
 			enabled: row.enabled,
 			expiresAt: row.expiresAt?.toISOString() ?? null,
 			lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
@@ -262,12 +335,44 @@ export class ApiKeyService {
 	}
 	private validateScopes(scopes: string[]) {
 		try {
-			this.scopes.validate(scopes);
+			return this.scopes.validate(scopes);
 		} catch {
 			throw new HttpError("INVALID_REQUEST", {
 				scopes: "Unknown, duplicate or overlapping scopes",
 			});
 		}
+	}
+	private groupIds(ids: string[]) {
+		const normalized = ids.map((id) => id.toLowerCase()).sort();
+		if (
+			normalized.length > 100 ||
+			new Set(normalized).size !== normalized.length ||
+			normalized.some(
+				(id) =>
+					!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+						id,
+					),
+			)
+		)
+			throw new HttpError("INVALID_REQUEST", {
+				groupIds: "Expected at most 100 unique group IDs",
+			});
+		return normalized;
+	}
+	private async grants(tx: $Transaction, ids: string[]) {
+		const result = new Map<string, string[]>();
+		if (!ids.length) return result;
+		const grants = await tx
+			.select()
+			.from(apiKeyGroups)
+			.where(inArray(apiKeyGroups.apiKeyId, ids))
+			.orderBy(asc(apiKeyGroups.groupId));
+		for (const grant of grants) {
+			const selected = result.get(grant.apiKeyId) ?? [];
+			selected.push(grant.groupId);
+			result.set(grant.apiKeyId, selected);
+		}
+		return result;
 	}
 	private async lock(tx: $Transaction, ids: string[]) {
 		const rows = await tx

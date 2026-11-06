@@ -1,0 +1,11 @@
+{
+	"schemaVersion": 1,
+	"distribution": "keyzori-bun-source-v3",
+	"major": 3,
+	"assets": ["openapi.json", "LICENSE", "SHA256SUMS"],
+	"container": {
+		"platforms": ["linux/amd64", "linux/arm64"],
+		"sbom": "spdx-json",
+		"provenance": "https://slsa.dev/provenance/v1"
+	}
+}

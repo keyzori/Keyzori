@@ -4,6 +4,9 @@ import { HttpError } from "../http/HttpError";
 import type { $Transaction } from "../../types/database";
 import type { $Operation } from "../../types/operation";
 import type { $AdminOptions } from "../../types/idempotency";
+import type { $ReceiptAuthority } from "../../types/idempotency";
+import type { $Principal } from "../../types/auth";
+import type { AuthService } from "../auth/AuthService";
 import type { Database } from "../database/Database";
 import type { SettingsService } from "../../plugins/settings/SettingsService";
 import { Replay } from "./Replay";
@@ -13,6 +16,7 @@ export class IdempotencyService {
 	constructor(
 		private readonly database: Database,
 		private readonly settings: SettingsService,
+		private readonly auth?: Pick<AuthService, "authorize">,
 	) {}
 	async admin<T extends Record<string, unknown>>(
 		context: $Operation,
@@ -27,9 +31,45 @@ export class IdempotencyService {
 			context.idempotencyKey,
 			options.secretIds !== undefined,
 		);
-		const fingerprint = this.fingerprint(input);
-		return this.database.transaction(
+		if (context.principal.kind === "api" && !options.authorize)
+			throw new HttpError("FORBIDDEN");
+		const transaction = key
+			? this.database.idempotentTransaction.bind(this.database)
+			: this.database.transaction.bind(this.database);
+		return transaction(
 			async (tx) => {
+				const principal = options.scope
+					? context.principal.kind === "root"
+						? context.principal
+						: this.auth
+							? await this.auth.authorize(tx, context.principal, options.scope)
+							: (() => {
+									throw new HttpError("FORBIDDEN");
+								})()
+					: options.authorize
+						? await options.authorize(tx)
+						: context.principal;
+				if (
+					principal.kind !== context.principal.kind ||
+					principal.id !== context.principal.id ||
+					(context.principal.kind === "api" &&
+						(principal.kind !== "api" ||
+							principal.credentialHash !== context.principal.credentialHash))
+				)
+					throw new HttpError("UNAUTHORIZED");
+				const fingerprint = this.fingerprint({
+					input,
+					authority: options.scope
+						? "retained-resource-authority"
+						: principal.kind === "root"
+							? "root"
+							: {
+									credentialHash: principal.credentialHash,
+									scopes: [...principal.scopes].sort(),
+									allGroups: principal.allGroups,
+									groupIds: [...principal.groupIds].sort(),
+								},
+				});
 				const [clock] = await tx
 					.select({ now: sql<Date>`clock_timestamp()` })
 					.from(sql`(values (1)) as clock`);
@@ -41,10 +81,28 @@ export class IdempotencyService {
 						context.principal.id,
 						key,
 						fingerprint,
-						input,
+						undefined,
+						options.scope
+							? (entry) =>
+									this.authorizeReceipt(
+										principal,
+										entry.authority,
+										options.scope,
+									)
+							: undefined,
 					);
 					if (receipt?.result) throw new Replay(receipt.result);
 				}
+				if (options.scope && options.authorize) await options.authorize(tx);
+				const authority =
+					options.scope && options.authority
+						? {
+								...(await options.authority(tx, principal)),
+								scope: options.scope,
+							}
+						: null;
+				if (options.scope && !authority)
+					throw new Error("Missing receipt resource authority");
 				const result = await mutation(tx, clock.now);
 				if (key) {
 					const settings = await this.settings.read(tx);
@@ -53,6 +111,7 @@ export class IdempotencyService {
 						principalId: context.principal.id,
 						key,
 						fingerprint,
+						authority,
 						secretIssued: options.secretIds?.(result),
 						result: options.secretIds ? null : result,
 						expiresAt: new Date(
@@ -67,25 +126,17 @@ export class IdempotencyService {
 		);
 	}
 	fingerprint(value: unknown): string {
-		return this.hash(value, false);
-	}
-	private hash(value: unknown, legacy: boolean): string {
 		return new Bun.CryptoHasher("sha256")
-			.update(this.canonical(value, legacy))
+			.update(this.canonical(value))
 			.digest("hex");
 	}
-	private canonical(value: unknown, legacy: boolean): string {
+	private canonical(value: unknown): string {
 		if (Array.isArray(value))
-			return `[${value.map((item) => this.canonical(item, legacy)).join(",")}]`;
+			return `[${value.map((item) => this.canonical(item)).join(",")}]`;
 		if (value && typeof value === "object") {
 			return `{${Object.entries(value)
-				.sort(([a], [b]) =>
-					legacy ? a.localeCompare(b) : a < b ? -1 : a > b ? 1 : 0,
-				)
-				.map(
-					([key, item]) =>
-						`${JSON.stringify(key)}:${this.canonical(item, legacy)}`,
-				)
+				.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+				.map(([key, item]) => `${JSON.stringify(key)}:${this.canonical(item)}`)
 				.join(",")}}`;
 		}
 		return JSON.stringify(value) ?? "null";
@@ -96,7 +147,8 @@ export class IdempotencyService {
 		principalId: string,
 		key: string,
 		fingerprint: string,
-		input?: unknown,
+		_input?: unknown,
+		authorize?: (receipt: typeof receipts.$inferSelect) => void,
 	) {
 		await tx.execute(
 			sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([operation, principalId, key])}, 0))`,
@@ -119,11 +171,8 @@ export class IdempotencyService {
 			await tx.delete(receipts).where(where);
 			return;
 		}
-		// Keep pre-fix receipts replayable without writing locale-dependent hashes.
-		if (
-			receipt.fingerprint !== fingerprint &&
-			(input === undefined || receipt.fingerprint !== this.hash(input, true))
-		)
+		authorize?.(receipt);
+		if (receipt.fingerprint !== fingerprint)
 			throw new HttpError("IDEMPOTENCY_KEY_REUSED");
 		if (receipt.secretIssued)
 			throw new HttpError(
@@ -135,5 +184,31 @@ export class IdempotencyService {
 	}
 	async save(tx: $Transaction, input: typeof receipts.$inferInsert) {
 		await tx.insert(receipts).values(input);
+	}
+	private authorizeReceipt(
+		principal: $Principal,
+		authority: $ReceiptAuthority | null,
+		scope?: string,
+	) {
+		if (
+			!authority ||
+			authority.scope !== scope ||
+			!Array.isArray(authority.groupIds)
+		)
+			throw new HttpError("FORBIDDEN");
+		if (principal.kind === "root") return;
+		if (authority.ownerId && authority.ownerId !== principal.id)
+			throw new HttpError("FORBIDDEN");
+		if (authority.allGroups && !principal.allGroups)
+			throw new HttpError("FORBIDDEN");
+		if (authority.scopes?.some((action) => !principal.scopes.includes(action)))
+			throw new HttpError("FORBIDDEN");
+		if (
+			!principal.allGroups &&
+			authority.groupIds.some(
+				(id) => id === null || !principal.groupIds.includes(id),
+			)
+		)
+			throw new HttpError("FORBIDDEN");
 	}
 }

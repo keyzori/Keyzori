@@ -4,6 +4,7 @@ import type { $TrackedRequest } from "../../types/http";
 export class RequestTracker {
 	private readonly requests = new WeakMap<Request, $TrackedRequest>();
 	draining = false;
+	active = 0;
 	constructor(private readonly metrics?: Metrics) {}
 	begin(request: Request) {
 		const existing = this.requests.get(request);
@@ -14,6 +15,7 @@ export class RequestTracker {
 			deadlineAt: Date.now() + 15000,
 		};
 		this.requests.set(request, entry);
+		this.active++;
 		this.metrics?.start();
 		return entry;
 	}
@@ -21,6 +23,7 @@ export class RequestTracker {
 		const entry = this.requests.get(request);
 		if (!entry) return;
 		this.requests.delete(request);
+		this.active--;
 		const method = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"].includes(
 			request.method,
 		)

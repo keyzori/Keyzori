@@ -37,7 +37,7 @@ export class LicenseDeletion {
 				before: {
 					id: row.id,
 					userId: row.userId,
-					itemId: row.itemId,
+					groupId: row.groupId,
 					enabled: row.enabled,
 					expiresAt: row.expiresAt?.toISOString() ?? null,
 				},

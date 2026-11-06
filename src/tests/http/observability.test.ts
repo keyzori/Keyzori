@@ -1,41 +1,48 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
-import { t } from "elysia";
 import { sql } from "drizzle-orm";
 import { TestHttp } from "../fixtures/TestHttp";
 
 const context = new TestHttp();
-context.app.get(
-	"/broken-response",
-	{
-		response: t.Object(
-			{ expected: t.String() },
-			{ additionalProperties: false },
-		),
-	},
-	() => JSON.parse('{"credential":"MUST_NOT_LEAK"}'),
-);
-context.app.get("/broken-sql", () =>
-	context.services.database.transaction((tx) =>
-		tx.execute(sql`select ${"MUST_NOT_LEAK"} from deliberately_missing_table`),
-	),
-);
 beforeAll(() => context.start());
 afterAll(() => context.stop());
 
 test("response bugs and SQL programming errors are redacted 500s with correlation", async () => {
 	const logs = spyOn(console, "log").mockImplementation(() => {});
+	const fault = spyOn(context.services.licenses, "read").mockResolvedValue(
+		JSON.parse(
+			'{"data":[{"credential":"MUST_NOT_LEAK"}],"pageLimit":50,"nextCursor":null}',
+		),
+	);
 	try {
-		for (const path of ["/broken-response", "/broken-sql"]) {
+		for (const [index, path] of [
+			"/licenses",
+			"/licenses/",
+			"/licenses",
+		].entries()) {
+			if (index === 2)
+				fault.mockImplementation(async () => {
+					await context.services.database.transaction((tx) =>
+						tx.execute(
+							sql`select ${"MUST_NOT_LEAK"} from deliberately_missing_table`,
+						),
+					);
+					throw new Error("Expected SQL fixture failure");
+				});
 			const response = await context.request(path);
 			expect(response.status).toBe(500);
-			expect(await response.text()).toBe(
-				'{"code":"INTERNAL_ERROR","reason":"Internal server error"}',
-			);
+			expect(await response.json()).toMatchObject({
+				ok: false,
+				data: null,
+				error: { code: "INTERNAL_ERROR", message: "Internal server error" },
+			});
 			expect(response.headers.get("x-request-id")).toBeTruthy();
 		}
 		expect(JSON.stringify(logs.mock.calls)).not.toContain("MUST_NOT_LEAK");
-		expect(logs.mock.calls).toHaveLength(2);
+		expect(JSON.stringify(logs.mock.calls)).toContain("schema_validation");
+		expect(JSON.stringify(logs.mock.calls)).toContain("SQLSTATE_42P01");
+		expect(logs.mock.calls).toHaveLength(3);
 	} finally {
+		fault.mockRestore();
 		logs.mockRestore();
 	}
 });
@@ -55,7 +62,10 @@ test("live dependency loss changes health and validation to unavailable", async 
 	try {
 		const health = await context.request("/health", { credential: null });
 		expect(health.status).toBe(503);
-		expect(await health.json()).toMatchObject({ healthy: false, redis: false });
+		expect(await health.json()).toMatchObject({
+			ok: false,
+			error: { code: "SERVICE_UNAVAILABLE" },
+		});
 		expect(
 			(
 				await context.request("/validate", {

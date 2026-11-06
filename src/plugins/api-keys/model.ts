@@ -1,11 +1,25 @@
 import { t } from "elysia";
 import { httpModel } from "../../core/http/model";
-import { scopes } from "../../core/auth/scopes";
+import { actions, scopes } from "../../core/auth/scopes";
+
+const description = t.Union([t.String({ maxLength: 1024 }), t.Null()]);
+const grantChanges = {
+	scopes: t.Optional(
+		t.Array(t.UnionEnum(scopes), {
+			uniqueItems: true,
+			maxItems: scopes.length,
+		}),
+	),
+	allGroups: t.Optional(t.Boolean()),
+	groupIds: t.Optional(
+		t.Array(httpModel.id, { uniqueItems: true, maxItems: 100 }),
+	),
+};
 
 const create = t.Object(
 	{
 		name: httpModel.name,
-		scopes: t.Array(t.UnionEnum(scopes), { uniqueItems: true }),
+		description: t.Optional(description),
 		expiresAt: t.Optional(httpModel.expiresAt),
 	},
 	{ additionalProperties: false },
@@ -14,7 +28,10 @@ const view = t.Object(
 	{
 		id: httpModel.id,
 		name: t.String(),
-		scopes: t.Array(t.String()),
+		description,
+		scopes: t.Array(t.UnionEnum(actions)),
+		allGroups: t.Boolean(),
+		groupIds: t.Array(httpModel.id),
 		enabled: t.Boolean(),
 		expiresAt: httpModel.expiresAt,
 		lastUsedAt: httpModel.expiresAt,
@@ -31,7 +48,15 @@ export const apiKeyModel = {
 	update: t.Object(
 		{
 			ids: httpModel.ids,
-			changes: t.Partial(create),
+			changes: t.Object(
+				{
+					name: t.Optional(httpModel.name),
+					description: t.Optional(description),
+					expiresAt: t.Optional(httpModel.expiresAt),
+					...grantChanges,
+				},
+				{ additionalProperties: false, minProperties: 1 },
+			),
 			reason: t.Optional(httpModel.reason),
 		},
 		{ additionalProperties: false },
@@ -62,7 +87,11 @@ export const apiKeyModel = {
 	read: t.Union([
 		t.Object({ data: view }, { additionalProperties: false }),
 		t.Object(
-			{ data: t.Array(view), nextCursor: t.Union([t.String(), t.Null()]) },
+			{
+				data: t.Array(view),
+				nextCursor: t.Union([t.String(), t.Null()]),
+				pageLimit: t.Integer({ minimum: 1, maximum: 100 }),
+			},
 			{ additionalProperties: false },
 		),
 	]),

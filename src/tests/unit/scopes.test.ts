@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { ScopeService } from "../../core/auth/ScopeService";
-import { scopes } from "../../core/auth/scopes";
+import { actions } from "../../core/auth/scopes";
 
 describe("independent scope grants", () => {
 	const service = new ScopeService();
 
-	test("rejects hierarchy, root grants, obsolete actions, duplicates and overlaps", () => {
+	test("rejects root grants, unknown actions, duplicates and overlaps", () => {
 		for (const grants of [
 			["*:*"],
 			["settings:read"],
@@ -13,28 +13,41 @@ describe("independent scope grants", () => {
 			["webhooks:rotate"],
 			["licenses:read", "licenses:read"],
 			["licenses:read", "licenses:*"],
-		]) {
+		])
 			expect(() => service.validate(grants)).toThrow();
-		}
-		expect(
-			service.validate(["licenses:read", "licenses:update", "users:*"]),
-		).toEqual(["licenses:read", "licenses:update", "users:*"]);
 	});
 
-	test("family wildcards cannot authorize root-only or other-family operations", () => {
-		const all = ["licenses:*", "users:*", "items:*", "webhooks:*"];
+	test("expands wildcards to concrete grants and fails closed for stored wildcards", () => {
+		const grants = service.validate(["licenses:read", "users:*"]);
+		expect(grants).toEqual([
+			"licenses:read",
+			...actions.filter((action) => action.startsWith("users:")),
+		]);
+		expect(service.validStored(grants)).toBe(true);
+		expect(service.allows(grants, "users:delete")).toBe(true);
+		expect(service.allows(grants, "licenses:rotate")).toBe(false);
+		expect(service.allows(grants, "users:new-action")).toBe(false);
+		expect(service.allows(["users:*"], "users:read")).toBe(false);
+		expect(service.allows(["users:read", "unknown:read"], "users:read")).toBe(
+			false,
+		);
+	});
+
+	test("empty grants authorize nothing and families cannot grant operator access", () => {
+		for (const action of actions)
+			expect(service.allows([], action)).toBe(false);
 		for (const operation of [
-			"settings:update",
+			"root",
 			"api-keys:create",
-			"audits:read",
+			"settings:update",
 			"metrics:read",
-		]) {
-			expect(service.allows(all, operation)).toBe(false);
-			expect(() => service.authorize(all, operation)).toThrow();
-			expect(() => service.authorize([], operation, true)).not.toThrow();
-		}
-		expect(service.allows(["licenses:read"], "licenses:rotate")).toBe(false);
-		expect(service.allows(["users:*"], "items:delete")).toBe(false);
-		for (const scope of scopes) expect(service.allows(all, scope)).toBe(true);
+		])
+			expect(service.allows(actions, operation)).toBe(false);
+		expect(
+			service.allows(service.validate(["usage:*"]), "licenses:update"),
+		).toBe(false);
+		expect(
+			service.allows(service.validate(["groups:*"]), "licenses:delete"),
+		).toBe(false);
 	});
 });

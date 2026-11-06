@@ -1,10 +1,10 @@
 {
 	"name": "keyzori",
-	"version": "2.0.3",
+	"version": "3.0.0-beta.1",
 	"private": true,
 	"type": "module",
 	"license": "Apache-2.0",
-	"description": "Self hosted software licensing",
+	"description": "Internal licence-key management for developer integrations",
 	"packageManager": "bun@1.4.4-canary.20261022.1",
 	"engines": {
 		"bun": ">=1.4.4-canary.1"
@@ -14,25 +14,29 @@
 		"dev": "bun --watch src/main.ts",
 		"start": "bun src/main.ts",
 		"master-key": "bun src/main.ts master-key",
-		"check": "bun run typecheck && bun run lint && bun run db:check && bun run test",
+		"check": "bun src/scripts/check.ts",
+		"doctor": "bun src/scripts/doctor.ts",
 		"typecheck": "tsc --noEmit",
-		"lint": "biome check .",
+		"lint": "biome check",
+		"lint:workflows": "actionlint -color",
 		"format": "biome check --write .",
+		"fmt": "biome check --write",
 		"test": "bun src/scripts/test-services.ts exec bun test",
 		"test:unit": "bun test src/tests/unit",
 		"db:generate": "bunx --bun drizzle-kit generate --config=src/drizzle.config.ts",
 		"db:migrate": "bun src/main.ts migrate",
-		"db:check": "bun src/scripts/check-migrations.ts",
+		"db:check": "bun src/scripts/test-services.ts exec bun src/scripts/check-migrations.ts",
 		"openapi": "bun src/scripts/openapi.ts",
-		"build": "bun run openapi && bun src/scripts/build.ts",
-		"build:verify": "bun src/scripts/verify-build.ts"
+		"smoke:source": "bun src/scripts/test-services.ts exec bun src/scripts/source-smoke.ts",
+		"smoke:container": "bun src/scripts/test-services.ts exec bun src/scripts/container-smoke.ts",
+		"smoke:compose": "bun src/scripts/compose-smoke.ts"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.5.13",
-		"@commitlint/cli": "21.2.2",
-		"@commitlint/config-conventional": "21.2.2",
-		"@commitlint/types": "21.2.0",
-		"@types/bun": "1.4.3",
+		"@biomejs/biome": "2.6.5",
+		"@commitlint/cli": "21.2.4",
+		"@commitlint/config-conventional": "21.2.4",
+		"@commitlint/types": "21.2.3",
+		"@types/bun": "1.4.4",
 		"drizzle-kit": "1.0.0-rc.5-ab785fc",
 		"husky": "9.1.7",
 		"typescript": "7.0.2",
@@ -42,7 +46,7 @@
 		"@elysia/cors": "2.0.0-beta.1",
 		"drizzle-orm": "1.0.0-rc.5-ab785fc",
 		"elysia": "2.0.0-beta.16",
-		"exact-mirror": "1.2.6",
-		"typebox": "1.3.0"
+		"exact-mirror": "1.2.7",
+		"typebox": "1.4.4"
 	}
 }

@@ -1,9 +1,12 @@
-import { asc, eq, inArray, and, sql } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
+import { LicenseView } from "./LicenseView";
+import { LicenseContext } from "./LicenseContext";
+import { LicenseUsage } from "./LicenseUsage";
+import { LicenseRegistrations } from "./LicenseRegistrations";
+import { Eligibility } from "../validate/Eligibility";
 import { licenses } from "../../core/database/schema/licenses";
 import { users } from "../../core/database/schema/users";
-import { items } from "../../core/database/schema/items";
-import { hardware } from "../../core/database/schema/hardware";
-import { ips } from "../../core/database/schema/ips";
+import { groups } from "../../core/database/schema/groups";
 import { HttpError } from "../../core/http/HttpError";
 import { InputPolicy } from "../../core/http/InputPolicy";
 import { ResourceQuery } from "../../core/http/ResourceQuery";
@@ -20,7 +23,6 @@ import type { MeterService } from "./MeterService";
 import type { LicenseDeletion } from "./LicenseDeletion";
 import type {
 	$License,
-	$LicenseAdmin,
 	$LicenseCreate,
 	$LicenseUpdate,
 	$LicenseAction,
@@ -29,6 +31,8 @@ import type {
 	$MeterAdjustment,
 	$HardwareRemoval,
 	$IpRemoval,
+	$UsageConsume,
+	$Registration,
 } from "../../types/licenses";
 import type { $Operation } from "../../types/operation";
 import type { $Transaction } from "../../types/database";
@@ -37,6 +41,9 @@ export class LicenseService {
 	private readonly input = new InputPolicy();
 	private readonly keys = new KeyGenerator();
 	private readonly hashes = new SecretHasher();
+	private readonly context: LicenseContext;
+	private readonly usage: LicenseUsage;
+	private readonly registrations: LicenseRegistrations;
 	constructor(
 		private readonly database: Database,
 		private readonly auth: AuthService,
@@ -47,7 +54,26 @@ export class LicenseService {
 		private readonly meters: MeterService,
 		private readonly deletion: LicenseDeletion,
 		private readonly ip: ClientIpResolver,
-	) {}
+	) {
+		this.context = new LicenseContext(auth);
+		this.usage = new LicenseUsage(
+			database,
+			auth,
+			audit,
+			events,
+			idempotency,
+			meters,
+			new Eligibility(settings, ip),
+			this.context,
+		);
+		this.registrations = new LicenseRegistrations(
+			auth,
+			audit,
+			idempotency,
+			ip,
+			this.context,
+		);
+	}
 	async create(input: $LicenseCreate, operation: $Operation) {
 		this.auth.require(operation.principal, "licenses:create");
 		this.checkInput(input);
@@ -57,7 +83,7 @@ export class LicenseService {
 			input,
 			async (tx, now) => {
 				await this.relations(tx, input);
-				const format = await this.format(tx, input.itemId);
+				const format = await this.format(tx, input.groupId);
 				for (let attempt = 0; attempt < 5; attempt++) {
 					const credential = this.keys.license(format);
 					const [row] = await tx
@@ -67,7 +93,7 @@ export class LicenseService {
 							keyHash: this.hashes.hash(credential),
 							keyFormat: format,
 							userId: input.userId,
-							itemId: input.itemId,
+							groupId: input.groupId,
 							expiresAt: input.expiresAt
 								? this.input.timestamp(input.expiresAt)
 								: null,
@@ -87,12 +113,12 @@ export class LicenseService {
 							tx,
 							row.id,
 							input.meters,
-							this.evidence(operation, row.id),
+							this.context.evidence(operation, row.id),
 							now,
 						);
 					const data = await this.view(tx, row, operation, now);
 					await this.audit.record(tx, {
-						...this.evidence(operation, row.id),
+						...this.context.evidence(operation, row.id),
 						action: "license.created",
 						after: data,
 					});
@@ -106,89 +132,83 @@ export class LicenseService {
 				}
 				throw new Error("Credential generation collision limit reached");
 			},
-			{ secretIds: (result) => [result.data.id] },
+			{
+				secretIds: (result) => [result.data.id],
+				authorize: (tx) =>
+					this.context.authorize(
+						tx,
+						operation,
+						"licenses:create",
+						[],
+						input.groupId ?? null,
+						input.userId,
+					),
+			},
 		);
 	}
-	async read(params: URLSearchParams, operation: $Operation, self = false) {
-		this.auth.require(operation.principal, self ? "self" : "licenses:read");
-		if (operation.principal.kind === "license") {
-			if (self) {
-				if (params.size) throw new HttpError("INVALID_REQUEST");
-				params = new URLSearchParams({ id: operation.principal.id });
-			}
-			if (
-				params.get("id")?.toLowerCase() !== operation.principal.id ||
-				params.size !== 1
-			)
-				throw new HttpError("FORBIDDEN");
-		}
-		const settings = await this.settings.read(undefined, operation.deadlineAt);
-		const query = new ResourceQuery(
-			params,
-			licenses,
-			settings.defaultPageLimit,
-		);
+	async read(params: URLSearchParams, operation: $Operation) {
+		this.auth.require(operation.principal, "licenses:read");
 		return this.database.transaction(
 			async (tx) => {
-				const chosen = await tx
+				const principal = await this.auth.authorize(
+					tx,
+					operation.principal,
+					"licenses:read",
+				);
+				const settings = await this.settings.read(tx);
+				const query = new ResourceQuery(
+					params,
+					licenses,
+					settings.defaultPageLimit,
+				);
+				const selection = tx
 					.select()
 					.from(licenses)
-					.where(query.where)
+					.where(
+						and(
+							query.where,
+							this.auth.groupFilter(principal, licenses.groupId),
+						),
+					)
 					.orderBy(...query.order)
 					.limit(query.id ? 1 : query.limit + 1);
-				if (query.id && !chosen.length) throw new HttpError("NOT_FOUND");
-				const rows = chosen.slice(0, query.limit);
-				const locked = rows.length
-					? await this.lock(
-							tx,
-							rows.map((row) => row.id),
-						)
-					: [];
-				await this.auth.assertLicense(tx, operation.principal);
-				const now = await this.now(tx);
-				const data = [];
-				for (const row of rows) {
-					const current = locked.find((candidate) => candidate.id === row.id);
-					if (current) data.push(await this.view(tx, current, operation, now));
-				}
+				// A detail projection reads several child tables. All child mutations
+				// take the licence lock, so this also freezes its group authority.
+				const rows = await (query.id ? selection.for("share") : selection);
+				const view = new LicenseView(this.meters);
 				if (query.id) {
-					const first = data[0];
-					if (!first) throw new HttpError("NOT_FOUND");
-					return {
-						data:
-							operation.principal.kind === "license" ? this.safe(first) : first,
-					};
+					const row = rows[0];
+					if (!row) throw new HttpError("NOT_FOUND");
+					return { data: await view.read(tx, row, await this.context.now(tx)) };
 				}
-				const last = rows.at(-1);
+				const selected = rows.slice(0, query.limit);
+				const last = selected.at(-1);
 				return {
-					data,
+					data: selected.map((row) => view.summary(row)),
+					pageLimit: query.limit,
 					nextCursor:
-						chosen.length > query.limit && last ? query.cursor(last) : null,
+						rows.length > query.limit && last ? query.cursor(last) : null,
 				};
 			},
 			"read",
 			operation.deadlineAt,
 		);
 	}
-	async self(operation: $Operation) {
-		this.auth.require(operation.principal, "self");
-		return this.database.transaction(
-			async (tx) => {
-				const [row] = await this.lock(tx, [operation.principal.id]);
-				await this.auth.assertLicense(tx, operation.principal);
-				if (!row) throw new HttpError("NOT_FOUND");
-				return {
-					data: this.safe(
-						await this.view(tx, row, operation, await this.now(tx)),
-					),
-				};
-			},
-			"read",
-			operation.deadlineAt,
-		);
-	}
+
 	async update(input: $LicenseUpdate, operation: $Operation) {
 		this.auth.require(operation.principal, "licenses:update");
+		input = {
+			...input,
+			changes: {
+				...input.changes,
+				...(input.changes.groupId
+					? { groupId: input.changes.groupId.toLowerCase() }
+					: {}),
+				...(input.changes.userId
+					? { userId: input.changes.userId.toLowerCase() }
+					: {}),
+			},
+		};
 		this.checkInput(input.changes);
 		const ids = this.input.ids(input.ids);
 		return this.idempotency.admin(
@@ -196,8 +216,8 @@ export class LicenseService {
 			"license.update",
 			input,
 			async (tx) => {
-				const locked = await this.lock(tx, ids);
-				const now = await this.now(tx);
+				const locked = await this.context.lock(tx, ids);
+				const now = await this.context.now(tx);
 				await this.relations(tx, input.changes);
 				for (const row of locked) {
 					const { meters: definitions, expiresAt, ...changes } = input.changes;
@@ -208,6 +228,16 @@ export class LicenseService {
 						...(expiresAt !== undefined ? { expiresAt } : {}),
 					};
 					const diff = this.audit.changes(before, candidate);
+					const moved = candidate.groupId !== row.groupId;
+					const historicalAuthority = {
+						requiredGroupIds: moved
+							? [row.groupId, candidate.groupId].filter(
+									(id): id is string => id !== null,
+								)
+							: [],
+						requiresAllGroups:
+							moved && (row.groupId === null || candidate.groupId === null),
+					};
 					if (diff.changed) {
 						await tx
 							.update(licenses)
@@ -224,28 +254,28 @@ export class LicenseService {
 								updatedAt: now,
 							})
 							.where(eq(licenses.id, row.id));
-						if (changes.deviceLimit !== undefined)
-							await this.truncateHardware(
-								tx,
-								row.id,
-								changes.deviceLimit,
-								operation,
-								input.reason,
-							);
-						if (changes.ipLimit !== undefined)
-							await this.truncateIps(
-								tx,
-								row.id,
-								changes.ipLimit,
-								operation,
-								input.reason,
-							);
 						await this.audit.record(tx, {
-							...this.evidence(operation, row.id, input.reason),
+							...this.context.evidence(operation, row.id, input.reason),
 							action: "license.updated",
+							groupId: row.groupId,
+							...historicalAuthority,
 							before: diff.before,
 							after: diff.after,
 						});
+						if (moved) {
+							await this.events.emit(
+								tx,
+								"license.group_detached",
+								{ licenseId: row.id, groupId: row.groupId },
+								now,
+							);
+							await this.events.emit(
+								tx,
+								"license.group_attached",
+								{ licenseId: row.id, groupId: candidate.groupId },
+								now,
+							);
+						}
 						await this.events.emit(
 							tx,
 							"license.updated",
@@ -258,11 +288,30 @@ export class LicenseService {
 							tx,
 							row.id,
 							definitions,
-							this.evidence(operation, row.id, input.reason),
+							{
+								...this.context.evidence(operation, row.id, input.reason),
+								groupId: candidate.groupId,
+								...historicalAuthority,
+							},
 							now,
 						);
 				}
 				return { data: { ids } };
+			},
+			{
+				authorize: async (tx) => {
+					const principal = await this.context.authorize(
+						tx,
+						operation,
+						"licenses:update",
+						ids,
+						input.changes.groupId,
+						input.changes.userId,
+					);
+					if (input.changes.meters)
+						this.auth.require(principal, "usage:adjust");
+					return principal;
+				},
 			},
 		);
 	}
@@ -285,8 +334,8 @@ export class LicenseService {
 			`license.${action}`,
 			input,
 			async (tx) => {
-				const locked = await this.lock(tx, ids);
-				const now = await this.now(tx);
+				const locked = await this.context.lock(tx, ids);
+				const now = await this.context.now(tx);
 				for (const row of locked) {
 					const after = {
 						enabled,
@@ -306,7 +355,7 @@ export class LicenseService {
 						})
 						.where(eq(licenses.id, row.id));
 					await this.audit.record(tx, {
-						...this.evidence(operation, row.id, input.reason),
+						...this.context.evidence(operation, row.id, input.reason),
 						action: `license.${enabled ? "enabled" : "disabled"}`,
 						before: diff.before,
 						after: diff.after,
@@ -319,6 +368,10 @@ export class LicenseService {
 					);
 				}
 				return { data: { ids } };
+			},
+			{
+				authorize: (tx) =>
+					this.context.authorize(tx, operation, `licenses:${action}`, ids),
 			},
 		);
 	}
@@ -335,6 +388,16 @@ export class LicenseService {
 				await this.deletion.remove(tx, ids, operation, input.reason);
 				return { data: { ids } };
 			},
+			{
+				scope: "licenses:delete",
+				authority: async (tx) => ({
+					groupIds: (await this.context.lock(tx, ids)).map(
+						(row) => row.groupId,
+					),
+				}),
+				authorize: (tx) =>
+					this.context.authorize(tx, operation, "licenses:delete", ids),
+			},
 		);
 	}
 	async rotate(input: $LicenseRotate, operation: $Operation) {
@@ -345,34 +408,37 @@ export class LicenseService {
 			"license.rotate",
 			input,
 			async (tx) => {
-				const locked = await this.lock(tx, ids);
-				const now = await this.now(tx);
+				const locked = await this.context.lock(tx, ids);
+				const now = await this.context.now(tx);
 				const data = [];
 				for (const row of locked) {
-					const format = await this.format(tx, row.itemId);
+					const format = await this.format(tx, row.groupId);
 					let credential = "";
 					for (let attempt = 0; attempt < 5; attempt++) {
-						credential = this.keys.license(format);
-						const [existing] = await tx
-							.select({ id: licenses.id })
-							.from(licenses)
-							.where(eq(licenses.keyHash, this.hashes.hash(credential)));
-						if (!existing) break;
-						credential = "";
+						const candidate = this.keys.license(format);
+						if (this.hashes.hash(candidate) === row.keyHash) continue;
+						try {
+							await tx.transaction(async (savepoint) => {
+								await savepoint
+									.update(licenses)
+									.set({
+										keyHash: this.hashes.hash(candidate),
+										keyFormat: format,
+										updatedBy: operation.principal.id,
+										updatedAt: now,
+									})
+									.where(eq(licenses.id, row.id));
+							});
+							credential = candidate;
+							break;
+						} catch (error) {
+							if (!this.keyCollision(error)) throw error;
+						}
 					}
 					if (!credential)
 						throw new Error("Credential generation collision limit reached");
-					await tx
-						.update(licenses)
-						.set({
-							keyHash: this.hashes.hash(credential),
-							keyFormat: format,
-							updatedBy: operation.principal.id,
-							updatedAt: now,
-						})
-						.where(eq(licenses.id, row.id));
 					await this.audit.record(tx, {
-						...this.evidence(operation, row.id, input.reason),
+						...this.context.evidence(operation, row.id, input.reason),
 						action: "license.rotated",
 						before: { keyFormat: row.keyFormat },
 						after: { keyFormat: format },
@@ -387,189 +453,54 @@ export class LicenseService {
 				}
 				return { data };
 			},
-			{ secretIds: (result) => result.data.map((row) => row.id) },
-		);
-	}
-	async adjust(input: $MeterAdjustment, operation: $Operation) {
-		this.auth.require(operation.principal, "licenses:update");
-		const ids = this.input.ids(input.ids);
-		return this.idempotency.admin(
-			operation,
-			"license.meter.adjust",
-			input,
-			async (tx) => {
-				const locked = await this.lock(tx, ids);
-				const now = await this.now(tx);
-				for (const row of locked)
-					await this.meters.adjust(
-						tx,
-						row.id,
-						input.name,
-						input.action,
-						input.value,
-						this.evidence(operation, row.id, input.reason),
-						now,
-					);
-				return { data: { ids } };
+			{
+				secretIds: (result) => result.data.map((row) => row.id),
+				authorize: (tx) =>
+					this.context.authorize(tx, operation, "licenses:rotate", ids),
 			},
 		);
 	}
-	async removeHardware(input: $HardwareRemoval, operation: $Operation) {
-		this.auth.require(operation.principal, "licenses:update");
-		const ids = this.input.ids(input.ids);
-		return this.idempotency.admin(
-			operation,
-			"license.hardware.remove",
-			input,
-			async (tx) => {
-				for (const row of await this.lock(tx, ids)) {
-					const removed = await tx
-						.delete(hardware)
-						.where(
-							and(
-								eq(hardware.licenseId, row.id),
-								inArray(hardware.hardwareId, input.hardwareIds),
-							),
-						)
-						.returning();
-					if (removed.length)
-						await this.audit.record(tx, {
-							...this.evidence(operation, row.id, input.reason),
-							action: "license.hardware.removed",
-							before: { hardwareIds: removed.map((entry) => entry.hardwareId) },
-						});
-				}
-				return { data: { ids } };
-			},
-		);
+	adjust(input: $MeterAdjustment, operation: $Operation) {
+		return this.usage.adjust(input, operation);
 	}
-	async removeIps(input: $IpRemoval, operation: $Operation) {
-		this.auth.require(operation.principal, "licenses:update");
-		const ids = this.input.ids(input.ids);
-		const addresses = await Promise.all(
-			input.ips.map((ip) => this.ip.normalize(ip, operation.deadlineAt)),
-		);
-		return this.idempotency.admin(
-			operation,
-			"license.ips.remove",
-			input,
-			async (tx) => {
-				for (const row of await this.lock(tx, ids)) {
-					const removed = await tx
-						.delete(ips)
-						.where(and(eq(ips.licenseId, row.id), inArray(ips.ip, addresses)))
-						.returning();
-					if (removed.length)
-						await this.audit.record(tx, {
-							...this.evidence(operation, row.id, input.reason),
-							action: "license.ips.removed",
-							before: { ips: removed.map((entry) => entry.ip) },
-						});
-				}
-				return { data: { ids } };
-			},
-		);
+	removeHardware(input: $HardwareRemoval, operation: $Operation) {
+		return this.registrations.removeHardware(input, operation);
 	}
-	private async view(
+	removeIps(input: $IpRemoval, operation: $Operation) {
+		return this.registrations.removeIps(input, operation);
+	}
+	consume(input: $UsageConsume, operation: $Operation) {
+		return this.usage.consume(input, operation);
+	}
+	register(input: $Registration, operation: $Operation, kind: "device" | "ip") {
+		return this.registrations.register(input, operation, kind);
+	}
+
+	private view(
 		tx: $Transaction,
 		row: $License,
-		operation: $Operation,
+		_operation: $Operation,
 		now: Date,
 	) {
-		const meters = await this.meters.effective(
-			tx,
-			row.id,
-			this.evidence(operation, row.id),
-			now,
-		);
-		const safe = {
-			id: row.id,
-			enabled: row.enabled,
-			userId: row.userId,
-			itemId: row.itemId,
-			expiresAt: row.expiresAt?.toISOString() ?? null,
-			deviceLimit: row.deviceLimit,
-			ipLimit: row.ipLimit,
-			allowedIps: row.allowedIps,
-			metadata: row.metadata,
-			meters: meters.map((meter) => this.meters.view(meter)),
-			createdAt: row.createdAt.toISOString(),
-			updatedAt: row.updatedAt.toISOString(),
-		};
-		const hardwareIds = await tx
-			.select()
-			.from(hardware)
-			.where(eq(hardware.licenseId, row.id))
-			.orderBy(asc(hardware.registrationOrder));
-		const registeredIps = await tx
-			.select()
-			.from(ips)
-			.where(eq(ips.licenseId, row.id))
-			.orderBy(asc(ips.registrationOrder));
-		return {
-			...safe,
-			disabledReason: row.disabledReason,
-			notes: row.notes,
-			keyFormat: row.keyFormat,
-			createdBy: row.createdBy,
-			updatedBy: row.updatedBy,
-			hardwareIds: hardwareIds.map((entry) => entry.hardwareId),
-			registeredIps: registeredIps.map((entry) => entry.ip),
-		};
+		return new LicenseView(this.meters).read(tx, row, now);
 	}
-	private safe(row: $LicenseAdmin) {
-		return {
-			id: row.id,
-			enabled: row.enabled,
-			userId: row.userId,
-			itemId: row.itemId,
-			expiresAt: row.expiresAt,
-			deviceLimit: row.deviceLimit,
-			ipLimit: row.ipLimit,
-			allowedIps: row.allowedIps,
-			metadata: row.metadata,
-			meters: row.meters,
-			createdAt: row.createdAt,
-			updatedAt: row.updatedAt,
-		};
-	}
+
 	private fields(row: $License) {
 		return {
 			userId: row.userId,
-			itemId: row.itemId,
+			groupId: row.groupId,
 			expiresAt: row.expiresAt?.toISOString() ?? null,
 			deviceLimit: row.deviceLimit,
 			ipLimit: row.ipLimit,
 			allowedIps: row.allowedIps,
 			metadata: row.metadata,
 			notes: row.notes,
-		};
-	}
-	private evidence(operation: $Operation, licenseId: string, reason?: string) {
-		return {
-			...operation,
-			actor: operation.principal,
-			action: "license.updated",
-			targetType: "license",
-			targetId: licenseId,
-			reason,
 		};
 	}
 	private checkInput(input: $LicenseCreate) {
 		this.input.metadata(input.metadata);
 		this.input.notes(input.notes);
 		if (input.allowedIps) this.ip.validateRules(input.allowedIps);
-	}
-	private async lock(tx: $Transaction, ids: string[]) {
-		const rows = await tx
-			.select()
-			.from(licenses)
-			.where(inArray(licenses.id, ids))
-			.orderBy(asc(licenses.id))
-			.for("update");
-		if (rows.length !== ids.length)
-			throw new HttpError("BULK_OPERATION_FAILED");
-		return rows;
 	}
 	private async relations(tx: $Transaction, input: $LicenseCreate) {
 		if (
@@ -583,86 +514,44 @@ export class LicenseService {
 		)
 			throw new HttpError("NOT_FOUND");
 		if (
-			input.itemId &&
+			input.groupId &&
 			!(
 				await tx
-					.select({ id: items.id })
-					.from(items)
-					.where(eq(items.id, input.itemId))
+					.select({ id: groups.id })
+					.from(groups)
+					.where(eq(groups.id, input.groupId))
 			).length
 		)
 			throw new HttpError("NOT_FOUND");
 	}
-	private async format(tx: $Transaction, itemId?: string | null) {
+	private async format(tx: $Transaction, groupId?: string | null) {
 		const settings = await this.settings.read(tx);
-		if (!settings.globalFormatEnabled && itemId) {
-			const [item] = await tx
-				.select({ keyFormat: items.keyFormat })
-				.from(items)
-				.where(eq(items.id, itemId));
-			if (item?.keyFormat) return item.keyFormat;
+		if (!settings.globalFormatEnabled && groupId) {
+			const [group] = await tx
+				.select({ keyFormat: groups.keyFormat })
+				.from(groups)
+				.where(eq(groups.id, groupId));
+			if (group?.keyFormat) return group.keyFormat;
 		}
 		return settings.globalKeyFormat;
 	}
-	private async truncateHardware(
-		tx: $Transaction,
-		licenseId: string,
-		limit: number | null,
-		operation: $Operation,
-		reason?: string,
-	) {
-		const removed = await tx
-			.select({ id: hardware.id, hardwareId: hardware.hardwareId })
-			.from(hardware)
-			.where(eq(hardware.licenseId, licenseId))
-			.orderBy(asc(hardware.registrationOrder))
-			.offset(limit ?? 0);
-		if (removed.length)
-			await tx.delete(hardware).where(
-				inArray(
-					hardware.id,
-					removed.map((row) => row.id),
-				),
-			);
-		if (removed.length)
-			await this.audit.record(tx, {
-				...this.evidence(operation, licenseId, reason),
-				action: "license.hardware.removed",
-				before: { hardwareIds: removed.map((row) => row.hardwareId) },
-			});
-	}
-	private async truncateIps(
-		tx: $Transaction,
-		licenseId: string,
-		limit: number | null,
-		operation: $Operation,
-		reason?: string,
-	) {
-		const removed = await tx
-			.select({ id: ips.id, ip: ips.ip })
-			.from(ips)
-			.where(eq(ips.licenseId, licenseId))
-			.orderBy(asc(ips.registrationOrder))
-			.offset(limit ?? 0);
-		if (removed.length)
-			await tx.delete(ips).where(
-				inArray(
-					ips.id,
-					removed.map((row) => row.id),
-				),
-			);
-		if (removed.length)
-			await this.audit.record(tx, {
-				...this.evidence(operation, licenseId, reason),
-				action: "license.ips.removed",
-				before: { ips: removed.map((row) => row.ip) },
-			});
-	}
-	private async now(tx: $Transaction) {
-		const [row] = await tx
-			.select({ now: sql<Date>`clock_timestamp()` })
-			.from(sql`(values (1)) as clock`);
-		if (!row) throw new Error("Database time unavailable");
-		return row.now;
+	private keyCollision(error: unknown, depth = 0): boolean {
+		if (!error || typeof error !== "object" || depth > 5) return false;
+		const duplicate =
+			("code" in error && error.code === "23505") ||
+			("errno" in error && error.errno === "23505");
+		const constraint =
+			"constraint" in error
+				? error.constraint
+				: "constraint_name" in error
+					? error.constraint_name
+					: undefined;
+		if (
+			duplicate &&
+			(constraint === "licenses_key_hash_key" ||
+				constraint === "licenses_keyHash_unique")
+		)
+			return true;
+		return "cause" in error && this.keyCollision(error.cause, depth + 1);
 	}
 }

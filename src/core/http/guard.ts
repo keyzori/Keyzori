@@ -1,7 +1,8 @@
 import { Elysia } from "elysia";
 import type { $Requests } from "../../types/application";
+import type { Access } from "./operations";
 
-export const guard = (requests: $Requests, scope: string) =>
+export const guard = (requests: $Requests, scope: Exclude<Access, "public">) =>
 	new Elysia({ normalize: false }).derive(async ({ request, server, set }) => {
 		const operation = await requests.authorize(
 			request,

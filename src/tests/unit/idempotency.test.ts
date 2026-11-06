@@ -22,6 +22,7 @@ function receiptTransaction(
 		operation: "test",
 		principalId: "root",
 		key: "key",
+		authority: null,
 		createdAt: new Date("2026-10-01T00:00:00Z"),
 		expiresAt: new Date("2026-10-02T00:00:00Z"),
 		...receipt,
@@ -101,7 +102,7 @@ describe("idempotency fingerprints", () => {
 		).toEqual(expected);
 	});
 
-	test("reads a pre-fix receipt without accepting a changed request", async () => {
+	test("rejects a receipt with a different fingerprint", async () => {
 		const input = { name: "legacy", metadata: { B: 2, a: 1 } };
 		// A receipt written before the fix, when locale collation sorted a before B.
 		const legacy = hash('{"metadata":{"a":1,"B":2},"name":"legacy"}');
@@ -111,9 +112,9 @@ describe("idempotency fingerprints", () => {
 			result: { completed: true },
 			secretIssued: null,
 		};
-		const { tx, receipt: expected } = receiptTransaction(receipt);
-		expect(
-			await service.existing(
+		const { tx } = receiptTransaction(receipt);
+		await expect(
+			service.existing(
 				tx,
 				"test",
 				"root",
@@ -121,7 +122,7 @@ describe("idempotency fingerprints", () => {
 				service.fingerprint(input),
 				input,
 			),
-		).toEqual(expected);
+		).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED" });
 		const changed = { ...input, metadata: { B: 3, a: 1 } };
 		await expect(
 			service.existing(
@@ -135,10 +136,10 @@ describe("idempotency fingerprints", () => {
 		).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED" });
 	});
 
-	test("legacy compatibility preserves secret and expiry boundaries", async () => {
+	test("secret receipts and expiry preserve issuance boundaries", async () => {
 		const input = { name: "legacy", metadata: { B: 2, a: 1 } };
 		const receipt = {
-			fingerprint: hash('{"metadata":{"a":1,"B":2},"name":"legacy"}'),
+			fingerprint: service.fingerprint(input),
 			result: null,
 			secretIssued: ["issued-id"],
 		};

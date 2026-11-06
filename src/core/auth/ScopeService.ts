@@ -1,9 +1,10 @@
-import { scopes } from "./scopes";
+import { actions, scopes, type $Action } from "./scopes";
 
 export class ScopeService {
 	private readonly known = new Set<string>(scopes);
+	private readonly concrete = new Set<string>(actions);
 
-	validate(grants: readonly string[]) {
+	validate(grants: readonly string[]): $Action[] {
 		const unique = new Set(grants);
 		if (
 			unique.size !== grants.length ||
@@ -16,14 +17,24 @@ export class ScopeService {
 				throw new Error("Overlapping scopes");
 			}
 		}
-		return [...grants];
+		return actions.filter(
+			(action) => unique.has(action) || unique.has(`${action.split(":")[0]}:*`),
+		);
+	}
+
+	/** Persisted grants must already contain only known, concrete actions. */
+	validStored(grants: readonly string[]): boolean {
+		return (
+			new Set(grants).size === grants.length &&
+			grants.every((grant) => this.concrete.has(grant))
+		);
 	}
 
 	allows(grants: readonly string[], required: string) {
-		if (!this.known.has(required)) return false;
 		return (
-			grants.includes(required) ||
-			grants.includes(`${required.split(":")[0]}:*`)
+			this.concrete.has(required) &&
+			this.validStored(grants) &&
+			grants.includes(required)
 		);
 	}
 

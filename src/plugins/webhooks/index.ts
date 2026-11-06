@@ -7,6 +7,9 @@ import { deleteWebhook } from "./routes/delete";
 import { enableWebhook } from "./routes/enable";
 import { disableWebhook } from "./routes/disable";
 import { deliveryHistoryWebhook } from "./routes/deliveryHistory";
+import { rotateWebhookSecret } from "./routes/rotateSecret";
+import { replayWebhook } from "./routes/replay";
+import { recoverWebhook } from "./routes/recover";
 
 export const webhookRoutes = (service: $Webhooks, requests: $Requests) =>
 	new Elysia({ normalize: false })
@@ -16,4 +19,7 @@ export const webhookRoutes = (service: $Webhooks, requests: $Requests) =>
 		.use(deleteWebhook(service, requests))
 		.use(enableWebhook(service, requests))
 		.use(disableWebhook(service, requests))
-		.use(deliveryHistoryWebhook(service, requests));
+		.use(deliveryHistoryWebhook(service, requests))
+		.use(rotateWebhookSecret(service, requests))
+		.use(replayWebhook(service, requests))
+		.use(recoverWebhook(service, requests));

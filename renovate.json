@@ -12,7 +12,6 @@
 		"custom.regex"
 	],
 	"ignorePaths": [
-		"--github/**",
 		"**/node_modules/**",
 		"**/bower_components/**",
 		".cache/**",
@@ -30,7 +29,16 @@
 			"customType": "regex",
 			"managerFilePatterns": ["src/scripts/test-services.ts"],
 			"matchStrings": [
-				"\"(?<depName>postgres|redis):(?<currentValue>[0-9]+\\.[0-9]+(?:\\.[0-9]+)?)\""
+				"\"(?<depName>postgres|redis):(?<currentValue>[0-9]+\\.[0-9]+(?:\\.[0-9]+)?)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?\""
+			],
+			"datasourceTemplate": "docker",
+			"versioningTemplate": "docker"
+		},
+		{
+			"customType": "regex",
+			"managerFilePatterns": ["src/tests/fixtures/RuntimeWebhookFixture.ts"],
+			"matchStrings": [
+				"\"(?<depName>oven/bun):(?<currentValue>[^\"@]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
 			],
 			"datasourceTemplate": "docker",
 			"versioningTemplate": "docker"
@@ -61,10 +69,10 @@
 			"addLabels": ["github-actions"]
 		},
 		{
-			"description": "Keep existing Docker tag update policy",
+			"description": "Pin container digests and review image updates",
 			"matchDatasources": ["docker"],
 			"addLabels": ["docker"],
-			"pinDigests": false
+			"pinDigests": true
 		},
 		{
 			"description": "Group non-major Docker image updates",

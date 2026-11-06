@@ -1,17 +1,19 @@
 import type { RequestService } from "../core/http/RequestService";
 import type { ApiKeyService } from "../plugins/api-keys/ApiKeyService";
 import type { HealthService } from "../plugins/health/HealthService";
-import type { ItemService } from "../plugins/items/ItemService";
+import type { GroupService } from "../plugins/groups/GroupService";
+import type { ActivityService } from "../plugins/activity/ActivityService";
 import type { LicenseService } from "../plugins/licenses/LicenseService";
+import type { UsageHistory } from "../plugins/licenses/UsageHistory";
 import type { SettingsService } from "../plugins/settings/SettingsService";
 import type { UserService } from "../plugins/users/UserService";
 import type { ValidationService } from "../plugins/validate/ValidationService";
 import type { WebhookService } from "../plugins/webhooks/WebhookService";
 
-export type $Requests = Pick<RequestService, "authorize" | "runtime">;
+export type $Requests = Pick<RequestService, "authorize" | "runtime" | "admit">;
 export type $ApiKeys = Pick<ApiKeyService, keyof ApiKeyService>;
-export type $Health = Pick<HealthService, "status">;
-export type $Items = Pick<ItemService, keyof ItemService>;
+export type $Health = Pick<HealthService, "status" | "diagnostics">;
+export type $Groups = Pick<GroupService, keyof GroupService>;
 export type $Licenses = Pick<LicenseService, keyof LicenseService>;
 export type $Settings = Pick<SettingsService, "read" | "update">;
 export type $Users = Pick<UserService, keyof UserService>;
@@ -21,8 +23,10 @@ export type $ApplicationServices = {
 	requests: $Requests;
 	apiKeys: $ApiKeys;
 	health: $Health;
-	items: $Items;
+	groups: $Groups;
+	activity: Pick<ActivityService, keyof ActivityService>;
 	licenses: $Licenses;
+	usage: Pick<UsageHistory, "read" | "lookup">;
 	settings: $Settings;
 	users: $Users;
 	validation: $Validation;

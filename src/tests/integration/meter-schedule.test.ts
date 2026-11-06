@@ -164,6 +164,78 @@ describe("PostgreSQL reset calendar", () => {
 			previous: "2026-10-02T16:30:00.000Z",
 			next: "2026-10-03T16:30:00.000Z",
 		},
+		{
+			title: "UTC is the default timezone",
+			schedule: { interval: "day", time: "12:00" },
+			now: "2026-09-24T12:00:00.000Z",
+			previous: "2026-09-24T12:00:00.000Z",
+			next: "2026-09-25T12:00:00.000Z",
+		},
+		{
+			title: "monthly anchor retains its requested day after February clamps",
+			schedule: { interval: "month", anchorAt: "2026-01-31T09:30:00.125" },
+			now: "2026-02-28T09:30:00.125Z",
+			previous: "2026-02-28T09:30:00.125Z",
+			next: "2026-03-31T09:30:00.125Z",
+		},
+		{
+			title: "monthly anchor immediately before its next occurrence",
+			schedule: { interval: "month", anchorAt: "2026-01-31T09:30:00.125" },
+			now: "2026-03-31T09:30:00.124Z",
+			previous: "2026-02-28T09:30:00.125Z",
+			next: "2026-03-31T09:30:00.125Z",
+		},
+		{
+			title: "monthly anchor immediately after its next occurrence",
+			schedule: { interval: "month", anchorAt: "2026-01-31T09:30:00.125" },
+			now: "2026-03-31T09:30:00.126Z",
+			previous: "2026-03-31T09:30:00.125Z",
+			next: "2026-04-30T09:30:00.125Z",
+		},
+		{
+			title: "monthly anchor retains January 31 through a leap February",
+			schedule: { interval: "month", anchorAt: "2026-01-31T09:30:00" },
+			now: "2028-02-29T09:30:00.000Z",
+			previous: "2028-02-29T09:30:00.000Z",
+			next: "2028-03-31T09:30:00.000Z",
+		},
+		{
+			title: "yearly leap anchor recovers February 29 after a clamped year",
+			schedule: { interval: "year", anchorAt: "2024-02-29T10:00:00" },
+			now: "2027-02-28T10:00:00.000Z",
+			previous: "2027-02-28T10:00:00.000Z",
+			next: "2028-02-29T10:00:00.000Z",
+		},
+		{
+			title:
+				"a future anchor is a recurring reference, not a consumption start",
+			schedule: { interval: "week", anchorAt: "2030-01-02T10:00:00" },
+			now: "2026-09-24T00:00:00.000Z",
+			previous: "2026-09-23T10:00:00.000Z",
+			next: "2026-09-30T10:00:00.000Z",
+		},
+		{
+			title: "local anchor in a DST gap retains 02:30 on later days",
+			schedule: {
+				interval: "day",
+				anchorAt: "2026-03-08T02:30:00",
+				timezone: "America/New_York",
+			},
+			now: "2026-03-08T07:30:00.000Z",
+			previous: "2026-03-08T07:30:00.000Z",
+			next: "2026-03-09T06:30:00.000Z",
+		},
+		{
+			title: "local anchor in a DST overlap uses PostgreSQL's later occurrence",
+			schedule: {
+				interval: "day",
+				anchorAt: "2026-11-01T01:30:00",
+				timezone: "America/New_York",
+			},
+			now: "2026-11-01T05:30:00.000Z",
+			previous: "2026-10-31T05:30:00.000Z",
+			next: "2026-11-01T06:30:00.000Z",
+		},
 	] satisfies {
 		title: string;
 		schedule: $MeterSchedule;
@@ -175,9 +247,13 @@ describe("PostgreSQL reset calendar", () => {
 		const result = await database.transaction((tx) =>
 			scheduler.boundaries(tx, schedule, reference),
 		);
-		expect(result.previous.toISOString()).toBe(previous);
+		expect(result.previous?.toISOString()).toBe(previous);
 		expect(result.next.toISOString()).toBe(next);
-		expect(result.previous <= reference && reference < result.next).toBe(true);
+		expect(
+			result.previous !== null &&
+				result.previous <= reference &&
+				reference < result.next,
+		).toBe(true);
 	});
 
 	test("connection timezone cannot alter an explicit reset timezone", async () => {
@@ -189,7 +265,7 @@ describe("PostgreSQL reset calendar", () => {
 				new Date("2026-04-30T00:00:00.000Z"),
 			);
 		});
-		expect(result.previous.toISOString()).toBe("2026-04-30T00:00:00.000Z");
+		expect(result.previous?.toISOString()).toBe("2026-04-30T00:00:00.000Z");
 		expect(result.next.toISOString()).toBe("2026-05-31T00:00:00.000Z");
 	});
 
@@ -204,11 +280,31 @@ describe("PostgreSQL reset calendar", () => {
 			{ interval: "month", time: "00:00", timezone: "UTC", day: 31, month: 2 },
 			{ interval: "year", time: "00:00", timezone: "UTC", day: 29 },
 			{ interval: "year", time: "00:00", timezone: "UTC", day: 29, month: 13 },
+			{ interval: "day" },
+			{ interval: "day", anchorAt: "2026-02-30T10:00:00" },
+			{ interval: "day", anchorAt: "2026-03-08T02:30:00Z" },
+			{ interval: "day", anchorAt: "2026-03-08T02:30:00-05:00" },
+			{ interval: "day", anchorAt: "2026-03-08T02:30:00", time: "02:30" },
+			{ interval: "month", anchorAt: "2026-01-31T10:00:00", day: 31 },
 		];
 		for (const schedule of invalid) {
 			await expect(
 				database.transaction((tx) => scheduler.validate(tx, schedule)),
 			).rejects.toBeInstanceOf(HttpError);
 		}
+	});
+});
+
+test("anchor validation normalizes milliseconds and UTC without changing the local reference", async () => {
+	const normalized = await database.transaction((tx) =>
+		scheduler.validate(tx, {
+			interval: "month",
+			anchorAt: "2026-01-31T09:30:00.1",
+		}),
+	);
+	expect(normalized).toEqual({
+		interval: "month",
+		anchorAt: "2026-01-31T09:30:00.100",
+		timezone: "UTC",
 	});
 });

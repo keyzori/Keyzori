@@ -1,723 +1,1311 @@
+import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
+import { createHmac } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
+import { activityEvents } from "../../core/database/schema/events";
 import {
-	afterAll,
-	beforeAll,
-	beforeEach,
-	describe,
-	expect,
-	test,
-} from "bun:test";
-import { eq, sql } from "drizzle-orm";
-import { Elysia, ValidationError } from "elysia";
-import { AuthService } from "../../core/auth/AuthService";
-import { apiKeys } from "../../core/database/schema/apiKeys";
-import { audits } from "../../core/database/schema/audits";
-import { deliveries } from "../../core/database/schema/deliveries";
+	deliveries,
+	deliveryAttempts,
+} from "../../core/database/schema/deliveries";
 import { webhooks } from "../../core/database/schema/webhooks";
-import { ClientIpResolver } from "../../core/http/ClientIpResolver";
-import { HttpError } from "../../core/http/HttpError";
-import { RateLimiter } from "../../core/http/RateLimiter";
-import { RequestService } from "../../core/http/RequestService";
-import { Redis } from "../../core/redis/Redis";
-import { IdempotencyService } from "../../core/security/IdempotencyService";
-import { KeyGenerator } from "../../core/security/KeyGenerator";
-import { Replay } from "../../core/security/Replay";
-import { SecretHasher } from "../../core/security/SecretHasher";
-import { AuditService } from "../../plugins/audits/AuditService";
-import { SettingsService } from "../../plugins/settings/SettingsService";
-import { EventService } from "../../plugins/webhooks/EventService";
-import { WebhookDispatcher } from "../../plugins/webhooks/WebhookDispatcher";
+import { groups } from "../../core/database/schema/groups";
+import { ActivityService } from "../../plugins/activity/ActivityService";
 import { WebhookService } from "../../plugins/webhooks/WebhookService";
-import { webhookRoutes } from "../../plugins/webhooks/index";
-import type { $Operation } from "../../types/operation";
-import { TestDatabase } from "../fixtures/TestDatabase";
+import { WebhookDispatcher } from "../../plugins/webhooks/WebhookDispatcher";
+import { WebhookTransport } from "../../plugins/webhooks/WebhookTransport";
+import { TestContext } from "../fixtures/TestContext";
+import { Replay } from "../../core/security/Replay";
+import type { $WebhookClaim } from "../../types/webhookManagement";
+import type { $EventAuthority } from "../../types/webhooks";
+import { webhookTlsFixture } from "./webhook-tls.fixture";
 
-const fixture = new TestDatabase();
-const database = fixture.database;
-const keys = new KeyGenerator();
-const hasher = new SecretHasher();
-const master = keys.master();
-const auth = new AuthService(database, master);
-const audit = new AuditService();
-const ip = new ClientIpResolver(database);
-const settings = new SettingsService(database, audit, ip);
-const idem = new IdempotencyService(database, settings);
-const service = new WebhookService(database, auth, audit, settings, idem);
-const events = new EventService();
-const root: $Operation = {
-	principal: { kind: "root", id: "root", name: "Root", scopes: [] },
-	requestId: Bun.randomUUIDv7(),
-	clientIp: "127.0.0.1",
-};
-const redisUrl = Bun.env.KZ_TEST_REDIS_URL;
-if (!redisUrl)
-	throw new Error(
-		"KZ_TEST_REDIS_URL is required for webhook HTTP integration tests",
+const context = new TestContext();
+const encryptionKey = "c".repeat(64);
+const service = new WebhookService(
+	context.database,
+	context.auth,
+	context.audit,
+	context.settings,
+	context.idempotency,
+	{ encryptionKey },
+);
+const activity = new ActivityService(
+	context.database,
+	context.auth,
+	context.redis,
+);
+const dispatcher = () =>
+	new WebhookDispatcher(
+		context.database,
+		context.settings,
+		undefined,
+		context.auth,
+		encryptionKey,
 	);
-const redis = new Redis(redisUrl);
-const requests = new RequestService(auth, ip, new RateLimiter(redis), settings);
-const app = new Elysia({ normalize: false })
-	.error("global", HttpError, ({ error }) =>
-		Response.json(error.response(), { status: error.status }),
-	)
-	.error("global", ValidationError, () =>
-		Response.json(
-			{ code: "INVALID_REQUEST", reason: "Request validation failed" },
-			{ status: 400 },
+beforeAll(() => context.start());
+afterAll(() => context.stop());
+beforeEach(async () => {
+	await context.database.orm.delete(deliveries);
+	await context.database.orm.delete(webhooks);
+	await context.database.orm.delete(activityEvents);
+});
+
+async function endpoint() {
+	const created = await service.create(
+		{
+			url: "https://receiver.example/events",
+			events: ["license.created"],
+			allGroups: true,
+		},
+		context.operation(),
+	);
+	await service.enable({ ids: [created.data.id] }, context.operation());
+	return created;
+}
+async function event(
+	groupId: string | null = null,
+	authority: $EventAuthority = {},
+) {
+	await context.database.transaction((tx) =>
+		context.events.emit(
+			tx,
+			"license.created",
+			{
+				licenseId: Bun.randomUUIDv7(),
+				groupId,
+			},
+			new Date(),
+			authority,
 		),
-	)
-	.error("global", Replay, ({ error }) => Response.json(error.result))
-	.use(webhookRoutes(service, requests));
-const received: {
-	path: string;
-	method: string;
-	contentType: string | null;
-	payload: unknown;
-	claimed: boolean;
-}[] = [];
-let releaseHold = Promise.withResolvers<void>();
-let holdEntered = Promise.withResolvers<void>();
-let streamCancelled = Promise.withResolvers<void>();
-const receiver = Bun.serve({
-	hostname: "127.0.0.1",
-	port: 0,
-	async fetch(request) {
-		const path = new URL(request.url).pathname;
-		const payload: unknown = await request.json();
-		const id =
-			payload &&
-			typeof payload === "object" &&
-			"id" in payload &&
-			typeof payload.id === "string"
-				? payload.id
-				: "";
-		const [row] = await database.orm
+	);
+	await activity.publish();
+}
+
+test("events survive without subscribers and rolled-back events never publish", async () => {
+	await event();
+	expect(await context.database.orm.select().from(activityEvents)).toHaveLength(
+		1,
+	);
+	await expect(
+		context.database.transaction(async (tx) => {
+			await context.events.emit(tx, "license.created", {
+				licenseId: Bun.randomUUIDv7(),
+				groupId: null,
+			});
+			throw new Error("Rollback");
+		}),
+	).rejects.toThrow("Rollback");
+	expect(await context.database.orm.select().from(activityEvents)).toHaveLength(
+		1,
+	);
+	const hook = await endpoint();
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
+	});
+	try {
+		await dispatcher().runOnce();
+		expect(sent).not.toHaveBeenCalled();
+		await event();
+		await dispatcher().runOnce();
+		expect(sent).toHaveBeenCalledTimes(1);
+		const call = sent.mock.calls[0];
+		if (!call) throw new Error("Missing outbound request");
+		const [, body, headers] = call;
+		const expected = createHmac("sha256", Buffer.from(hook.secret, "hex"))
+			.update(
+				`${headers["X-Keyzori-Timestamp"]}.${headers["X-Keyzori-Delivery-Id"]}.${body}`,
+			)
+			.digest("hex");
+		expect(headers["X-Keyzori-Signature"]).toBe(`v1=${expected}`);
+		expect(headers["X-Keyzori-Signing-Key-Id"]).toBe(hook.data.signingKeyId);
+		const [delivery] = await context.database.orm.select().from(deliveries);
+		expect(delivery).toMatchObject({ state: "succeeded", attempts: 1 });
+		const listed = await service.read(
+			new URLSearchParams({ id: hook.data.id }),
+			context.operation(),
+		);
+		expect(JSON.stringify(listed)).not.toContain(hook.secret);
+	} finally {
+		sent.mockRestore();
+	}
+});
+
+test("transient failures retry with the same delivery/event IDs and recorded attempts", async () => {
+	await endpoint();
+	await event();
+	const sent = spyOn(WebhookTransport.prototype, "send")
+		.mockResolvedValueOnce({ status: 503, retryAfter: "1" })
+		.mockResolvedValue({ status: 204, retryAfter: null });
+	try {
+		await dispatcher().runOnce();
+		const [failed] = await context.database.orm.select().from(deliveries);
+		if (!failed) throw new Error("Missing delivery");
+		expect(failed).toMatchObject({
+			state: "pending",
+			attempts: 1,
+			status: 503,
+		});
+		expect(failed.nextAttemptAt.getTime()).toBeGreaterThan(Date.now() + 20000);
+		await context.database.orm
+			.update(deliveries)
+			.set({ nextAttemptAt: new Date(0) })
+			.where(eq(deliveries.id, failed.id));
+		await dispatcher().runOnce();
+		const [succeeded] = await context.database.orm.select().from(deliveries);
+		expect(succeeded).toMatchObject({
+			id: failed.id,
+			eventId: failed.eventId,
+			state: "succeeded",
+			attempts: 2,
+		});
+		expect(
+			await context.database.orm.select().from(deliveryAttempts),
+		).toHaveLength(2);
+	} finally {
+		sent.mockRestore();
+	}
+});
+
+test("destination changes cancel queued events and require explicit re-enablement", async () => {
+	const hook = await endpoint();
+	await event();
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 503,
+		retryAfter: null,
+	});
+	try {
+		await dispatcher().runOnce();
+		await service.update(
+			{
+				ids: [hook.data.id],
+				changes: { url: "https://new-receiver.example/events" },
+			},
+			context.operation(),
+		);
+		const [delivery] = await context.database.orm.select().from(deliveries);
+		expect(delivery).toMatchObject({
+			state: "cancelled",
+			url: "https://receiver.example/events",
+		});
+		const [stored] = await context.database.orm.select().from(webhooks);
+		expect(stored).toMatchObject({ enabled: false, version: 2 });
+		await dispatcher().runOnce();
+		expect(sent).toHaveBeenCalledTimes(1);
+	} finally {
+		sent.mockRestore();
+	}
+});
+
+test("revoked owners cannot deliver, retarget other endpoints or subscribe beyond their groups", async () => {
+	const groupId = Bun.randomUUIDv7();
+	await context.database.orm.insert(groups).values({
+		id: groupId,
+		name: "Selected",
+		createdBy: "root",
+		updatedBy: "root",
+	});
+	const issued = await context.apiKeys.create(
+		{ name: "Webhook owner" },
+		context.operation(),
+	);
+	await context.apiKeys.update(
+		{
+			ids: [issued.data.id],
+			changes: {
+				scopes: ["webhooks:*", "events:read", "licenses:read"],
+				groupIds: [groupId],
+			},
+		},
+		context.operation(),
+	);
+	await context.apiKeys.enable({ ids: [issued.data.id] }, context.operation());
+	const principal = await context.auth.authenticate(
+		`Bearer ${issued.credential}`,
+	);
+	const operation = () => ({ ...context.operation(), principal });
+	await expect(
+		service.create(
+			{
+				url: "https://receiver.example/",
+				events: ["user.created"],
+				groupIds: [groupId],
+			},
+			operation(),
+		),
+	).rejects.toMatchObject({ code: "FORBIDDEN" });
+	await expect(
+		service.create(
+			{
+				url: "https://receiver.example/",
+				events: ["license.created"],
+				allGroups: true,
+			},
+			operation(),
+		),
+	).rejects.toMatchObject({ code: "FORBIDDEN" });
+	const own = await service.create(
+		{
+			url: "https://receiver.example/",
+			events: ["license.created"],
+			groupIds: [groupId],
+		},
+		operation(),
+	);
+	await service.enable({ ids: [own.data.id] }, operation());
+	const other = await endpoint();
+	await expect(
+		service.update(
+			{ ids: [other.data.id], changes: { url: "https://attacker.example/" } },
+			operation(),
+		),
+	).rejects.toMatchObject({ code: "NOT_FOUND" });
+	await service.disable({ ids: [other.data.id] }, context.operation());
+	await event(null);
+	await event(groupId);
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
+	});
+	try {
+		await dispatcher().runOnce();
+		expect(sent).toHaveBeenCalledTimes(1);
+		await context.apiKeys.disable(
+			{ ids: [issued.data.id] },
+			context.operation(),
+		);
+		await event(groupId);
+		await dispatcher().runOnce();
+		expect(sent).toHaveBeenCalledTimes(1);
+		const [stored] = await context.database.orm
+			.select()
+			.from(webhooks)
+			.where(eq(webhooks.id, own.data.id));
+		expect(stored).toMatchObject({
+			enabled: false,
+			lastError: "owner_authority_revoked",
+		});
+	} finally {
+		sent.mockRestore();
+	}
+});
+
+test("expired claims recover uncertain outcomes without exceeding the attempt limit", async () => {
+	await endpoint();
+	await event();
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 503,
+		retryAfter: null,
+	});
+	try {
+		await dispatcher().runOnce();
+		const [delivery] = await context.database.orm.select().from(deliveries);
+		if (!delivery) throw new Error("Missing delivery");
+		const token = Bun.randomUUIDv7();
+		await context.database.orm.insert(deliveryAttempts).values({
+			id: token,
+			deliveryId: delivery.id,
+			attempt: 2,
+			startedAt: new Date(0),
+			sendStartedAt: new Date(0),
+		});
+		await context.database.orm
+			.update(deliveries)
+			.set({
+				state: "claimed",
+				attempts: 2,
+				claimToken: token,
+				leaseUntil: new Date(0),
+				nextAttemptAt: new Date(0),
+			})
+			.where(eq(deliveries.id, delivery.id));
+		await dispatcher().runOnce();
+		const [recovered] = await context.database.orm
+			.select()
+			.from(deliveryAttempts)
+			.where(eq(deliveryAttempts.id, token));
+		expect(recovered?.error).toBe("lease_expired_outcome_unknown");
+		await context.database.orm
+			.update(deliveries)
+			.set({ attempts: 8, nextAttemptAt: new Date(0) })
+			.where(eq(deliveries.id, delivery.id));
+		await dispatcher().runOnce();
+		const [terminal] = await context.database.orm
 			.select()
 			.from(deliveries)
-			.where(sql`${deliveries.payload}->>'id' = ${id}`);
-		received.push({
-			path,
-			method: request.method,
-			contentType: request.headers.get("content-type"),
-			payload,
-			claimed: row?.state === "claimed",
+			.where(eq(deliveries.id, delivery.id));
+		expect(terminal).toMatchObject({
+			state: "failed",
+			attempts: 8,
+			error: "retry_window_exhausted",
 		});
-		if (path === "/redirect")
-			return new Response("Remote secret", {
-				status: 302,
-				headers: {
-					location: new URL("/redirect-target", request.url).href,
-					"x-private": "never-save",
-				},
-			});
-		if (path === "/denied")
-			return new Response("Remote secret", { status: 403 });
-		if (path === "/failure")
-			return new Response("Remote secret", { status: 500 });
-		if (path === "/timeout") await Bun.sleep(2000);
-		if (path === "/hold") {
-			holdEntered.resolve();
-			await releaseHold.promise;
-		}
-		if (path === "/stream")
-			return new Response(
-				new ReadableStream({
-					start(controller) {
-						controller.enqueue(
-							new TextEncoder().encode("Unbounded remote content"),
-						);
-					},
-					cancel() {
-						streamCancelled.resolve();
-					},
-				}),
-			);
-		return new Response(null, { status: 204 });
-	},
+		expect(sent).toHaveBeenCalledTimes(2);
+	} finally {
+		sent.mockRestore();
+	}
 });
 
-beforeAll(async () => {
-	await fixture.start();
-	await redis.connect();
-	await settings.update(
-		{ rateLimitEnabled: false, webhookTimeoutSeconds: 1 },
-		root.principal,
-		root,
+test("signing rotation preserves queued secret versions and never stores plaintext", async () => {
+	const hook = await endpoint();
+	await event();
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 503,
+		retryAfter: null,
+	});
+	try {
+		await dispatcher().runOnce();
+		const rotated = await service.rotateSecret(
+			{ ids: [hook.data.id] },
+			context.operation(),
+		);
+		const [queued] = await context.database.orm.select().from(deliveries);
+		const [stored] = await context.database.orm.select().from(webhooks);
+		expect(queued?.signingKeyId).toBe(hook.data.signingKeyId);
+		expect(stored?.signingKeyId).toBe(rotated.data[0]?.signingKeyId);
+		expect(
+			JSON.stringify([queued, stored], (_key, value) =>
+				typeof value === "bigint" ? String(value) : value,
+			),
+		).not.toContain(hook.secret);
+	} finally {
+		sent.mockRestore();
+	}
+});
+
+test("two dispatchers do not concurrently send the same endpoint", async () => {
+	await endpoint();
+	await event();
+	await event();
+	const started = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const sent = spyOn(WebhookTransport.prototype, "send").mockImplementation(
+		async () => {
+			started.resolve();
+			await release.promise;
+			return { status: 204, retryAfter: null };
+		},
 	);
-	app.listen({ hostname: "127.0.0.1", port: 0 });
-});
-beforeEach(async () => {
-	await database.orm.delete(deliveries);
-	await database.orm.delete(webhooks);
-	received.length = 0;
-	releaseHold = Promise.withResolvers<void>();
-	holdEntered = Promise.withResolvers<void>();
-	streamCancelled = Promise.withResolvers<void>();
-});
-afterAll(async () => {
-	releaseHold.resolve();
-	await app.stop();
-	await receiver.stop(true);
-	redis.close();
-	await fixture.stop();
+	const first = dispatcher().runOnce();
+	try {
+		await started.promise;
+		await dispatcher().runOnce();
+		expect(sent).toHaveBeenCalledTimes(1);
+	} finally {
+		release.resolve();
+		await first;
+		sent.mockRestore();
+	}
 });
 
-describe("webhook configuration", () => {
-	test("creates disabled endpoints for public, private, loopback and internal HTTP(S) URLs", async () => {
-		for (const url of [
-			"https://example.com/hook",
-			"http://10.0.0.1/hook",
-			"http://127.0.0.1/hook",
-			"http://[::1]/hook",
-			"http://receiver/hook",
-		]) {
-			const result = await service.create({ url, events: ["*"] }, root);
-			expect(result.data.enabled).toBe(false);
-			expect(Object.keys(result.data).sort()).toEqual([
-				"createdAt",
-				"createdBy",
-				"enabled",
-				"events",
-				"id",
-				"updatedAt",
-				"updatedBy",
-				"url",
-			]);
-		}
-		expect(await database.orm.select().from(deliveries)).toHaveLength(0);
+// Intentional crash boundaries: exercise committed claims independently of the worker loop.
+function probe(worker: WebhookDispatcher) {
+	return worker as unknown as {
+		enqueue(id: string): Promise<void>;
+		claim(id: string, webhookId: string): Promise<$WebhookClaim | undefined>;
+		send(claim: $WebhookClaim): Promise<void>;
+		settle(
+			claim: $WebhookClaim,
+			outcome: { status?: number; error: string | null; retry?: boolean },
+		): Promise<void>;
+	};
+}
+async function queuedClaim() {
+	const hook = await endpoint();
+	await event();
+	const worker = dispatcher();
+	await probe(worker).enqueue(hook.data.id);
+	const [delivery] = await context.database.orm.select().from(deliveries);
+	if (!delivery) throw new Error("Missing queued delivery");
+	const claim = await probe(worker).claim(delivery.id, hook.data.id);
+	if (!claim) throw new Error("Missing claim");
+	return { hook, worker, claim };
+}
+
+test("a lease expiring before send stays reclaimable without consuming a send attempt", async () => {
+	const { worker, claim } = await queuedClaim();
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
 	});
+	try {
+		await context.database.orm
+			.update(deliveries)
+			.set({ leaseUntil: new Date(0) })
+			.where(eq(deliveries.id, claim.id));
+		await probe(worker).send(claim);
+		expect(sent).not.toHaveBeenCalled();
+		const [unsent] = await context.database.orm.select().from(deliveries);
+		expect(unsent).toMatchObject({
+			state: "claimed",
+			attempts: 0,
+			claimToken: claim.claimToken,
+		});
+		await dispatcher().runOnce();
+		const [delivered] = await context.database.orm.select().from(deliveries);
+		expect(delivered).toMatchObject({
+			id: claim.id,
+			state: "succeeded",
+			attempts: 1,
+		});
+		const [abandoned] = await context.database.orm
+			.select()
+			.from(deliveryAttempts)
+			.where(eq(deliveryAttempts.id, claim.claimToken ?? ""));
+		expect(abandoned).toMatchObject({
+			sendStartedAt: null,
+			error: "lease_expired_before_send",
+		});
+	} finally {
+		sent.mockRestore();
+	}
+});
 
-	test("rejects malformed URLs and overlapping subscriptions", async () => {
-		for (const url of [
-			"ftp://receiver/hook",
-			"//receiver/hook",
-			"http://",
-			"http://user:secret@receiver/hook",
-			"http://receiver/has space",
-			"http:\\receiver",
-			"http://receiver/#fragment",
-		]) {
-			await expect(
-				service.create({ url, events: ["*"] }, root),
-			).rejects.toMatchObject({ code: "INVALID_REQUEST" });
-		}
-		for (const subscriptions of [
-			[],
-			["*", "license.created"],
-			["license.created", "license.created"],
-		] satisfies ("*" | "license.created")[][]) {
-			await expect(
-				service.create({ url: receiver.url.href, events: subscriptions }, root),
-			).rejects.toMatchObject({ code: "INVALID_REQUEST" });
-		}
+test("stale tokens cannot send, settle, or overwrite the replacement claim", async () => {
+	const { worker, claim } = await queuedClaim();
+	await context.database.orm
+		.update(deliveries)
+		.set({ leaseUntil: new Date(0) })
+		.where(eq(deliveries.id, claim.id));
+	const replacement = await probe(dispatcher()).claim(
+		claim.id,
+		claim.webhookId,
+	);
+	if (!replacement) throw new Error("Missing replacement claim");
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
 	});
+	try {
+		await probe(worker).send(claim);
+		await probe(worker).settle(claim, { status: 204, error: null });
+		expect(sent).not.toHaveBeenCalled();
+		const [current] = await context.database.orm.select().from(deliveries);
+		expect(current).toMatchObject({
+			state: "claimed",
+			claimToken: replacement.claimToken,
+			attempts: 0,
+		});
+		await probe(dispatcher()).send(replacement);
+		expect(sent).toHaveBeenCalledTimes(1);
+	} finally {
+		sent.mockRestore();
+	}
+});
 
-	test("normalises event order and suppresses no-op evidence and timestamps", async () => {
-		const created = await service.create(
-			{ url: receiver.url.href, events: ["user.deleted", "user.created"] },
-			root,
+test("an expired worker cannot settle even before another worker reclaims its token", async () => {
+	const { worker, claim } = await queuedClaim();
+	await context.database.orm
+		.update(deliveries)
+		.set({ leaseUntil: new Date(0) })
+		.where(eq(deliveries.id, claim.id));
+	await probe(worker).settle(claim, { status: 204, error: null });
+	const [current] = await context.database.orm.select().from(deliveries);
+	const [attempt] = await context.database.orm.select().from(deliveryAttempts);
+	expect(current).toMatchObject({
+		state: "claimed",
+		claimToken: claim.claimToken,
+	});
+	expect(attempt?.completedAt).toBeNull();
+});
+
+test("settlement rechecks lease expiry after waiting for an unchanged locked row", async () => {
+	const { worker, claim } = await queuedClaim();
+	await context.database.orm
+		.update(deliveries)
+		.set({ leaseUntil: new Date(Date.now() + 1000) })
+		.where(eq(deliveries.id, claim.id));
+	const locked = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const holder = context.database.transaction(async (tx) => {
+		await tx
+			.select()
+			.from(deliveries)
+			.where(eq(deliveries.id, claim.id))
+			.for("update");
+		locked.resolve();
+		await release.promise;
+	});
+	await locked.promise;
+	const settling = probe(worker).settle(claim, { status: 204, error: null });
+	try {
+		const deadline = Date.now() + 700;
+		let waiting = false;
+		while (Date.now() < deadline) {
+			const [row] = await context.database.orm
+				.select({
+					waiting: sql<boolean>`exists(select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like '%webhook_deliveries%')`,
+				})
+				.from(sql`(values(1)) as fixture`);
+			if (row?.waiting) {
+				waiting = true;
+				break;
+			}
+			await Bun.sleep(5);
+		}
+		expect(waiting).toBe(true);
+		await Bun.sleep(1050);
+		release.resolve();
+		await Promise.all([holder, settling]);
+		const [current] = await context.database.orm.select().from(deliveries);
+		expect(current).toMatchObject({
+			state: "claimed",
+			claimToken: claim.claimToken,
+			status: null,
+		});
+	} finally {
+		release.resolve();
+		await Promise.all([holder, settling]);
+	}
+});
+
+test("send/settle crash recovery permits duplicates with stable delivery and event IDs", async () => {
+	const hook = await endpoint();
+	await event();
+	const worker = dispatcher();
+	const persist = spyOn(probe(worker), "settle").mockRejectedValue(
+		new Error("Simulated lost settlement"),
+	);
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
+	});
+	try {
+		await expect(worker.runOnce()).rejects.toThrow(
+			"webhook endpoint operations failed",
 		);
-		const result = await service.update(
-			{
-				ids: [created.data.id],
-				changes: { events: ["user.created", "user.deleted"] },
-			},
-			root,
-		);
-		await service.disable({ ids: [created.data.id] }, root);
-		expect(result.data[0]?.updatedAt).toBe(created.data.updatedAt);
+		const [uncertain] = await context.database.orm.select().from(deliveries);
+		if (!uncertain) throw new Error("Missing uncertain delivery");
+		expect(uncertain).toMatchObject({
+			state: "claimed",
+			attempts: 1,
+			webhookId: hook.data.id,
+		});
+		persist.mockRestore();
+		await context.database.orm
+			.update(deliveries)
+			.set({ leaseUntil: new Date(0) })
+			.where(eq(deliveries.id, uncertain.id));
+		await dispatcher().runOnce();
+		const [delivered] = await context.database.orm.select().from(deliveries);
+		expect(delivered).toMatchObject({
+			id: uncertain.id,
+			eventId: uncertain.eventId,
+			state: "succeeded",
+			attempts: 2,
+		});
+		expect(sent).toHaveBeenCalledTimes(2);
+		expect(sent.mock.calls[0]?.[1]).toBe(sent.mock.calls[1]?.[1]);
 		expect(
-			await database.orm
-				.select()
-				.from(audits)
-				.where(eq(audits.targetId, created.data.id)),
-		).toHaveLength(1);
-		await service.enable({ ids: [created.data.id] }, root);
-		await service.update(
-			{
-				ids: [created.data.id],
-				changes: { url: new URL("/new", receiver.url).href },
-				reason: "Move receiver",
-			},
-			root,
-		);
-		expect(
-			await database.orm
-				.select()
-				.from(audits)
-				.where(eq(audits.targetId, created.data.id)),
-		).toHaveLength(3);
-		expect(await database.orm.select().from(deliveries)).toHaveLength(0);
-	});
+			sent.mock.calls.map((call) => call[2]["X-Keyzori-Delivery-Id"]),
+		).toEqual([uncertain.id, uncertain.id]);
+		const [abandoned] = await context.database.orm
+			.select()
+			.from(deliveryAttempts)
+			.where(eq(deliveryAttempts.id, uncertain.claimToken ?? ""));
+		expect(abandoned?.error).toBe("lease_expired_outcome_unknown");
+	} finally {
+		persist.mockRestore();
+		sent.mockRestore();
+	}
+});
 
-	test("enforces action scopes and atomic bulk selection", async () => {
-		const hook = await service.create(
-			{ url: receiver.url.href, events: ["*"] },
-			root,
+test("a send-marker persistence failure rolls back the budget and never reaches transport", async () => {
+	await endpoint();
+	await event();
+	await context.database.orm.execute(
+		sql`create function reject_webhook_send_marker() returns trigger language plpgsql as $$ begin if NEW.send_started_at is not null then raise exception 'Fixture send marker failure'; end if; return NEW; end; $$`,
+	);
+	await context.database.orm.execute(
+		sql`create trigger reject_webhook_send_marker before update on webhook_delivery_attempts for each row execute function reject_webhook_send_marker()`,
+	);
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
+	});
+	try {
+		await expect(dispatcher().runOnce()).rejects.toThrow(
+			"webhook endpoint operations failed",
 		);
-		const scoped: $Operation = {
-			...root,
-			principal: {
-				kind: "api",
+		expect(sent).not.toHaveBeenCalled();
+		const [unsent] = await context.database.orm.select().from(deliveries);
+		const [attempt] = await context.database.orm
+			.select()
+			.from(deliveryAttempts);
+		expect(unsent).toMatchObject({ state: "claimed", attempts: 0 });
+		expect(attempt?.sendStartedAt).toBeNull();
+	} finally {
+		await context.database.orm.execute(
+			sql`drop trigger reject_webhook_send_marker on webhook_delivery_attempts`,
+		);
+		await context.database.orm.execute(
+			sql`drop function reject_webhook_send_marker()`,
+		);
+		sent.mockRestore();
+	}
+});
+
+test("late network completion is fenced after lease reclamation", async () => {
+	const { worker, claim } = await queuedClaim();
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let requests = 0;
+	const sent = spyOn(WebhookTransport.prototype, "send").mockImplementation(
+		async () => {
+			if (++requests === 1) {
+				entered.resolve();
+				await release.promise;
+				return { status: 503, retryAfter: null };
+			}
+			return { status: 204, retryAfter: null };
+		},
+	);
+	const first = probe(worker).send(claim);
+	try {
+		await entered.promise;
+		await context.database.orm
+			.update(deliveries)
+			.set({ leaseUntil: new Date(0) })
+			.where(eq(deliveries.id, claim.id));
+		const replacement = await probe(dispatcher()).claim(
+			claim.id,
+			claim.webhookId,
+		);
+		if (!replacement) throw new Error("Missing replacement claim");
+		await probe(dispatcher()).send(replacement);
+		release.resolve();
+		await first;
+		const [current] = await context.database.orm.select().from(deliveries);
+		expect(current).toMatchObject({
+			state: "succeeded",
+			attempts: 2,
+			status: 204,
+			error: null,
+		});
+	} finally {
+		release.resolve();
+		await first;
+		sent.mockRestore();
+	}
+});
+
+test("bad secrets and slow endpoints do not block healthy endpoint progress", async () => {
+	const corrupt = await endpoint();
+	const slow = await endpoint();
+	const healthy = await endpoint();
+	await context.database.orm
+		.update(webhooks)
+		.set({ secretCiphertext: "broken" })
+		.where(eq(webhooks.id, corrupt.data.id));
+	await event();
+	const release = Promise.withResolvers<void>();
+	const healthySent = Promise.withResolvers<void>();
+	const slowEntered = Promise.withResolvers<void>();
+	const sent = spyOn(WebhookTransport.prototype, "send").mockImplementation(
+		async (_url, _body, headers) => {
+			const [row] = await context.database.orm
+				.select()
+				.from(deliveries)
+				.where(eq(deliveries.id, headers["X-Keyzori-Delivery-Id"] ?? ""));
+			if (row?.webhookId === slow.data.id) {
+				slowEntered.resolve();
+				await release.promise;
+			}
+			if (row?.webhookId === healthy.data.id) healthySent.resolve();
+			return { status: 204, retryAfter: null };
+		},
+	);
+	const running = dispatcher().runOnce();
+	const outcome = running.then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	try {
+		await Promise.race([
+			Promise.all([healthySent.promise, slowEntered.promise]),
+			Bun.sleep(2000).then(() => {
+				throw new Error("Healthy endpoint stalled behind another endpoint");
+			}),
+		]);
+		expect(sent).toHaveBeenCalledTimes(2);
+		release.resolve();
+		expect(await outcome).toMatchObject({
+			message: expect.stringContaining("webhook endpoint operations failed"),
+		});
+		const successful = await context.database.orm
+			.select()
+			.from(deliveries)
+			.where(eq(deliveries.state, "succeeded"));
+		expect(successful).toHaveLength(2);
+	} finally {
+		release.resolve();
+		await outcome;
+		sent.mockRestore();
+	}
+});
+
+test("a full endpoint backlog stays bounded and does not consume its event cursor", async () => {
+	const { hook, claim } = await queuedClaim();
+	await context.database.orm
+		.update(deliveries)
+		.set({
+			state: "pending",
+			claimToken: null,
+			leaseUntil: null,
+			nextAttemptAt: new Date(Date.now() + 3600000),
+		})
+		.where(eq(deliveries.id, claim.id));
+	await context.database.orm.insert(deliveries).values(
+		Array.from({ length: 999 }, () => {
+			const eventId = Bun.randomUUIDv7();
+			return {
+				...claim,
 				id: Bun.randomUUIDv7(),
-				name: "Read only",
-				scopes: ["webhooks:read"],
+				eventId,
+				payload: { ...claim.payload, id: eventId },
+				state: "pending" as const,
+				claimToken: null,
+				leaseUntil: null,
+				nextAttemptAt: new Date(Date.now() + 3600000),
+			};
+		}),
+	);
+	const [before] = await context.database.orm
+		.select()
+		.from(webhooks)
+		.where(eq(webhooks.id, hook.data.id));
+	await event();
+	await dispatcher().runOnce();
+	const [after] = await context.database.orm
+		.select()
+		.from(webhooks)
+		.where(eq(webhooks.id, hook.data.id));
+	expect(after?.lastSequence).toBe(before?.lastSequence);
+	expect(after?.lastError).toBe("backlog_full");
+	expect(
+		await context.database.orm.select({ id: deliveries.id }).from(deliveries),
+	).toHaveLength(1000);
+});
+
+test("manual replay uses new delivery identity while recovery preserves budget and rejects active claims", async () => {
+	const { worker, claim } = await queuedClaim();
+	const input = {
+		ids: [claim.id],
+		confirm: true as const,
+		reason: "Operator recovery",
+	};
+	await expect(
+		service.recover(input, context.operation()),
+	).rejects.toMatchObject({ code: "CONFLICT" });
+	await context.database.orm
+		.update(deliveries)
+		.set({ leaseUntil: new Date(0) })
+		.where(eq(deliveries.id, claim.id));
+	const recovered = await service.recover(input, context.operation());
+	expect(recovered.data[0]).toMatchObject({
+		id: claim.id,
+		attempts: 0,
+		expiresAt: claim.expiresAt.toISOString(),
+		state: "pending",
+	});
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
+	});
+	try {
+		await worker.runOnce();
+		const operation = context.operation();
+		const replayed = await service.replay(input, operation);
+		expect(replayed.data[0]).toMatchObject({
+			replayOf: claim.id,
+			eventId: claim.eventId,
+			attempts: 0,
+			state: "pending",
+		});
+		expect(replayed.data[0]?.id).not.toBe(claim.id);
+		await expect(service.replay(input, operation)).rejects.toBeInstanceOf(
+			Replay,
+		);
+		expect(await context.database.orm.select().from(deliveries)).toHaveLength(
+			2,
+		);
+		await dispatcher().runOnce();
+		expect(sent).toHaveBeenCalledTimes(2);
+	} finally {
+		sent.mockRestore();
+	}
+});
+
+async function ownedEndpoint() {
+	const groupId = Bun.randomUUIDv7();
+	await context.database.orm.insert(groups).values({
+		id: groupId,
+		name: "Webhook authority",
+		createdBy: "root",
+		updatedBy: "root",
+	});
+	const key = await context.apiKeys.create(
+		{ name: "Recovery owner" },
+		context.operation(),
+	);
+	await context.apiKeys.update(
+		{
+			ids: [key.data.id],
+			changes: {
+				scopes: ["webhooks:*", "events:read", "licenses:read"],
+				groupIds: [groupId],
 			},
+		},
+		context.operation(),
+	);
+	await context.apiKeys.enable({ ids: [key.data.id] }, context.operation());
+	const principal = await context.auth.authenticate(`Bearer ${key.credential}`);
+	const operation = () => ({ ...context.operation(), principal });
+	const hook = await service.create(
+		{
+			url: "https://receiver.example/",
+			events: ["license.created"],
+			groupIds: [groupId],
+		},
+		operation(),
+	);
+	await service.enable({ ids: [hook.data.id] }, operation());
+	return { groupId, key, hook, operation };
+}
+
+test("manual replay rechecks exact ownership, current groups, event permissions and owner activity", async () => {
+	const owned = await ownedEndpoint();
+	await event(owned.groupId);
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
+	});
+	try {
+		await dispatcher().runOnce();
+	} finally {
+		sent.mockRestore();
+	}
+	const [delivery] = await context.database.orm.select().from(deliveries);
+	if (!delivery) throw new Error("Missing delivery");
+	const input = {
+		ids: [delivery.id],
+		confirm: true as const,
+		reason: "Replay",
+	};
+	const unrelated = await ownedEndpoint();
+	await expect(
+		service.replay(input, unrelated.operation()),
+	).rejects.toMatchObject({ code: "NOT_FOUND" });
+	await context.apiKeys.update(
+		{
+			ids: [owned.key.data.id],
+			changes: { scopes: ["webhooks:read", "events:read", "licenses:read"] },
+		},
+		context.operation(),
+	);
+	await expect(service.replay(input, owned.operation())).rejects.toMatchObject({
+		code: "FORBIDDEN",
+	});
+	await expect(service.recover(input, owned.operation())).rejects.toMatchObject(
+		{ code: "FORBIDDEN" },
+	);
+	await context.apiKeys.update(
+		{
+			ids: [owned.key.data.id],
+			changes: { scopes: ["webhooks:replay", "events:read"] },
+		},
+		context.operation(),
+	);
+	await expect(service.replay(input, owned.operation())).rejects.toMatchObject({
+		code: "NOT_FOUND",
+	});
+	await context.apiKeys.update(
+		{
+			ids: [owned.key.data.id],
+			changes: {
+				scopes: ["webhooks:replay", "events:read", "licenses:read"],
+				groupIds: [],
+			},
+		},
+		context.operation(),
+	);
+	await expect(service.replay(input, owned.operation())).rejects.toMatchObject({
+		code: "NOT_FOUND",
+	});
+	await expect(
+		service.replay(input, context.operation()),
+	).rejects.toMatchObject({ code: "FORBIDDEN" });
+	await context.apiKeys.disable(
+		{ ids: [owned.key.data.id] },
+		context.operation(),
+	);
+	await expect(
+		service.replay(input, context.operation()),
+	).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+});
+
+test("deletion receipts survive resource removal but still require saved event and group authority", async () => {
+	const owned = await ownedEndpoint();
+	const operation = owned.operation();
+	const input = {
+		ids: [owned.hook.data.id],
+		confirm: true as const,
+		reason: "Retire endpoint",
+	};
+	await service.delete(input, operation);
+	await expect(service.delete(input, operation)).rejects.toBeInstanceOf(Replay);
+	await context.apiKeys.update(
+		{
+			ids: [owned.key.data.id],
+			changes: { scopes: ["webhooks:delete", "events:read"] },
+		},
+		context.operation(),
+	);
+	await expect(service.delete(input, operation)).rejects.toMatchObject({
+		code: "FORBIDDEN",
+	});
+	await context.apiKeys.update(
+		{
+			ids: [owned.key.data.id],
+			changes: {
+				scopes: ["webhooks:delete", "events:read", "licenses:read"],
+				groupIds: [],
+			},
+		},
+		context.operation(),
+	);
+	await expect(service.delete(input, operation)).rejects.toMatchObject({
+		code: "FORBIDDEN",
+	});
+});
+
+test("enqueue excludes counter events carrying inaccessible source-group or ungrouped history", async () => {
+	const owned = await ownedEndpoint();
+	const sourceGroupId = Bun.randomUUIDv7();
+	await context.apiKeys.update(
+		{
+			ids: [owned.key.data.id],
+			changes: {
+				scopes: ["webhooks:*", "events:read", "licenses:read", "usage:read"],
+			},
+		},
+		context.operation(),
+	);
+	await service.update(
+		{ ids: [owned.hook.data.id], changes: { events: ["meter.updated"] } },
+		owned.operation(),
+	);
+	await service.enable({ ids: [owned.hook.data.id] }, owned.operation());
+	for (const authority of [
+		{ requiredGroupIds: [sourceGroupId] },
+		{ requiresAllGroups: true },
+		{},
+	]) {
+		await context.database.transaction((tx) =>
+			context.events.emit(
+				tx,
+				"meter.updated",
+				{
+					licenseId: Bun.randomUUIDv7(),
+					groupId: owned.groupId,
+					counterId: Bun.randomUUIDv7(),
+					meter: "requests",
+					definitionRevision: 2,
+					resetGeneration: 0,
+					periodId: "lifetime",
+					periodStartedAt: null,
+					periodEndsAt: null,
+					value: "0",
+					limit: "10",
+				},
+				new Date(),
+				authority,
+			),
+		);
+	}
+	await activity.publish();
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
+	});
+	try {
+		await dispatcher().runOnce();
+		expect(sent).toHaveBeenCalledTimes(1);
+		expect(await context.database.orm.select().from(deliveries)).toHaveLength(
+			1,
+		);
+		expect(sent.mock.calls[0]?.[1]).not.toContain("requiredGroupIds");
+		expect(sent.mock.calls[0]?.[1]).not.toContain("requiresAllGroups");
+	} finally {
+		sent.mockRestore();
+	}
+});
+
+test("claim/send, history and replay retain historical authorization after source-group revocation", async () => {
+	const owned = await ownedEndpoint();
+	const sourceGroupId = Bun.randomUUIDv7();
+	await context.database.orm.insert(groups).values({
+		id: sourceGroupId,
+		name: "Source history",
+		createdBy: "root",
+		updatedBy: "root",
+	});
+	await context.apiKeys.update(
+		{
+			ids: [owned.key.data.id],
+			changes: { groupIds: [owned.groupId, sourceGroupId] },
+		},
+		context.operation(),
+	);
+	await event(owned.groupId, { requiredGroupIds: [sourceGroupId] });
+	await event(owned.groupId, { requiredGroupIds: [sourceGroupId] });
+	const worker = dispatcher();
+	await probe(worker).enqueue(owned.hook.data.id);
+	const rows = await context.database.orm.select().from(deliveries);
+	const first = rows[0];
+	const second = rows[1];
+	if (!first || !second) throw new Error("Missing protected deliveries");
+	const claim = await probe(worker).claim(first.id, first.webhookId);
+	if (!claim) throw new Error("Missing protected claim");
+	await context.apiKeys.update(
+		{ ids: [owned.key.data.id], changes: { groupIds: [owned.groupId] } },
+		context.operation(),
+	);
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
+	});
+	try {
+		await probe(worker).send(claim);
+		expect(
+			await probe(worker).claim(second.id, second.webhookId),
+		).toBeUndefined();
+		expect(sent).not.toHaveBeenCalled();
+		expect(
+			(await context.database.orm.select().from(deliveries)).map(
+				(row) => row.state,
+			),
+		).toEqual(["cancelled", "cancelled"]);
+		const history = await service.deliveryHistory(
+			new URLSearchParams({ webhookId: first.webhookId }),
+			owned.operation(),
+		);
+		expect(history.data).toEqual([]);
+		await expect(
+			service.deliveryHistory(
+				new URLSearchParams({ id: first.id }),
+				owned.operation(),
+			),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		const input = {
+			ids: [first.id],
+			confirm: true as const,
+			reason: "Replay retained history",
 		};
 		await expect(
-			service.update(
-				{ ids: [hook.data.id], changes: { url: "http://receiver/changed" } },
-				scoped,
-			),
+			service.replay(input, owned.operation()),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		await expect(
+			service.replay(input, context.operation()),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
-		await expect(
-			service.enable({ ids: [hook.data.id, Bun.randomUUIDv7()] }, root),
-		).rejects.toMatchObject({ code: "BULK_OPERATION_FAILED" });
-		expect(
-			(
-				await database.orm
-					.select()
-					.from(webhooks)
-					.where(eq(webhooks.id, hook.data.id))
-			)[0]?.enabled,
-		).toBe(false);
-		await expect(
-			service.delete({ ids: [hook.data.id], confirm: true, reason: "" }, root),
-		).rejects.toMatchObject({ code: "INVALID_REQUEST" });
-	});
-
-	test("idempotent concurrent creates persist one endpoint and replay its safe response", async () => {
-		const operation = { ...root, idempotencyKey: Bun.randomUUIDv7() };
-		const input = { url: receiver.url.href, events: ["*" as const] };
-		const results = await Promise.allSettled(
-			Array.from({ length: 4 }, () => service.create(input, operation)),
-		);
-		expect(
-			results.filter((result) => result.status === "fulfilled"),
-		).toHaveLength(1);
-		for (const result of results)
-			if (result.status === "rejected")
-				expect(result.reason).toBeInstanceOf(Replay);
-		expect(await database.orm.select().from(webhooks)).toHaveLength(1);
-	});
-
-	test("disabled endpoints do not receive events; subscription changes do not rewrite queued payloads", async () => {
-		const hook = await service.create(
-			{ url: new URL("/success", receiver.url).href, events: ["user.created"] },
-			root,
-		);
-		await database.transaction((tx) =>
-			events.emit(tx, "user.created", { userId: Bun.randomUUIDv7() }),
-		);
-		expect(await database.orm.select().from(deliveries)).toHaveLength(0);
-		await service.enable({ ids: [hook.data.id] }, root);
-		const userId = Bun.randomUUIDv7();
-		await database.transaction(async (tx) => {
-			await events.emit(tx, "user.created", { userId });
-			await events.emit(tx, "item.created", { itemId: Bun.randomUUIDv7() });
-		});
-		await service.update(
-			{ ids: [hook.data.id], changes: { events: ["user.deleted"] } },
-			root,
-		);
-		await new WebhookDispatcher(database, settings).runOnce();
-		expect(received).toHaveLength(1);
-		expect(received[0]?.payload).toMatchObject({
-			event: "user.created",
-			data: { userId },
-		});
-	});
-
-	test("disable and delete cancel pending work, preserve history and never cancel claimed rows", async () => {
-		const first = await service.create(
-			{ url: receiver.url.href, events: ["*"] },
-			root,
-		);
-		const second = await service.create(
-			{ url: receiver.url.href, events: ["*"] },
-			root,
-		);
-		await service.enable({ ids: [first.data.id, second.data.id] }, root);
-		await database.transaction((tx) =>
-			events.emit(tx, "user.created", { userId: Bun.randomUUIDv7() }),
-		);
-		const claimedId = Bun.randomUUIDv7();
-		await database.orm.insert(deliveries).values({
-			id: claimedId,
-			webhookId: second.data.id,
-			payload: {
-				id: Bun.randomUUIDv7(),
-				event: "user.created",
-				data: {},
-				createdAt: new Date().toISOString(),
+		await context.apiKeys.update(
+			{
+				ids: [owned.key.data.id],
+				changes: { groupIds: [owned.groupId, sourceGroupId] },
 			},
-			state: "claimed",
-			attemptedAt: new Date(),
+			context.operation(),
+		);
+		const replay = await service.replay(input, owned.operation());
+		const [copied] = await context.database.orm
+			.select()
+			.from(deliveries)
+			.where(eq(deliveries.id, replay.data[0]?.id ?? ""));
+		expect(copied).toMatchObject({
+			replayOf: first.id,
+			eventId: first.eventId,
+			requiredGroupIds: [sourceGroupId],
+			requiresAllGroups: false,
 		});
-		await service.disable({ ids: [first.data.id] }, root);
-		await service.delete(
-			{ ids: [second.data.id], confirm: true, reason: "Retire endpoint" },
-			root,
-		);
-		await new WebhookDispatcher(database, settings).runOnce();
-		expect(received).toHaveLength(0);
-		const rows = await database.orm.select().from(deliveries);
-		expect(rows.filter((row) => row.state === "cancelled")).toHaveLength(2);
-		expect(rows.find((row) => row.id === claimedId)?.state).toBe("claimed");
-		const history = await service.deliveryHistory(
-			new URLSearchParams({ webhookId: second.data.id }),
-			root,
-		);
-		expect(history.data).toHaveLength(2);
-		if (!Array.isArray(history.data)) throw new Error("Expected history list");
-		expect(Object.keys(history.data[0] ?? {}).sort()).toEqual([
-			"attemptedAt",
-			"createdAt",
-			"error",
-			"event",
-			"eventId",
-			"id",
-			"state",
-			"status",
-			"webhookId",
-		]);
-	});
-
-	test("history pagination remains stable and rejects invalid filters", async () => {
-		const hook = await service.create(
-			{ url: receiver.url.href, events: ["*"] },
-			root,
-		);
-		await service.enable({ ids: [hook.data.id] }, root);
-		for (let count = 0; count < 3; count++)
-			await database.transaction((tx) => events.emit(tx, "user.created", {}));
-		const first = await service.deliveryHistory(
-			new URLSearchParams({
-				webhookId: hook.data.id,
-				limit: "2",
-				state: "pending",
-				direction: "asc",
-			}),
-			root,
-		);
-		expect(first.data).toHaveLength(2);
-		if (!("nextCursor" in first) || !first.nextCursor)
-			throw new Error("Expected cursor");
-		const second = await service.deliveryHistory(
-			new URLSearchParams({
-				webhookId: hook.data.id,
-				limit: "2",
-				state: "pending",
-				direction: "asc",
-				cursor: first.nextCursor,
-			}),
-			root,
-		);
-		expect(second.data).toHaveLength(1);
-		for (const params of [
-			"webhookId=broken",
-			"state=retry",
-			"sort=updatedAt",
-			"webhookId=x&webhookId=y",
-		])
-			await expect(
-				service.deliveryHistory(new URLSearchParams(params), root),
-			).rejects.toMatchObject({ code: "INVALID_REQUEST" });
-	});
+		expect(JSON.stringify(replay)).not.toContain("requiredGroupIds");
+		await dispatcher().runOnce();
+		expect(sent).toHaveBeenCalledTimes(1);
+	} finally {
+		sent.mockRestore();
+	}
 });
 
-describe("one-attempt delivery", () => {
-	test("commits claims before sending, records 2xx/403/500/redirect status, and never follows redirects", async () => {
-		for (const path of ["/success", "/denied", "/failure", "/redirect"]) {
-			const hook = await service.create(
-				{ url: new URL(path, receiver.url).href, events: ["*"] },
-				root,
-			);
-			await service.enable({ ids: [hook.data.id] }, root);
-		}
-		await database.transaction((tx) =>
-			events.emit(tx, "license.rotated", { licenseId: Bun.randomUUIDv7() }),
-		);
-		const dispatcher = new WebhookDispatcher(database, settings);
-		await dispatcher.runOnce();
-		await dispatcher.runOnce();
-		expect(received).toHaveLength(4);
-		expect(
-			received.every(
-				(request) =>
-					request.claimed &&
-					request.method === "POST" &&
-					request.contentType === "application/json",
-			),
-		).toBe(true);
-		expect(
-			received.some((request) => request.path === "/redirect-target"),
-		).toBe(false);
-		const rows = await database.orm.select().from(deliveries);
-		expect(rows.map((row) => row.status).sort()).toEqual([204, 302, 403, 500]);
-		expect(rows.filter((row) => row.state === "succeeded")).toHaveLength(1);
-		expect(rows.filter((row) => row.state === "failed")).toHaveLength(3);
-		expect(
-			rows.every(
-				(row) => row.error === null && row.attemptedAt instanceof Date,
-			),
-		).toBe(true);
-		expect(JSON.stringify(rows)).not.toContain("Remote secret");
-		expect(JSON.stringify(rows)).not.toContain("never-save");
-	});
+test("manual recovery cannot reset exhausted or expired budgets and requires an idempotency key", async () => {
+	const { claim } = await queuedClaim();
+	const input = { ids: [claim.id], confirm: true as const, reason: "Recover" };
+	await expect(
+		service.recover(input, {
+			...context.operation(),
+			idempotencyKey: undefined,
+		}),
+	).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+	await context.database.orm
+		.update(deliveries)
+		.set({ state: "pending", claimToken: null, leaseUntil: null, attempts: 8 })
+		.where(eq(deliveries.id, claim.id));
+	await expect(
+		service.recover(input, context.operation()),
+	).rejects.toMatchObject({ code: "CONFLICT" });
+	await context.database.orm
+		.update(deliveries)
+		.set({ attempts: 1, expiresAt: new Date(0) })
+		.where(eq(deliveries.id, claim.id));
+	await expect(
+		service.recover(input, context.operation()),
+	).rejects.toMatchObject({ code: "CONFLICT" });
+	const [unchanged] = await context.database.orm.select().from(deliveries);
+	expect(unchanged).toMatchObject({ attempts: 1, expiresAt: new Date(0) });
+});
 
-	test("two dispatchers send each pending delivery at most once", async () => {
-		const hook = await service.create(
-			{ url: new URL("/success", receiver.url).href, events: ["*"] },
-			root,
-		);
-		await service.enable({ ids: [hook.data.id] }, root);
-		for (let count = 0; count < 20; count++)
-			await database.transaction((tx) => events.emit(tx, "user.created", {}));
-		const first = new WebhookDispatcher(database, settings);
-		const second = new WebhookDispatcher(database, settings);
-		await Promise.all([first.runOnce(10), second.runOnce(10)]);
-		await Promise.all([first.runOnce(), second.runOnce()]);
-		expect(received).toHaveLength(20);
-		expect(
-			new Set(received.map((request) => JSON.stringify(request.payload))).size,
-		).toBe(20);
-		expect(
-			await database.orm
-				.select()
-				.from(deliveries)
-				.where(eq(deliveries.state, "succeeded")),
-		).toHaveLength(20);
-	});
-
-	test("disposes an unfinished streaming response without consuming it", async () => {
-		const hook = await service.create(
-			{ url: new URL("/stream", receiver.url).href, events: ["*"] },
-			root,
-		);
-		await service.enable({ ids: [hook.data.id] }, root);
-		await database.transaction((tx) => events.emit(tx, "user.created", {}));
-		const started = performance.now();
-		await new WebhookDispatcher(database, settings).runOnce();
-		expect(performance.now() - started).toBeLessThan(900);
-		await Promise.race([
-			streamCancelled.promise,
-			Bun.sleep(1000).then(() => {
-				throw new Error("Response stream was not cancelled");
-			}),
-		]);
-		expect((await database.orm.select().from(deliveries))[0]?.state).toBe(
-			"succeeded",
-		);
-	});
-
-	test("timeout and connection failure are sanitised terminal outcomes", async () => {
-		const closed = Bun.serve({
-			hostname: "127.0.0.1",
-			port: 0,
-			fetch: () => new Response(),
+test("real TLS requests are cancelled by endpoint changes and dispatcher shutdown", async () => {
+	for (const shutdown of [false, true]) {
+		await context.database.orm.delete(deliveries);
+		await context.database.orm.delete(webhooks);
+		const hook = await endpoint();
+		await event();
+		const entered = Promise.withResolvers<void>();
+		const closed = Promise.withResolvers<void>();
+		const fixture = await webhookTlsFixture((request) => {
+			request.socket.once("close", () => closed.resolve());
+			entered.resolve();
 		});
-		const closedUrl = closed.url.href;
-		await closed.stop(true);
-		for (const url of [
-			new URL("/timeout", receiver.url).href,
-			closedUrl,
-			"http://keyzori-fixture.invalid/",
-		]) {
-			const hook = await service.create({ url, events: ["*"] }, root);
-			await service.enable({ ids: [hook.data.id] }, root);
-		}
-		await database.transaction((tx) => events.emit(tx, "user.created", {}));
-		const dispatcher = new WebhookDispatcher(database, settings);
-		await dispatcher.runOnce();
-		await dispatcher.runOnce();
-		const rows = await database.orm.select().from(deliveries);
-		expect(
-			rows.every((row) => row.state === "failed" && row.status === null),
-		).toBe(true);
-		expect(rows.map((row) => row.error).sort()).toEqual([
-			"connection",
-			"dns",
-			"timeout",
-		]);
-		expect(received).toHaveLength(1);
-	});
-
-	test("live endpoint checks cancel orphaned and disabled pending rows", async () => {
-		const hook = await service.create(
-			{ url: receiver.url.href, events: ["*"] },
-			root,
+		const realSend = WebhookTransport.prototype.send;
+		const transport = fixture.transport();
+		const sent = spyOn(WebhookTransport.prototype, "send").mockImplementation(
+			(...args) => realSend.call(transport, ...args),
 		);
-		for (const webhookId of [hook.data.id, Bun.randomUUIDv7()])
-			await database.orm.insert(deliveries).values({
-				id: Bun.randomUUIDv7(),
-				webhookId,
-				payload: {
-					id: Bun.randomUUIDv7(),
-					event: "user.created",
-					data: {},
-					createdAt: new Date().toISOString(),
-				},
-			});
-		await new WebhookDispatcher(database, settings).runOnce();
-		expect(received).toHaveLength(0);
-		expect(
-			await database.orm
-				.select()
-				.from(deliveries)
-				.where(eq(deliveries.state, "cancelled")),
-		).toHaveLength(2);
-	});
-
-	test("shutdown stops admissions while draining claimed requests; disable leaves an in-flight attempt intact", async () => {
-		const hook = await service.create(
-			{ url: new URL("/hold", receiver.url).href, events: ["*"] },
-			root,
-		);
-		await service.enable({ ids: [hook.data.id] }, root);
-		await database.transaction((tx) => events.emit(tx, "user.created", {}));
-		const dispatcher = new WebhookDispatcher(database, settings);
-		const running = dispatcher.runOnce();
-		await holdEntered.promise;
-		dispatcher.stop();
-		await service.disable({ ids: [hook.data.id] }, root);
-		expect((await database.orm.select().from(deliveries))[0]?.state).toBe(
-			"claimed",
-		);
-		let drained = false;
-		const drain = dispatcher.drain().then(() => {
-			drained = true;
-		});
-		await Bun.sleep(20);
-		expect(drained).toBe(false);
-		releaseHold.resolve();
-		await Promise.all([running, drain]);
-		await service.enable({ ids: [hook.data.id] }, root);
-		await database.transaction((tx) => events.emit(tx, "user.created", {}));
-		await dispatcher.runOnce();
-		expect(received).toHaveLength(1);
-		expect(
-			await database.orm
-				.select()
-				.from(deliveries)
-				.where(eq(deliveries.state, "pending")),
-		).toHaveLength(1);
-	});
-
-	test("failed outcome persistence leaves a claimed record that is never automatically resent", async () => {
-		const hook = await service.create(
-			{ url: new URL("/success", receiver.url).href, events: ["*"] },
-			root,
-		);
-		await service.enable({ ids: [hook.data.id] }, root);
-		await database.transaction((tx) => events.emit(tx, "user.created", {}));
-		await database.orm.execute(
-			sql`create function reject_delivery_result() returns trigger language plpgsql as $$ begin if NEW.state in ('succeeded', 'failed') then raise exception 'Fixture settlement failure'; end if; return NEW; end; $$`,
-		);
-		await database.orm.execute(
-			sql`create trigger reject_delivery_result before update on webhook_deliveries for each row execute function reject_delivery_result()`,
-		);
+		const worker = dispatcher();
+		const running = worker.runOnce();
 		try {
-			await expect(
-				new WebhookDispatcher(database, settings).runOnce(),
-			).rejects.toThrow();
+			await entered.promise;
+			if (shutdown) worker.stop();
+			else
+				await service.update(
+					{ ids: [hook.data.id], changes: { url: "https://new.example/" } },
+					context.operation(),
+				);
+			await Promise.all([running, worker.drain()]);
+			await Promise.race([
+				closed.promise,
+				Bun.sleep(1000).then(() => {
+					throw new Error("Request was not cancelled");
+				}),
+			]);
+			const [row] = await context.database.orm
+				.select()
+				.from(deliveries)
+				.where(eq(deliveries.webhookId, hook.data.id));
+			expect(row).toMatchObject({
+				state: shutdown ? "pending" : "cancelled",
+				attempts: 1,
+				claimToken: null,
+				leaseUntil: null,
+			});
+			if (shutdown) {
+				expect(row?.error).toBe("shutdown_outcome_unknown");
+				await worker.runOnce();
+				expect(sent).toHaveBeenCalledTimes(1);
+			} else {
+				const [attempt] = await context.database.orm
+					.select()
+					.from(deliveryAttempts)
+					.where(
+						and(
+							eq(deliveryAttempts.deliveryId, row?.id ?? ""),
+							eq(deliveryAttempts.attempt, 1),
+						),
+					);
+				expect(attempt?.error).toBe("endpoint_changed_outcome_unknown");
+			}
 		} finally {
-			await database.orm.execute(
-				sql`drop trigger reject_delivery_result on webhook_deliveries`,
-			);
-			await database.orm.execute(sql`drop function reject_delivery_result()`);
+			worker.stop();
+			await running;
+			sent.mockRestore();
+			await fixture.close();
 		}
-		await new WebhookDispatcher(database, settings).runOnce();
-		expect(received).toHaveLength(1);
-		expect((await database.orm.select().from(deliveries))[0]?.state).toBe(
-			"claimed",
-		);
-	});
+	}
 });
 
-describe("composed webhook routes", () => {
-	test("authenticates every action and protects history under webhooks:read", async () => {
-		if (!app.server) throw new Error("HTTP fixture is not listening");
-		for (const [method, suffix, body] of [
-			["GET", "", undefined],
-			["GET", "/deliveries", undefined],
-			["POST", "", { url: receiver.url.href, events: ["*"] }],
-			["PATCH", "", { ids: [Bun.randomUUIDv7()], changes: {} }],
-			[
-				"DELETE",
-				"",
-				{ ids: [Bun.randomUUIDv7()], confirm: true, reason: "Delete" },
-			],
-			["POST", "/enable", { ids: [Bun.randomUUIDv7()] }],
-			["POST", "/disable", { ids: [Bun.randomUUIDv7()] }],
-		] as const) {
-			const response = await fetch(
-				new URL(`/webhooks${suffix}`, app.server.url),
-				{
-					method,
-					headers: body ? { "content-type": "application/json" } : undefined,
-					body: body ? JSON.stringify(body) : undefined,
-				},
-			);
-			expect(response.status).toBe(401);
-			await response.body?.cancel();
-		}
-		const id = Bun.randomUUIDv7();
-		const key = keys.api(id);
-		await database.orm.insert(apiKeys).values({
-			id,
-			name: "Webhook read",
-			secretHash: hasher.hash(key.secret),
-			enabled: true,
-			scopes: ["webhooks:read"],
-			createdBy: "root",
-			updatedBy: "root",
-		});
-		for (const path of ["/webhooks", "/webhooks/deliveries"]) {
-			const response = await fetch(new URL(path, app.server.url), {
-				headers: { authorization: `Bearer ${key.credential}` },
-			});
-			expect(response.status).toBe(200);
-			await response.body?.cancel();
-		}
-		const denied = await fetch(new URL("/webhooks", app.server.url), {
-			method: "POST",
-			headers: {
-				authorization: `Bearer ${key.credential}`,
-				"content-type": "application/json",
+test("operator private-origin policy reaches management and real dispatch without permitting API retargeting", async () => {
+	const received: { body: string; headers: Headers }[] = [];
+	const receiver = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		async fetch(request) {
+			received.push({ body: await request.text(), headers: request.headers });
+			return new Response(null, { status: 204 });
+		},
+	});
+	const privateDestinations = [
+		{ origin: receiver.url.origin, cidrs: ["127.0.0.1/32"] },
+	];
+	const management = new WebhookService(
+		context.database,
+		context.auth,
+		context.audit,
+		context.settings,
+		context.idempotency,
+		{ encryptionKey, privateDestinations },
+	);
+	const worker = new WebhookDispatcher(
+		context.database,
+		context.settings,
+		undefined,
+		context.auth,
+		encryptionKey,
+		[],
+		privateDestinations,
+	);
+	try {
+		const hook = await management.create(
+			{
+				url: `${receiver.url.origin}/events`,
+				events: ["license.created"],
+				allGroups: true,
 			},
-			body: JSON.stringify({ url: receiver.url.href, events: ["*"] }),
-		});
-		expect(denied.status).toBe(403);
-		await denied.body?.cancel();
-	});
-
-	test("strict schemas reject invented events, enabled injection, signing fields and unconfirmed deletion", async () => {
-		if (!app.server) throw new Error("HTTP fixture is not listening");
-		for (const [method, body] of [
-			["POST", { url: receiver.url.href, events: ["invented.event"] }],
-			["POST", { url: receiver.url.href, events: ["*"], enabled: true }],
-			[
-				"POST",
-				{ url: receiver.url.href, events: ["*"], signingSecret: "never" },
-			],
-			["DELETE", { ids: [Bun.randomUUIDv7()], reason: "Delete" }],
-		] as const) {
-			const response = await fetch(new URL("/webhooks", app.server.url), {
-				method,
-				headers: {
-					authorization: `Bearer ${master}`,
-					"content-type": "application/json",
+			context.operation(),
+		);
+		await management.enable({ ids: [hook.data.id] }, context.operation());
+		await expect(
+			management.update(
+				{
+					ids: [hook.data.id],
+					changes: { url: `http://127.0.0.2:${receiver.port}/events` },
 				},
-				body: JSON.stringify(body),
-			});
-			expect(response.status).toBe(400);
-			await response.body?.cancel();
-		}
-		const noRotate = await fetch(new URL("/webhooks/rotate", app.server.url), {
-			method: "POST",
-			headers: { authorization: `Bearer ${master}` },
+				context.operation(),
+			),
+		).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+		await expect(
+			service.create(
+				{
+					url: `${receiver.url.origin}/events`,
+					events: ["license.created"],
+					allGroups: true,
+				},
+				context.operation(),
+			),
+		).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+		await event();
+		await worker.runOnce();
+		expect(received).toHaveLength(1);
+		const request = received[0];
+		if (!request) throw new Error("Missing private receiver request");
+		const signature = createHmac("sha256", Buffer.from(hook.secret, "hex"))
+			.update(
+				`${request.headers.get("x-keyzori-timestamp")}.${request.headers.get("x-keyzori-delivery-id")}.${request.body}`,
+			)
+			.digest("hex");
+		expect(request.headers.get("x-keyzori-signature")).toBe(`v1=${signature}`);
+		const [delivery] = await context.database.orm.select().from(deliveries);
+		expect(delivery).toMatchObject({
+			webhookId: hook.data.id,
+			state: "succeeded",
+			attempts: 1,
 		});
-		expect(noRotate.status).toBe(404);
-		await noRotate.body?.cancel();
-	});
+	} finally {
+		worker.stop();
+		await Promise.allSettled([worker.drain(), receiver.stop(true)]);
+	}
 });

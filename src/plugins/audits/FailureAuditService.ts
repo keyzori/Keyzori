@@ -21,6 +21,7 @@ export class FailureAuditService {
 		credential: string,
 		context: $RequestContext,
 		hardwareId?: string,
+		groupId: string | null = null,
 	) {
 		const settings = await this.settings.read(undefined, context.deadlineAt);
 		const fingerprint = new Bun.CryptoHasher("sha256")
@@ -31,6 +32,7 @@ export class FailureAuditService {
 						new Bun.CryptoHasher("sha256").update(credential).digest("hex"),
 					context.clientIp,
 					hardwareId,
+					groupId,
 				]),
 			)
 			.digest("hex");
@@ -69,11 +71,13 @@ export class FailureAuditService {
 						action: "validation.failed",
 						targetType: "license",
 						targetId: licenseId,
+						groupId,
 						hardwareId,
 						after: { code },
 					});
 					await this.events.emit(tx, "validation.failed", {
 						licenseId,
+						groupId,
 						code,
 						clientIp: context.clientIp,
 						hardwareId,

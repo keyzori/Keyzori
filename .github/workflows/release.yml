@@ -96,6 +96,29 @@ jobs:
             const sha = commit.sha;
             if (process.env.RELEASE_SHA && process.env.RELEASE_SHA !== sha)
               throw new Error('Release commit does not match its tag');
+            // Recovery follows the current publication contract, never a legacy binary build.
+            const readJson = async path => {
+              const { data } = await github.rest.repos.getContent({ ...context.repo, path, ref: sha });
+              if (Array.isArray(data) || data.type !== 'file' || data.encoding !== 'base64')
+                throw new Error(`Missing release contract file: ${path}`);
+              return JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+            };
+            const contract = await readJson('.github/release-contract.json');
+            const manifest = await readJson('package.json');
+            if (contract.schemaVersion !== 1 || contract.distribution !== 'keyzori-bun-source-v3' ||
+                contract.major !== 3 || !/^3\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version) ||
+                tag !== `v${manifest.version}` ||
+                JSON.stringify(contract.assets?.slice().sort()) !== JSON.stringify(['LICENSE', 'SHA256SUMS', 'openapi.json']) ||
+                JSON.stringify(contract.container?.platforms?.slice().sort()) !== JSON.stringify(['linux/amd64', 'linux/arm64']) ||
+                contract.container?.sbom !== 'spdx-json' ||
+                contract.container?.provenance !== 'https://slsa.dev/provenance/v1')
+              throw new Error('Draft is incompatible with the v3 source/container publication contract');
+            const { data: main } = await github.rest.git.getRef({ ...context.repo, ref: 'heads/main' });
+            const { data: ancestry } = await github.rest.repos.compareCommitsWithBasehead({
+              ...context.repo, basehead: `${sha}...${main.object.sha}`
+            });
+            if (ancestry.base_commit.sha !== sha || !['ahead', 'identical'].includes(ancestry.status))
+              throw new Error('Release revision is not an ancestor of main');
             for (const workflow_id of ['server.yml', 'codeql.yml']) {
               const { data } = await github.rest.actions.listWorkflowRuns({
                 ...context.repo, workflow_id, head_sha: sha,
@@ -109,28 +132,28 @@ jobs:
             core.setOutput('tag', tag);
             core.setOutput('release-id', release.id);
 
-  binaries:
+  assets:
     needs: release
     if: needs.release.outputs.tag != ''
-    uses: ./.github/workflows/binaries.yml
-    permissions:
-      contents: read
-    with:
-      ref: ${{ needs.release.outputs.sha }}
-
-  assets:
-    needs: [release, binaries]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          pattern: release-*
-          merge-multiple: true
-          path: release-artifacts
-      - name: Attach binaries, checksums and API reference
+          ref: ${{ needs.release.outputs.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: HUSKY=0 bun install --frozen-lockfile
+      - run: bun run openapi
+      - name: Prepare reference assets
+        run: |
+          mkdir -p release-artifacts
+          cp dist/server/openapi.json LICENSE release-artifacts/
+          cd release-artifacts
+          sha256sum openapi.json LICENSE > SHA256SUMS
+      - name: Attach checksums, license and API reference
         working-directory: release-artifacts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -138,7 +161,7 @@ jobs:
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: |
           sha256sum --check SHA256SUMS
-          gh release upload "$RELEASE_TAG" keyzori-*.tar.gz keyzori-*.zip openapi.json SHA256SUMS --clobber
+          gh release upload "$RELEASE_TAG" openapi.json LICENSE SHA256SUMS --clobber
 
   docker:
     needs: [release, assets]
@@ -146,6 +169,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     with:
       ref: ${{ needs.release.outputs.sha }}
       release-tag: ${{ needs.release.outputs.tag }}
@@ -172,18 +197,14 @@ jobs:
             const { data: commit } = await github.rest.repos.getCommit({ ...context.repo, ref: `tags/${release.tag_name}` });
             if (commit.sha !== process.env.RELEASE_SHA)
               throw new Error('Release tag changed during publication');
-            const expected = [
-              'keyzori-linux-x64.tar.gz', 'keyzori-linux-arm64.tar.gz',
-              'keyzori-darwin-x64.tar.gz', 'keyzori-darwin-arm64.tar.gz',
-              'keyzori-windows-x64.zip', 'openapi.json', 'SHA256SUMS'
-            ].sort();
+            const expected = ['openapi.json', 'LICENSE', 'SHA256SUMS'].sort();
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, { ...context.repo, release_id, per_page: 100 });
             if (JSON.stringify(assets.map(asset => asset.name).sort()) !== JSON.stringify(expected) ||
                 assets.some(asset => asset.state !== 'uploaded' || asset.size <= 0))
-              throw new Error('Release does not contain every completed binary, API reference and checksum asset');
+              throw new Error('Release does not contain every completed reference, license and checksum asset');
             const { data: published } = await github.rest.repos.updateRelease({
               ...context.repo, release_id, draft: false,
-              make_latest: release.prerelease ? 'false' : 'true'
+              make_latest: 'false'
             });
             if (published.draft)
               throw new Error('GitHub did not publish the release');

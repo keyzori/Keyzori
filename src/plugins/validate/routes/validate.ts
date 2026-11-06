@@ -15,7 +15,8 @@ export const validateLicense = (
 			response: validationModel.response,
 			detail: {
 				tags: ["Validation"],
-				summary: "Validate a licence and atomically consume usage",
+				summary:
+					"Validate a licence and read its full information without consuming usage",
 				security: [],
 			},
 		},
@@ -25,7 +26,7 @@ export const validateLicense = (
 				server?.requestIP(request)?.address ?? null,
 			);
 			const result = await service.validate(body, context);
-			metrics.validation(result.code);
+			metrics.validation(result.data.code);
 			return result;
 		},
 	);

@@ -8,7 +8,7 @@ test.each([
 	["::", "http://[::1]:6284/health"],
 	["::1", "http://[::1]:6284/health"],
 	["2001:db8::1", "http://[2001:db8::1]:6284/health"],
-])("formats a v2 healthcheck URL for %s", (host, url) => {
+])("formats a healthcheck URL for %s", (host, url) => {
 	expect(healthcheckUrl({ host, port: 6284 })).toBe(url);
 });
 

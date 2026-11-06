@@ -29,10 +29,12 @@ export class TestHttp {
 	async start() {
 		await this.fixture.start();
 		await this.services.redis.connect();
+		await this.services.activity.publish();
 		this.services.health.ready = true;
 		this.app.listen({ hostname: "127.0.0.1", port: 0 });
 	}
 	async stop() {
+		this.services.activity.stop();
 		await this.app.stop(true);
 		this.services.redis.close();
 		await this.services.database.close();

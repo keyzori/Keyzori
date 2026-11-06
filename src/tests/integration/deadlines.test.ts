@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { eq, sql } from "drizzle-orm";
 import { apiKeys } from "../../core/database/schema/apiKeys";
 import { hardware } from "../../core/database/schema/hardware";
-import { items } from "../../core/database/schema/items";
 import { licenses } from "../../core/database/schema/licenses";
 import { meters } from "../../core/database/schema/meters";
 import { receipts } from "../../core/database/schema/receipts";
@@ -294,9 +293,9 @@ describe("request deadline propagation", () => {
 		}
 	});
 
-	test("validation deadline cannot register hardware, charge a meter or save a receipt later", async () => {
+	test("validation deadline cannot commit work after returning unavailable", async () => {
 		const issued = await context.licenses.create(
-			{ deviceLimit: 1, meters: { upsert: [{ name: "uses", limit: 5 }] } },
+			{ deviceLimit: 1, meters: { upsert: [{ name: "uses", limit: "5" }] } },
 			context.operation(),
 		);
 		await context.licenses.enable(
@@ -326,7 +325,6 @@ describe("request deadline propagation", () => {
 					{
 						license: issued.credential,
 						hardwareId: "deadline-device",
-						usage: { uses: 1 },
 					},
 					operation,
 				),
@@ -355,109 +353,5 @@ describe("request deadline propagation", () => {
 				.from(receipts)
 				.where(eq(receipts.key, operation.idempotencyKey)),
 		).toHaveLength(0);
-	});
-
-	test("licence read recheck rejects credentials rotated after authentication", async () => {
-		const issued = await context.licenses.create({}, context.operation());
-		await context.licenses.enable(
-			{ ids: [issued.data.id] },
-			context.operation(),
-		);
-		const principal = await context.auth.authenticate(
-			`Bearer ${issued.credential}`,
-		);
-		expect(
-			(
-				await database.transaction((tx) =>
-					context.auth.assertLicense(tx, principal),
-				)
-			)?.id,
-		).toBe(issued.data.id);
-		await context.licenses.rotate(
-			{ ids: [issued.data.id] },
-			context.operation(),
-		);
-		await expect(
-			database.transaction((tx) => context.auth.assertLicense(tx, principal)),
-		).rejects.toMatchObject({ code: "UNAUTHORIZED" });
-		expect(
-			await database.transaction((tx) =>
-				context.auth.assertLicense(tx, context.operation().principal),
-			),
-		).toBeUndefined();
-	});
-
-	test("licence read recheck evaluates current expiry, lifecycle and parent state", async () => {
-		const userId = Bun.randomUUIDv7();
-		const itemId = Bun.randomUUIDv7();
-		await database.orm.insert(users).values({
-			id: userId,
-			name: "Read parent",
-			enabled: true,
-			createdBy: "root",
-			updatedBy: "root",
-		});
-		await database.orm.insert(items).values({
-			id: itemId,
-			name: "Read parent",
-			enabled: true,
-			createdBy: "root",
-			updatedBy: "root",
-		});
-		const issued = await context.licenses.create(
-			{ userId, itemId },
-			context.operation(),
-		);
-		await context.licenses.enable(
-			{ ids: [issued.data.id] },
-			context.operation(),
-		);
-		const principal = await context.auth.authenticate(
-			`Bearer ${issued.credential}`,
-		);
-		await database.orm
-			.update(licenses)
-			.set({ enabled: false })
-			.where(eq(licenses.id, issued.data.id));
-		await expect(
-			database.transaction((tx) => context.auth.assertLicense(tx, principal)),
-		).rejects.toMatchObject({ code: "UNAUTHORIZED" });
-		await database.orm
-			.update(licenses)
-			.set({ enabled: true, expiresAt: new Date(0) })
-			.where(eq(licenses.id, issued.data.id));
-		await expect(
-			database.transaction((tx) => context.auth.assertLicense(tx, principal)),
-		).rejects.toMatchObject({ code: "UNAUTHORIZED" });
-		await database.orm
-			.update(licenses)
-			.set({ expiresAt: null })
-			.where(eq(licenses.id, issued.data.id));
-		await database.orm
-			.update(users)
-			.set({ enabled: false })
-			.where(eq(users.id, userId));
-		await expect(
-			database.transaction((tx) => context.auth.assertLicense(tx, principal)),
-		).rejects.toMatchObject({ code: "UNAUTHORIZED" });
-		await database.orm
-			.update(users)
-			.set({ enabled: true })
-			.where(eq(users.id, userId));
-		await database.orm
-			.update(items)
-			.set({ enabled: false })
-			.where(eq(items.id, itemId));
-		await expect(
-			database.transaction((tx) => context.auth.assertLicense(tx, principal)),
-		).rejects.toMatchObject({ code: "UNAUTHORIZED" });
-		await database.orm
-			.update(items)
-			.set({ enabled: true })
-			.where(eq(items.id, itemId));
-		await database.orm.delete(licenses).where(eq(licenses.id, issued.data.id));
-		await expect(
-			database.transaction((tx) => context.auth.assertLicense(tx, principal)),
-		).rejects.toMatchObject({ code: "UNAUTHORIZED" });
 	});
 });

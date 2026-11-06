@@ -1,7 +1,7 @@
 name: CodeQL
 on:
   push:
-    branches: [main, v2]
+    branches: [main, v3]
   pull_request:
   schedule:
     - cron: "23 4 * * 1"

@@ -10,11 +10,23 @@ export class ResourceQuery {
 	readonly order;
 	readonly sort: $ResourceSort;
 	private readonly direction;
+	private readonly filterHash;
 	constructor(
 		query: URLSearchParams,
 		columns: $QueryColumns,
-		defaultLimit = 10,
+		defaultLimit = 50,
 	) {
+		if (query.toString().length > 8192 || Array.from(query).length > 32)
+			throw new HttpError("INVALID_REQUEST");
+		this.filterHash = new Bun.CryptoHasher("sha256")
+			.update(
+				JSON.stringify(
+					Array.from(query)
+						.filter(([key]) => key !== "cursor" && key !== "limit")
+						.sort(([left], [right]) => left.localeCompare(right)),
+				),
+			)
+			.digest("hex");
 		const policy = new InputPolicy();
 		for (const [key, value] of query) {
 			policy.text(key);
@@ -29,18 +41,14 @@ export class ResourceQuery {
 		if (limit && !/^[1-9]\d*$/.test(limit))
 			throw new HttpError("INVALID_REQUEST");
 		this.limit = limit === null ? defaultLimit : Number(limit);
-		if (
-			!Number.isSafeInteger(this.limit) ||
-			this.limit < 1 ||
-			this.limit > 2147483646
-		)
+		if (!Number.isSafeInteger(this.limit) || this.limit < 1 || this.limit > 100)
 			throw new HttpError("INVALID_REQUEST");
 		const sort = query.get("sort") ?? "createdAt";
 		if (sort !== "createdAt" && sort !== "updatedAt" && sort !== "expiresAt")
 			throw new HttpError("INVALID_REQUEST");
 		const field = columns[sort];
 		if (!field) throw new HttpError("INVALID_REQUEST");
-		const column = sql`date_trunc('milliseconds', ${field})`;
+		const column = sql`${field}`;
 		this.sort = sort;
 		const direction = query.get("direction") ?? "desc";
 		if (direction !== "asc" && direction !== "desc")
@@ -91,7 +99,7 @@ export class ResourceQuery {
 				);
 				continue;
 			}
-			if (key === "userId" || key === "itemId") {
+			if (key === "userId" || key === "groupId") {
 				const field = columns[key];
 				if (!field || !this.uuid(value)) throw new HttpError("INVALID_REQUEST");
 				filters.push(eq(field, value));
@@ -123,16 +131,17 @@ export class ResourceQuery {
 				const pattern = `%${value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
 				filters.push(
 					or(
-						sql`${columns.id}::text = ${value}`,
+						this.uuid(value) ? eq(columns.id, value) : undefined,
 						columns.name ? ilike(columns.name, pattern) : undefined,
 						columns.notes ? ilike(columns.notes, pattern) : undefined,
-					),
+					) ?? sql`false`,
 				);
 				continue;
 			}
 			throw new HttpError("INVALID_REQUEST");
 		}
 		const cursor = query.get("cursor");
+		if (cursor && cursor.length > 1024) throw new HttpError("INVALID_REQUEST");
 		if (cursor) {
 			let decoded: unknown;
 			try {
@@ -143,6 +152,10 @@ export class ResourceQuery {
 			if (
 				!decoded ||
 				typeof decoded !== "object" ||
+				!("version" in decoded) ||
+				decoded.version !== 1 ||
+				!("filterHash" in decoded) ||
+				decoded.filterHash !== this.filterHash ||
 				!("id" in decoded) ||
 				typeof decoded.id !== "string" ||
 				!this.uuid(decoded.id) ||
@@ -154,28 +167,47 @@ export class ResourceQuery {
 				decoded.direction !== this.direction
 			)
 				throw new HttpError("INVALID_REQUEST");
+			if (decoded.value === null && sort !== "expiresAt")
+				throw new HttpError("INVALID_REQUEST");
 			if (decoded.value !== null) policy.timestamp(decoded.value);
 			const idComparison =
 				this.direction === "asc"
 					? sql`${columns.id} > ${decoded.id}`
 					: sql`${columns.id} < ${decoded.id}`;
 			filters.push(
-				decoded.value === null
-					? and(sql`${column} is null`, idComparison)
-					: or(
-							this.direction === "asc"
-								? sql`${column} > ${decoded.value}::timestamptz`
-								: sql`${column} < ${decoded.value}::timestamptz`,
-							and(sql`${column} = ${decoded.value}::timestamptz`, idComparison),
-							sql`${column} is null`,
-						),
+				sort !== "expiresAt"
+					? this.direction === "asc"
+						? sql`(${column}, ${columns.id}) > (${decoded.value}::timestamptz, ${decoded.id}::uuid)`
+						: sql`(${column}, ${columns.id}) < (${decoded.value}::timestamptz, ${decoded.id}::uuid)`
+					: decoded.value === null
+						? and(sql`${column} is null`, idComparison)
+						: or(
+								this.direction === "asc"
+									? sql`${column} > ${decoded.value}::timestamptz`
+									: sql`${column} < ${decoded.value}::timestamptz`,
+								and(
+									sql`${column} = ${decoded.value}::timestamptz`,
+									idComparison,
+								),
+								sql`${column} is null`,
+							),
 			);
 		}
 		this.where = and(...filters);
 		this.order =
 			this.direction === "asc"
-				? [sql`${column} asc nulls last`, sql`${columns.id} asc`]
-				: [sql`${column} desc nulls last`, sql`${columns.id} desc`];
+				? [
+						sort === "expiresAt"
+							? sql`${column} asc nulls last`
+							: sql`${column} asc`,
+						sql`${columns.id} asc`,
+					]
+				: [
+						sort === "expiresAt"
+							? sql`${column} desc nulls last`
+							: sql`${column} desc`,
+						sql`${columns.id} desc`,
+					];
 	}
 	cursor(row: {
 		id: string;
@@ -185,6 +217,8 @@ export class ResourceQuery {
 	}) {
 		return Buffer.from(
 			JSON.stringify({
+				version: 1,
+				filterHash: this.filterHash,
 				id: row.id,
 				value: row[this.sort]?.toISOString() ?? null,
 				sort: this.sort,

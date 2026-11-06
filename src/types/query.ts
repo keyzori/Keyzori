@@ -11,7 +11,7 @@ export type $QueryColumns = {
 	enabled?: PgColumn;
 	metadata?: PgColumn;
 	userId?: PgColumn;
-	itemId?: PgColumn;
+	groupId?: PgColumn;
 	expiresAt?: PgColumn;
 	deviceLimit?: PgColumn;
 };

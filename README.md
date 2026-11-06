@@ -2,117 +2,76 @@
 
 <img width="2560" height="720" alt="Keyzori banner" src=".github/assets/banner.png" />
 
-[`📖 Documentation`](src/README.md) · [`💻 Deployment`](src/README.md#run)
-
-<br />
+[Documentation](src/README.md) · [Deployment](src/README.md#run) · [Implementation](src/IMPLEMENTATION.md)
 
 </div>
 
-> [!WARNING]
-> V2 changes the API, settings, and database format. Start with a fresh PostgreSQL database; older databases and client integrations are not compatible. Linux is the supported deployment platform. The server uses Elysia 2 beta; see the [platform limitations](src/README.md#operations) before choosing a deployment.
+Keyzori is an internal licence-key management service for developers. Use it for authentication-token validation, access control, usage accounting or other integrations. Groups are neutral containers for related keys. Developers build their own integrations and dashboards; Keyzori has no dashboard or application-feature entitlement system.
 
-Keyzori is a self-hosted license server for software products. Create users, items and licenses, control device and IP access, and track usage through an HTTP API.
+V3 is beta and deliberately changes the API and database format. It runs TypeScript source with Bun, Elysia 2 beta, Drizzle, PostgreSQL and Redis. Serving verifies schema history and refuses incompatible databases without changing their data.
 
-You host the server, PostgreSQL, and Redis, and keep control of your licensing data. Server code lives in [`src`](src/).
+## What it does
 
-## License types
+- Issue and rotate credentials, optionally associate keys with a group and user, and control expiry or disabled reasons.
+- Validate a licence using only its key, optionally checking an expected group. Validation returns licence, group, user, metadata and usage information without consuming usage; administrative notes are excluded throughout.
+- Atomically consume exact named counters with independent limits, calendar resets and durable retry deduplication.
+- Restrict API keys by explicit permissions and selected groups, with a separate environment master credential.
+- Expose authorised audit history, durable integration events over HTTP/WebSocket, and signed webhooks with bounded retries.
 
-Licenses combine expiry, usage meters and access limits instead of selecting a fixed type.
-
-| Use case | How it works |
-| --- | --- |
-| Lifetime | Leave expiry unset; the license remains eligible while it and its related resources are enabled. |
-| Subscription or trial | Set an expiry date and extend it through administration when required. |
-| Metered | Add usage limits, optional overage and calendar resets, such as 1,000 exports per month. |
-
-Licenses support optional device/IP caps, IP allowlists and custom metadata. Caps are unrestricted when omitted; zero means zero capacity. Resources start disabled and must be explicitly enabled.
+**Anyone holding a licence key can read its validation view**, including linked group/user metadata, raw hardware IDs and registered IPs. Administrative notes on the licence, group and user are excluded. Credentials and secret hashes are never returned by validation. See [validation exposure](src/README.md#validation-and-key-exposure).
 
 ## Quick start
 
-Use the pinned **[Bun 1.4.4 canary](CONTRIBUTING.md#bun-runtime)**, **PostgreSQL 17+**, and **Redis**. Start PostgreSQL and Redis before running these commands from the repository root:
+Use the exact [Bun runtime pin](CONTRIBUTING.md), PostgreSQL 17 or later and Redis. Install dependencies, copy [`.env.example`](.env.example) to `.env`, and generate the master credential:
 
-```powershell
+```sh
 bun install --frozen-lockfile
-Copy-Item .env.example .env
 bun run master-key
-# Save the generated KZ_MASTER_KEY in .env and set KZ_DATABASE_URL and KZ_REDIS_URL.
+```
+
+Set `KZ_MASTER_KEY`, the runtime `KZ_DATABASE_URL`, the separate `KZ_MIGRATION_DATABASE_URL`, and `KZ_REDIS_URL`. Provision database roles using the [deployment guidance](src/README.md#run), then:
+
+```sh
+bun run db:migrate
 bun run start
 ```
 
-The default address is `http://localhost:6284`. Direct Bun or binary deployments can set `KZ_API_HOST` to an IPv4 or IPv6 address such as `127.0.0.1` or `::1` to restrict the listening interface. The `healthcheck` command probes that configured address and port. For automatic restarts while developing, use `bun run dev` instead of `bun run start`.
-
-| URL | Purpose |
-| --- | --- |
-| `/health` | Check server readiness and PostgreSQL/Redis availability. |
-| `/validate` | Validate a license and optionally record usage. |
-| `/licenses/self` | Discover the current license through its bearer credential. |
-
-Follow the [first license example](src/README.md#first-licence), then connect your application using the [usage and replay guide](src/README.md#usage-capacity-and-replay). Generate the OpenAPI file with `bun run openapi`; it is not exposed by the running server.
-
-**Save each credential when you create or rotate it.** Keyzori cannot show the full key again.
+`bun run dev` restarts source during development. `/health` reports readiness and dependency probe age. [Create a first licence](src/README.md#first-licence), then use the [API guide](src/README.md#responses-and-api-access). Generate `dist/server/openapi.json` with `bun run openapi`; the running server does not host the reference UI.
 
 ## Docker
 
-Copy `.env.example` to `.env` and set `KZ_MASTER_KEY`, `KZ_POSTGRES_PASSWORD`, and `KZ_SERVER_DATABASE_PASSWORD`. Generate the root key with `bun run master-key` and use independent random, URL-safe database passwords.
+Copy `.env.example` to `.env`. Set `KZ_MASTER_KEY`, `KZ_POSTGRES_PASSWORD`, `KZ_SERVER_DATABASE_PASSWORD`, and `KZ_MIGRATION_DATABASE_PASSWORD`. Generate the master with `bun run master-key`; use separate random 64-character hexadecimal values for the three database passwords.
 
-```powershell
+```sh
 docker compose up --build -d
 ```
 
-For repository-based deployment, select `compose.yml` and supply those secrets. Route your domain to the `server` service on container port `6284`, with HTTPS for remote access.
+Compose starts PostgreSQL and Redis, runs an explicit one-shot migration job, then starts the API with its restricted runtime database role. The source container runs as UID 65532 with a read-only root filesystem. PostgreSQL persists in a named volume. Only the API is published, at `http://127.0.0.1:6284`.
 
-Compose starts PostgreSQL 18.0, Redis 8.2.1, and the API. It supplies internal database URLs and retains PostgreSQL data in a named volume. The server applies pending migrations before accepting requests; migration failures prevent startup.
-
-The API is available at `http://localhost:6284`. Only the API port is published. The container runs a standalone Linux executable as a non-root user with a read-only filesystem.
-
-See the [server guide](src/README.md#environment) for environment settings and [operations](src/README.md#operations) for backups, HTTPS proxy configuration and shutdown behaviour.
-
-Keep `KZ_API_HOST=0.0.0.0` inside the Compose container so its healthcheck and reverse proxy can reach the server. Restrict access through the published host port or proxy; a loopback listener inside the container is separate from a loopback binding on the host.
-
-## Plugins
-
-Installable plugins and Stripe integration are not part of this rewrite. Use the HTTP API and [webhook integrations](src/README.md#operations); webhooks are unsigned and make one delivery attempt without automatic retries.
+Set `KZ_WEBHOOK_ENCRYPTION_KEY` to a separate random 64-character hexadecimal value when using webhooks. Keep this key with database backups. Configure an HTTPS reverse proxy for remote access and trust only its actual addresses. [Environment and operations](src/README.md#environment) explains the remaining controls.
 
 ## Development
 
-| Command | Purpose |
-| --- | --- |
-| `bun run dev` | Start the server and restart it when source files change. |
-| `bun run master-key` | Generate a root credential without connecting to services. |
-| `bun run check` | Check types, lint, verify migrations and run the full test suite. |
-| `bun run test:unit` | Run tests that do not need PostgreSQL or Redis. |
-| `bun run test` | Run the full test suite with temporary Docker services. |
-| `bun run db:generate` | Generate migrations after database schema changes. |
-| `bun run db:migrate` | Apply pending server migrations. |
-| `bun run openapi` | Generate `dist/server/openapi.json` without live services. |
-| `bun run build` | Build the Linux x64 binary and API reference. |
-| `bun run build linux-arm64` | Build the Linux ARM64 binary and API reference. |
+| Command                                                                      | Purpose                                                            |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `bun doctor`                                                                 | Verify the exact runtime pin.                                      |
+| `bun check --types`                                                          | Check TypeScript without external services.                        |
+| `bun lint` / `bun fmt <paths>`                                               | Check or format through project commands.                          |
+| `bun run test:unit`                                                          | Run tests without database containers.                             |
+| `bun run test <paths>`                                                       | Run focused tests with disposable PostgreSQL/Redis.                |
+| `bun run db:generate` / `bun run db:check`                                   | Generate migrations or compare actual SQL with the Drizzle schema. |
+| `bun check`                                                                  | Run runtime, type, lint, schema and full test checks.              |
+| `bun run smoke:source` / `bun run smoke:container` / `bun run smoke:compose` | Exercise disposable deployments.                                   |
 
-Docker must be running for `bun run check` and `bun run test`. Tests use isolated PostgreSQL/Redis fixtures and fail if dependencies are unavailable. To run a subset, use `bun run test ./src/tests/http` or `bun run test ./src/tests/integration`. The [CI workflow](.github/workflows/server.yml) checks Linux x64 and ARM64 runtime behaviour and builds native Linux, macOS and Windows packages. [Releases](.github/RELEASE_POLICY.md) publish those binary formats and binary-based Docker images.
+Database checks and runtime smoke checks require Docker. Follow the task's validation limits before running broad checks. [CI](.github/workflows/server.yml) targets Linux AMD64 and ARM64; a configured check is not evidence that a particular revision passed. Pushes to `v3` run CI without publishing or deploying. See [release policy](.github/RELEASE_POLICY.md).
 
 ## Documentation
 
-The [server guide](src/README.md) describes the current rewrite. The existing [Keyzori Wiki](https://github.com/keyzori/Keyzori/wiki) documents the previous server.
-
-| | Guide | What it covers |
-| :-: | --- | --- |
-| 💻 | [Deployment](src/README.md#run) | Run source, binaries or Compose. |
-| ⚙️ | [Configuration](src/README.md#environment) | Environment variables and proxy settings. |
-| 🔑 | [Licensing model](src/README.md#usage-capacity-and-replay) | Expiry, limits, meters and idempotent usage. |
-| 🔄 | [First license](src/README.md#first-licence) | Issue, enable and validate a license. |
-| 🌐 | [HTTP API](src/README.md#administration) | Routes, authentication, scopes and queries. |
-| 🏗️ | [Implementation](src/IMPLEMENTATION.md) | Architecture, runtime lifecycle and persistence. |
-| 📊 | [Operations](src/README.md#operations) | Monitor, back up and maintain the server. |
-| 🧪 | [Verification](src/README.md#verification) | Checks and build commands. |
-
-## Community
-
-- [Contributing](CONTRIBUTING.md)
-- [Governance](GOVERNANCE.md)
-- [Support](https://tsukiyo.cc/join)
+- [Developer and deployment guide](src/README.md)
+- [Architecture and audit decisions](src/IMPLEMENTATION.md)
+- [Contributing](CONTRIBUTING.md), [security](SECURITY.md), [support](SUPPORT.md), [governance](GOVERNANCE.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
-Copyright © 2026 Keyzori contributors.
-
-Licensed under the [Apache License 2.0](LICENSE).
+Copyright © 2026 Keyzori contributors. Licensed under [Apache License 2.0](LICENSE).

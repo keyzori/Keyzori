@@ -6,6 +6,10 @@ export type $AuditInput = $RequestContext & {
 	action: string;
 	targetType: string;
 	targetId?: string;
+	groupId?: string | null;
+	/** All historical groups whose values occur in this record. */
+	requiredGroupIds?: string[];
+	requiresAllGroups?: boolean;
 	reason?: string;
 	hardwareId?: string;
 	before?: Record<string, unknown>;

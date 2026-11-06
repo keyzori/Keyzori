@@ -40,6 +40,7 @@ export const httpModel = {
 	expiresAt: t.Union([t.String({ format: "date-time" }), t.Null()]),
 	ids: t.Array(t.String({ format: "uuid" }), {
 		minItems: 1,
+		maxItems: 100,
 		uniqueItems: true,
 	}),
 	error: t.Object(

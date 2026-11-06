@@ -7,20 +7,31 @@ const subscriptions = t.Array(t.UnionEnum(["*", ...webhookEvents]), {
 	maxItems: webhookEvents.length,
 	uniqueItems: true,
 });
+const groupIds = t.Array(httpModel.id, { maxItems: 100, uniqueItems: true });
 const create = t.Object(
-	{ url: t.String({ minLength: 1, maxLength: 8192 }), events: subscriptions },
+	{
+		url: t.String({ minLength: 1, maxLength: 2048 }),
+		events: subscriptions,
+		allGroups: t.Optional(t.Boolean()),
+		groupIds: t.Optional(groupIds),
+	},
 	{ additionalProperties: false },
 );
 const resource = t.Object(
 	{
 		id: httpModel.id,
 		url: t.String(),
-		events: subscriptions,
+		events: t.Array(t.UnionEnum(webhookEvents)),
 		enabled: t.Boolean(),
+		allGroups: t.Boolean(),
+		groupIds,
+		signingKeyId: httpModel.id,
+		version: t.Integer(),
+		lastError: t.Union([t.String(), t.Null()]),
 		createdBy: t.String(),
 		updatedBy: t.String(),
-		createdAt: t.String({ format: "date-time" }),
-		updatedAt: t.String({ format: "date-time" }),
+		createdAt: t.String(),
+		updatedAt: t.String(),
 	},
 	{ additionalProperties: false },
 );
@@ -36,12 +47,16 @@ const delivery = t.Object(
 		id: httpModel.id,
 		webhookId: httpModel.id,
 		eventId: httpModel.id,
+		replayOf: t.Union([httpModel.id, t.Null()]),
 		event: t.UnionEnum(webhookEvents),
 		state,
-		attemptedAt: t.Union([t.String({ format: "date-time" }), t.Null()]),
+		attempts: t.Integer(),
+		attemptedAt: t.Union([t.String(), t.Null()]),
+		nextAttemptAt: t.String(),
+		expiresAt: t.String(),
 		status: t.Union([t.Integer(), t.Null()]),
 		error: t.Union([t.String(), t.Null()]),
-		createdAt: t.String({ format: "date-time" }),
+		createdAt: t.String(),
 	},
 	{ additionalProperties: false },
 );
@@ -50,18 +65,33 @@ const action = t.Object(
 	{ additionalProperties: false },
 );
 const query = {
-	id: t.Optional(httpModel.id),
-	limit: t.Optional(t.String({ pattern: "^[1-9][0-9]*$" })),
+	limit: t.Optional(t.String({ pattern: "^([1-9]|[1-9][0-9]|100)$" })),
 	direction: t.Optional(t.UnionEnum(["asc", "desc"])),
-	cursor: t.Optional(t.String()),
-	search: t.Optional(t.String({ minLength: 1, maxLength: 256 })),
+	cursor: t.Optional(t.String({ maxLength: 4096 })),
 	createdBefore: t.Optional(t.String({ format: "date-time" })),
 	createdAfter: t.Optional(t.String({ format: "date-time" })),
 };
-
+const listResponse = <T extends typeof resource | typeof delivery>(item: T) =>
+	t.Object(
+		{
+			data: t.Array(item),
+			nextCursor: t.Union([t.String(), t.Null()]),
+			pageLimit: t.Integer({ minimum: 1, maximum: 100 }),
+		},
+		{ additionalProperties: false },
+	);
 export const webhookModel = {
 	resource,
 	delivery,
+	id: t.Object({ id: httpModel.id }, { additionalProperties: false }),
+	detailQuery: t.Object({}, { additionalProperties: false }),
+	detailResponse: t.Object({ data: resource }, { additionalProperties: false }),
+	listResponse: listResponse(resource),
+	historyDetailResponse: t.Object(
+		{ data: delivery },
+		{ additionalProperties: false },
+	),
+	historyListResponse: listResponse(delivery),
 	create,
 	update: t.Object(
 		{
@@ -73,6 +103,15 @@ export const webhookModel = {
 	),
 	enable: action,
 	disable: action,
+	rotateSecret: action,
+	recovery: t.Object(
+		{ ids: httpModel.ids, confirm: t.Literal(true), reason: httpModel.reason },
+		{ additionalProperties: false },
+	),
+	recoveryResponse: t.Object(
+		{ data: t.Array(delivery) },
+		{ additionalProperties: false },
+	),
 	delete: t.Object(
 		{ ids: httpModel.ids, confirm: t.Literal(true), reason: httpModel.reason },
 		{ additionalProperties: false },
@@ -94,27 +133,27 @@ export const webhookModel = {
 		},
 		{ additionalProperties: false },
 	),
-	singleResponse: t.Object({ data: resource }, { additionalProperties: false }),
+	singleResponse: t.Object(
+		{ data: resource, secret: t.String() },
+		{ additionalProperties: false },
+	),
 	bulkResponse: t.Object(
 		{ data: t.Array(resource) },
+		{ additionalProperties: false },
+	),
+	rotatedResponse: t.Object(
+		{
+			data: t.Array(
+				t.Object(
+					{ id: httpModel.id, signingKeyId: httpModel.id, secret: t.String() },
+					{ additionalProperties: false },
+				),
+			),
+		},
 		{ additionalProperties: false },
 	),
 	deleteResponse: t.Object(
 		{ data: t.Object({ ids: httpModel.ids }, { additionalProperties: false }) },
 		{ additionalProperties: false },
 	),
-	readResponse: t.Union([
-		t.Object({ data: resource }, { additionalProperties: false }),
-		t.Object(
-			{ data: t.Array(resource), nextCursor: t.Union([t.String(), t.Null()]) },
-			{ additionalProperties: false },
-		),
-	]),
-	historyResponse: t.Union([
-		t.Object({ data: delivery }, { additionalProperties: false }),
-		t.Object(
-			{ data: t.Array(delivery), nextCursor: t.Union([t.String(), t.Null()]) },
-			{ additionalProperties: false },
-		),
-	]),
 };
