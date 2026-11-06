@@ -17,10 +17,11 @@
 		"check": "bun src/scripts/check.ts",
 		"doctor": "bun src/scripts/doctor.ts",
 		"typecheck": "tsc --noEmit",
-		"lint": "biome check",
+		"lint": "bun lint --no-script --max-warnings 0",
 		"lint:workflows": "actionlint -color",
-		"format": "biome check --write .",
-		"fmt": "biome check --write",
+		"format": "bun fmt --no-script",
+		"fmt": "bun fmt --no-script",
+		"format:check": "bun fmt --no-script --check",
 		"test": "bun src/scripts/test-services.ts exec bun test",
 		"test:unit": "bun test src/tests/unit",
 		"db:generate": "bunx --bun drizzle-kit generate --config=src/drizzle.config.ts",
@@ -32,7 +33,6 @@
 		"smoke:compose": "bun src/scripts/compose-smoke.ts"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.6.5",
 		"@commitlint/cli": "21.2.4",
 		"@commitlint/config-conventional": "21.2.4",
 		"@commitlint/types": "21.2.3",

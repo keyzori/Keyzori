@@ -134,7 +134,9 @@ try {
 				ready = true;
 				break;
 			}
-		} catch {}
+		} catch {
+			// A refused connection is expected until startup completes; the loop is bounded.
+		}
 		await Bun.sleep(100);
 	}
 	assert.ok(ready, "Container did not become ready");

@@ -87,16 +87,14 @@ export class MeterSchedule {
 			candidateDate = sql`period_start + (least(${day},
 				extract(day from period_start + interval '1 month - 1 day')::integer) - 1)`;
 		}
-		const [result] = await tx
-			.select({
-				previous: sql<string | null>`to_char(
+		const [result] = await tx.select({
+			previous: sql<string | null>`to_char(
 				max(occurrence) filter (where occurrence <= ${instant}::timestamptz) at time zone 'UTC',
 				'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
-				next: sql<string | null>`to_char(
+			next: sql<string | null>`to_char(
 				min(occurrence) filter (where occurrence > ${instant}::timestamptz) at time zone 'UTC',
 				'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
-			})
-			.from(sql`(
+		}).from(sql`(
 			with reference as (
 				select (${instant}::timestamptz at time zone ${timezone})::date as local_date
 			), periods as (

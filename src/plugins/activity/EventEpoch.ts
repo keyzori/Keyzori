@@ -20,7 +20,7 @@ export async function resetEventEpoch(tx: $Transaction) {
 		})
 		.from(activityEvents);
 	const maximum = BigInt(high?.sequence ?? "0");
-	// biome-ignore lint/complexity/useMathMinMax: Math.max cannot accept bigint operands.
+	// Math.max cannot accept bigint operands.
 	const sequence = maximum > current.sequence ? maximum : current.sequence;
 	const epoch = Bun.randomUUIDv7();
 	await tx

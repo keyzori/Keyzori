@@ -19,9 +19,7 @@ export type $PublishedEvent = Static<typeof publishedEventSchema>;
 export type $EventAuthority = Static<typeof eventAuthoritySchema>;
 
 type Input<E extends $WebhookEvent> = E extends
-	| `group.${string}`
-	| "license.group_detached"
-	| "license.group_attached"
+	`group.${string}` | "license.group_detached" | "license.group_attached"
 	? $EventData<E>
 	: E extends "validation.failed"
 		? Omit<$EventData<E>, "licenseId" | "groupId"> & {

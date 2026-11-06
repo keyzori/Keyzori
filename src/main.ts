@@ -33,9 +33,8 @@ async function run() {
 				);
 			const config = Config.database(Bun.env, true);
 			const { Database } = await import("./core/database/Database");
-			const { MigrationService } = await import(
-				"./core/database/MigrationService"
-			);
+			const { MigrationService } =
+				await import("./core/database/MigrationService");
 			const database = new Database(config.databaseUrl, config.poolSize);
 			try {
 				if (command === "migrate") {
@@ -43,9 +42,8 @@ async function run() {
 					await new MigrationService(database).run();
 				} else {
 					phase = "restore";
-					const { RestoreService } = await import(
-						"./core/database/RestoreService"
-					);
+					const { RestoreService } =
+						await import("./core/database/RestoreService");
 					console.log(
 						JSON.stringify({
 							event: "restore.prepared",
@@ -88,12 +86,12 @@ async function run() {
 		const category = setting
 			? "INVALID_CONFIGURATION"
 			: error instanceof Error &&
-					/migration history|fresh database|No database migrations/.test(
+				  /migration history|fresh database|No database migrations/.test(
 						error.message,
-					)
+				  )
 				? "SCHEMA_INCOMPATIBLE"
 				: error instanceof Error &&
-						error.message === "PostgreSQL 17 or later is required"
+					  error.message === "PostgreSQL 17 or later is required"
 					? "UNSUPPORTED_DATABASE_VERSION"
 					: "COMMAND_FAILED";
 		const sqlState =

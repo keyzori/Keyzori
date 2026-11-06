@@ -99,7 +99,7 @@ export class HttpBoundary {
 			return Response.json(
 				success(error.result, this.tracker.begin(request).requestId, 50, true),
 			);
-		let mapped = new HttpError("INTERNAL_ERROR");
+		let mapped: HttpError;
 		if (error instanceof HttpError) mapped = error;
 		else if (error instanceof ParseError && error.cause instanceof HttpError)
 			mapped = error.cause;

@@ -6,8 +6,7 @@ export class TestDatabase {
 	readonly database;
 	readonly url;
 	private readonly admin;
-	private readonly name =
-		`keyzori_test_${Bun.randomUUIDv7().replaceAll("-", "")}`;
+	private readonly name = `keyzori_test_${Bun.randomUUIDv7().replaceAll("-", "")}`;
 	constructor() {
 		const value = Bun.env.KZ_TEST_DATABASE_URL;
 		if (!value)

@@ -92,9 +92,8 @@ try {
 	);
 	await actual.start(false);
 	const authority = await roles(actual.database);
-	const { MigrationService } = await import(
-		"../core/database/MigrationService"
-	);
+	const { MigrationService } =
+		await import("../core/database/MigrationService");
 	await new MigrationService(actual.database).run();
 	assert.deepEqual(
 		await roles(actual.database),

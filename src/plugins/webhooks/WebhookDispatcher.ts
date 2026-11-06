@@ -31,11 +31,7 @@ import type { $WebhookClaim } from "../../types/webhookManagement";
 import type { $Transaction } from "../../types/database";
 
 type Gate =
-	| "ready"
-	| "lost"
-	| "expired"
-	| "authority_revoked"
-	| "endpoint_unavailable";
+	"ready" | "lost" | "expired" | "authority_revoked" | "endpoint_unavailable";
 type Outcome = {
 	status?: number | null;
 	error: string | null;
@@ -603,8 +599,8 @@ export class WebhookDispatcher {
 				: succeeded
 					? "succeeded"
 					: outcome.retry &&
-							current.attempts < 8 &&
-							nextAttemptAt < current.expiresAt
+						  current.attempts < 8 &&
+						  nextAttemptAt < current.expiresAt
 						? "pending"
 						: "failed";
 			const updated = await tx

@@ -60,6 +60,7 @@ export class TestServices {
 				throw new AggregateError(
 					[error, cleanup],
 					"Fixture startup and cleanup failed",
+					{ cause: cleanup },
 				);
 			}
 			throw error;

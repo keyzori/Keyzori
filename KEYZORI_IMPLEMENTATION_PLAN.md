@@ -243,7 +243,7 @@ Persistent-data resets, live migrations, deployment, package publication and mer
 
 All supplied files are included as planning inputs under:
 
-[**Audit directory**](<C:/Users/LilSnibbi/.codex/visualizations/2026/11/06/01a1aedf-29e4-7ea3-b338-c74621a3a359/keyzori-audit>)
+[**Audit directory**](C:/Users/LilSnibbi/.codex/visualizations/2026/11/06/01a1aedf-29e4-7ea3-b338-c74621a3a359/keyzori-audit)
 
 - **Primary:** `Keyzori-audit-and-implementation-plan.md`
 - **Supporting reviews:** `security.md`, `database.md`, `build.md`

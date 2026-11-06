@@ -103,7 +103,8 @@ test("offline restore preparation is atomic, changes the epoch and requires deli
 		startedAt: now,
 		sendStartedAt: now,
 	});
-	await context.database.orm.execute(sql`create function reject_restore_fixture() returns trigger language plpgsql as $$
+	await context.database.orm
+		.execute(sql`create function reject_restore_fixture() returns trigger language plpgsql as $$
 		begin if new.action = 'system.restore_prepared' then raise exception 'restore fixture rollback'; end if; return new; end $$`);
 	await context.database.orm.execute(
 		sql`create trigger reject_restore_fixture before insert on audit_logs for each row execute function reject_restore_fixture()`,

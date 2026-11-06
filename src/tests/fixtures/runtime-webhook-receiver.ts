@@ -44,9 +44,9 @@ for (const [name, port] of [
 				Math.abs(Date.now() / 1000 - Number(timestamp)) < 300 &&
 				Boolean(
 					payload &&
-						typeof payload === "object" &&
-						"id" in payload &&
-						payload.id === eventId,
+					typeof payload === "object" &&
+					"id" in payload &&
+					payload.id === eventId,
 				);
 			const path = new URL(request.url).pathname;
 			calls.push({ path, valid, deliveryId, eventId });

@@ -86,7 +86,7 @@ export class Logger {
 					fields.cause === undefined
 						? undefined
 						: safeCauses.has(fields.cause) ||
-								/^SQLSTATE_(?:[0-9]{2}|P0|XX|HV)[0-9A-Z]{3}$/.test(fields.cause)
+							  /^SQLSTATE_(?:[0-9]{2}|P0|XX|HV)[0-9A-Z]{3}$/.test(fields.cause)
 							? fields.cause
 							: "UNEXPECTED_ERROR",
 			}),

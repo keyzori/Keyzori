@@ -72,7 +72,9 @@ try {
 				ready = true;
 				break;
 			}
-		} catch {}
+		} catch {
+			// A refused connection is expected until startup completes; the loop is bounded.
+		}
 		if (child.exitCode !== null) break;
 		await Bun.sleep(100);
 	}

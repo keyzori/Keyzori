@@ -8,7 +8,7 @@ const typesOnly = args.includes("--types");
 if (!typesOnly) await doctor();
 for (const script of typesOnly
 	? ["typecheck"]
-	: ["typecheck", "lint", "db:check", "test"]) {
+	: ["typecheck", "lint", "format:check", "db:check", "test"]) {
 	const child = Bun.spawn([process.execPath, "run", script], {
 		stdout: "inherit",
 		stderr: "inherit",

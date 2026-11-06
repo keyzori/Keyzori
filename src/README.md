@@ -63,10 +63,10 @@ Every JSON response has the typed contract in [Response.ts](core/http/Response.t
 
 ```json
 {
-	"ok": true,
-	"data": { "id": "..." },
-	"error": null,
-	"meta": { "requestId": "..." }
+  "ok": true,
+  "data": { "id": "..." },
+  "error": null,
+  "meta": { "requestId": "..." }
 }
 ```
 
@@ -86,12 +86,12 @@ Only the environment master can manage `/api-keys`, `/settings`, `/metrics` and 
 
 ```json
 {
-	"ids": ["<api-key-id>"],
-	"changes": {
-		"scopes": ["licenses:read", "usage:consume"],
-		"allGroups": false,
-		"groupIds": ["<group-id>"]
-	}
+  "ids": ["<api-key-id>"],
+  "changes": {
+    "scopes": ["licenses:read", "usage:consume"],
+    "allGroups": false,
+    "groupIds": ["<group-id>"]
+  }
 }
 ```
 
@@ -154,20 +154,20 @@ Example monthly counter:
 
 ```json
 {
-	"meters": {
-		"upsert": [
-			{
-				"name": "requests",
-				"limit": "1000",
-				"schedule": {
-					"interval": "month",
-					"day": 1,
-					"time": "00:00",
-					"timezone": "UTC"
-				}
-			}
-		]
-	}
+  "meters": {
+    "upsert": [
+      {
+        "name": "requests",
+        "limit": "1000",
+        "schedule": {
+          "interval": "month",
+          "day": 1,
+          "time": "00:00",
+          "timezone": "UTC"
+        }
+      }
+    ]
+  }
 }
 ```
 
@@ -259,6 +259,6 @@ Admission caps apply before expensive authenticated work. HTTP bodies are limite
 
 Shutdown stops admission and new background work, closes streams with a reconnect signal, cancels in-flight webhook transport and drains active HTTP/publication/delivery-settlement/maintenance work for up to 25 seconds. A cancelled network send has an unknown receiver outcome and remains retryable within its existing delivery budget; it is not reported as a successful delivery. A forced deadline is logged explicitly. Publication and delivery failures use independent bounded backoff and safe operational diagnostics. Dependency failure is not reported as current successful state.
 
-Use `bun doctor`, `bun check --types`, `bun lint`, `bun fmt <paths>` and focused `bun run test <paths>`. `bun check` runs the full checks and needs Docker; `bun run db:check` compares fresh generated SQL with committed migrations in isolated databases. Runtime checks are `bun run smoke:source`, `bun run smoke:container` and `bun run smoke:compose`. Follow active approval/validation limits. These commands describe coverage to run, not an assertion that the current checkout passed.
+Use `bun doctor`, `bun check --types`, native `bun lint`, native `bun fmt <paths>` and focused `bun run test <paths>`. `bun run format:check` checks formatting without writing; lint fixes are a separate `bun lint --fix <paths>` operation. Configure both native tools in `bunfig.toml`, with indentation supplied by `.editorconfig`. `bun check` includes lint and formatting checks and needs Docker; `bun run db:check` compares fresh generated SQL with committed migrations in isolated databases. Runtime checks are `bun run smoke:source`, `bun run smoke:container` and `bun run smoke:compose`. Follow active approval/validation limits. These commands describe coverage to run, not an assertion that the current checkout passed.
 
 The [CI workflow](../.github/workflows/server.yml) targets Linux AMD64/ARM64. The pinned Windows Bun runtime forcibly terminates a child sent `SIGTERM`, so Windows source smoke verifies bounded termination rather than graceful signal handling. Linux source/container smoke requires WebSocket restart notification and a clean drain. Other operating-system runtime behavior is not established by type checks. `v3` pushes run checks only. [Release policy](../.github/RELEASE_POLICY.md) uses versioned source/container releases without automatic latest promotion. See [implementation decisions](IMPLEMENTATION.md) for transaction, audit and concurrency details.
