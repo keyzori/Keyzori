@@ -29,6 +29,26 @@ test.each([
 	},
 );
 
+test("the documented Compose image default stays release-managed and matches Compose", async () => {
+	const compose = await Bun.file(resolve(root, "compose.yml")).text();
+	const guide = await Bun.file(resolve(root, "src/README.md")).text();
+	const versionRow = guide
+		.split(/\r?\n/)
+		.find((line) => /^\|\s*`KZ_VERSION`\s*\|/.test(line));
+	const defaults = Array.from(
+		compose.matchAll(/\$\{KZ_VERSION:-([^}]+)\}/g),
+		(match) => match[1],
+	);
+	expect(defaults.length).toBeGreaterThan(0);
+	for (const version of defaults)
+		expect(versionRow).toContain(`default \`${version}\``);
+	expect(versionRow).toContain("<!-- x-release-please-version -->");
+	const config: {
+		packages: Record<string, { "extra-files": string[] }>;
+	} = await Bun.file(resolve(root, "release-please-config.json")).json();
+	expect(config.packages["."]?.["extra-files"]).toContain("src/README.md");
+});
+
 test("local README links resolve", async () => {
 	const missing: string[] = [];
 	for (const source of ["README.md", "src/README.md"]) {

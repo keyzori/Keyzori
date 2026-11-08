@@ -11,7 +11,7 @@
 	"include-v-in-tag": true,
 	"packages": {
 		".": {
-			"extra-files": ["compose.yml", ".env.example"],
+			"extra-files": ["compose.yml", ".env.example", "src/README.md"],
 			"initial-version": "3.0.0-beta.1",
 			"package-name": "keyzori",
 			"release-type": "node"

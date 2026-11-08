@@ -1,23 +1,21 @@
 # Changelog
 
-## [3.0.0-beta.2](https://github.com/keyzori/Keyzori/compare/v3.0.0-beta.1...v3.0.0-beta.2) (2026-11-08)
+## [3.0.0-beta.2](https://github.com/keyzori/Keyzori/compare/v2.0.3...v3.0.0-beta.2) (2026-11-08)
 
+This release carries forward the v3 redesign documented in the [unreleased beta.1 entry](https://github.com/keyzori/Keyzori/blob/main/CHANGELOG.md#300-beta1-unreleased). The following updates were made after that initial source baseline.
 
-### ⚠ BREAKING CHANGES
+### Breaking changes
 
-* v2 replaces the v1 HTTP API, settings, credential formats and database schema. V1 databases require a separate fresh v2 deployment; no in-place upgrade is supported. The console, installable plugins and Stripe integration are not included. Stable deployment support is Linux x64 and ARM64; Windows remains experimental and macOS runtime behaviour is untested. Elysia 2 beta remains a pinned dependency.
+- V2 databases require a separate fresh v3 database; no in-place conversion is supported. Incompatible migration history is refused without resetting or deleting existing data.
 
-### Features
+### Bug fixes
 
-* integrate v2 licensing server into main ([e00df80](https://github.com/keyzori/Keyzori/commit/e00df8031882274ca08c00088afd34eae2af0701))
+- Avoid biased random subnet selection in runtime TLS fixtures ([bc35b27](https://github.com/keyzori/Keyzori/commit/bc35b27663a81534b47484c4f6dd05444b7cd042)).
 
+### Developer tooling
 
-### Bug Fixes
-
-* handle auth edge cases and refresh bun workflows ([#143](https://github.com/keyzori/Keyzori/issues/143)) ([6bf99c1](https://github.com/keyzori/Keyzori/commit/6bf99c17ded544b42b236d4255de57ea29acc081))
-* **release:** locate staged drafts through the release list ([c0f60fd](https://github.com/keyzori/Keyzori/commit/c0f60fd43495ca649e641d5873493e058aec9666))
-* **release:** stage immutable release assets before publication ([d705316](https://github.com/keyzori/Keyzori/commit/d705316975e642af213a8d210e43bab643cc2b26))
-* restore listener host isolation ([#135](https://github.com/keyzori/Keyzori/issues/135)) ([ba3ba16](https://github.com/keyzori/Keyzori/commit/ba3ba16fc0ce9b586b73103bd83502213fcb8be0))
+- Replace Biome with Bun's native linter and formatter, retaining fatal warnings and excluding generated migrations from formatting ([2afb26c](https://github.com/keyzori/Keyzori/commit/2afb26c37a96e161f7ecd65e1012ca30d8c9c821)).
+- Remove checked-in task planning and implementation artifacts ([33a661c](https://github.com/keyzori/Keyzori/commit/33a661c801f602c44c2ead4d1a0a782d932e2c6b)).
 
 ## 3.0.0-beta.1 (unreleased)
 
@@ -52,6 +50,6 @@ The entries below describe past releases, not current deployment instructions or
 
 ### 2.0.0 (2026-10-04)
 
-- Replace the previous API, settings, credentials and database schema with the v2 service ([e00df80](https://github.com/keyzori/Keyzori/commit/e00df8031882274ca08c00088afd34eae2af0701)).
+- Replace the previous API, settings, credentials and database schema with the v2 service ([e00df80](https://github.com/keyzori/Keyzori/commit/e00df8031882274ca08c00088afd34eae2af0701)). V1 databases require a separate fresh v2 deployment; no in-place upgrade is supported.
 - Restore listener host isolation ([#135](https://github.com/keyzori/Keyzori/issues/135), [ba3ba16](https://github.com/keyzori/Keyzori/commit/ba3ba16fc0ce9b586b73103bd83502213fcb8be0)).
 - Refuse incompatible or unversioned databases before changing stored data, and verify published multi-platform image identity ([#138](https://github.com/keyzori/Keyzori/pull/138)).
