@@ -3,100 +3,149 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { KeyGenerator } from "../core/security/KeyGenerator";
-import { ArtifactContract } from "../tests/fixtures/ArtifactContract";
+import { RuntimeContract } from "../tests/fixtures/RuntimeContract";
+import { command } from "./command";
 
 const project = `keyzori-compose-${Bun.randomUUIDv7()}`;
 const scratch = await mkdtemp(join(tmpdir(), "keyzori-compose-"));
-if (!relative(tmpdir(), scratch).startsWith("keyzori-compose-"))
-	throw new Error("Unsafe temporary Compose path");
+if (
+	!relative(tmpdir(), scratch).startsWith("keyzori-compose-") ||
+	!/^keyzori-compose-[0-9a-f-]{36}$/.test(project)
+)
+	throw new Error("Unsafe temporary Compose identity");
 const file = join(scratch, "compose.json");
 const master = new KeyGenerator().master();
+const secret = () =>
+	Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
 const env = {
 	...Bun.env,
 	KZ_MASTER_KEY: master,
-	KZ_POSTGRES_PASSWORD: Buffer.from(
-		crypto.getRandomValues(new Uint8Array(24)),
-	).toString("hex"),
-	KZ_SERVER_DATABASE_PASSWORD: Buffer.from(
-		crypto.getRandomValues(new Uint8Array(24)),
-	).toString("hex"),
+	KZ_POSTGRES_PASSWORD: secret(),
+	KZ_SERVER_DATABASE_PASSWORD: secret(),
+	KZ_MIGRATION_DATABASE_PASSWORD: secret(),
+	KZ_WEBHOOK_ENCRYPTION_KEY: secret(),
+	KZ_VERSION: "smoke",
 };
-async function docker(args: string[]) {
-	const child = Bun.spawn(["docker", ...args], {
-		env,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [code, output] = await Promise.all([
-		child.exited,
-		new Response(child.stdout).text(),
-		new Response(child.stderr).text(),
-	]);
-	if (code !== 0) throw new Error(`Compose smoke command failed: ${args[0]}`);
-	return output.trim();
-}
-function compose(args: string[]) {
-	return docker(["compose", "-p", project, "-f", file, ...args]);
-}
+const cancellation = new AbortController();
+let phaseSignal = cancellation.signal;
+const interrupt = () =>
+	cancellation.abort(new Error("Compose smoke interrupted"));
+process.once("SIGINT", interrupt);
+process.once("SIGTERM", interrupt);
+const docker = async (args: string[]) =>
+	(
+		await command(["docker", ...args], {
+			env,
+			timeoutMs: 180000,
+			signal: phaseSignal,
+		})
+	).output;
+const compose = (args: string[]) =>
+	docker(["compose", "-p", project, "-f", file, ...args]);
+const object = (value: unknown): Record<string, unknown> => {
+	assert.ok(value && typeof value === "object" && !Array.isArray(value));
+	return Object.fromEntries(Object.entries(value));
+};
 async function origin() {
 	const port = (await compose(["port", "server", "6284"])).split(":").at(-1);
+	assert.ok(port && /^\d+$/.test(port));
 	return new URL(`http://127.0.0.1:${port}`);
 }
+const failures: unknown[] = [];
 try {
-	const config = JSON.parse(
-		await docker([
-			"compose",
-			"-p",
-			project,
-			"-f",
-			resolve("compose.yml"),
-			"config",
-			"--format",
-			"json",
-		]),
+	const config = object(
+		JSON.parse(
+			await docker([
+				"compose",
+				"-p",
+				project,
+				"-f",
+				resolve("compose.yml"),
+				"config",
+				"--format",
+				"json",
+			]),
+		),
 	);
-	assert.equal(config.services.postgres.ports, undefined);
-	assert.equal(config.services.redis.ports, undefined);
-	assert.equal(config.services.server.read_only, true);
-	config.services.server.image = "keyzori-server:test";
-	delete config.services.server.build;
-	config.services.server.ports = [
+	const services = object(config.services);
+	assert.equal(object(services.postgres).ports, undefined);
+	assert.equal(object(services.redis).ports, undefined);
+	const server = object(services.server);
+	assert.equal(server.read_only, true);
+	server.image = "keyzori-server:test";
+	delete server.build;
+	server.ports = [
 		{ target: 6284, published: "0", host_ip: "127.0.0.1", protocol: "tcp" },
 	];
+	const migrator = object(services.migrate);
+	migrator.image = "keyzori-server:test";
+	delete migrator.build;
+	services.server = server;
+	services.migrate = migrator;
+	config.services = services;
 	await Bun.write(file, JSON.stringify(config));
 	await compose(["up", "-d", "--wait", "--wait-timeout", "90"]);
-	let base = await origin();
-	await new ArtifactContract(base, master).run();
-	const headers = {
-		Authorization: `Bearer ${master}`,
-		"Content-Type": "application/json",
-		"Idempotency-Key": Bun.randomUUIDv7(),
-	};
-	const created = await fetch(new URL("/licenses", base), {
-		method: "POST",
-		headers,
-		body: JSON.stringify({ notes: "Compose persistence" }),
-	});
-	assert.equal(created.status, 200);
-	const issued = await created.json();
+	const contract = new RuntimeContract(await origin(), master);
+	const id = await contract.run();
+	const privileges = await compose([
+		"exec",
+		"-T",
+		"postgres",
+		"psql",
+		"-U",
+		"keyzori",
+		"-d",
+		"keyzori",
+		"-Atc",
+		"select has_schema_privilege('keyzori_server','public','CREATE'), has_table_privilege('keyzori_server','drizzle.__drizzle_migrations','UPDATE'), has_table_privilege('keyzori_server','audit_logs','UPDATE'), has_table_privilege('keyzori_server','audit_logs','DELETE'), has_table_privilege('keyzori_server','usage_operations','UPDATE'), has_table_privilege('keyzori_server','usage_operations','DELETE')",
+	]);
+	assert.equal(
+		privileges,
+		"f|f|f|f|f|f",
+		"Runtime role must not own schema, migration history, or mutate append-only history",
+	);
 	const container = await compose(["ps", "-q", "server"]);
-	const [inspection] = JSON.parse(await docker(["inspect", container]));
-	assert.equal(inspection.Config.User, "65532:65532");
-	assert.equal(inspection.HostConfig.ReadonlyRootfs, true);
-	await compose(["down", "--timeout", "30"]);
+	assert.equal(
+		await docker([
+			"inspect",
+			"--format",
+			"{{.Config.User}} {{.HostConfig.ReadonlyRootfs}}",
+			container,
+		]),
+		"65532:65532 true",
+	);
+	const stream = await contract.prepareShutdown();
+	try {
+		await compose(["down", "--timeout", "30"]);
+		assert.equal(await stream.closeCode(), 1012);
+	} finally {
+		stream.close();
+	}
 	await compose(["up", "-d", "--wait", "--wait-timeout", "90"]);
-	base = await origin();
-	const persisted = await fetch(
-		new URL(`/licenses?id=${issued.data.id}`, base),
-		{ headers },
+	const persisted = await new RuntimeContract(await origin(), master).data(
+		`/licenses/${id}`,
 	);
-	assert.equal(persisted.status, 200);
-	assert.equal((await persisted.json()).data.notes, "Compose persistence");
+	assert.equal(persisted.id, id);
+	assert.equal(persisted.enabled, false);
 	console.log(
-		"Compose: isolated fresh deployment, non-root read-only image, HTTP parity and PostgreSQL persistence passed",
+		"Compose smoke passed: migration/runtime roles, source image, persistence and disabled-key retention",
 	);
+} catch (error) {
+	failures.push(error);
 } finally {
-	if (await Bun.file(file).exists())
-		await compose(["down", "--volumes", "--timeout", "30"]);
-	await rm(scratch, { recursive: true, force: true });
+	process.removeListener("SIGINT", interrupt);
+	process.removeListener("SIGTERM", interrupt);
+	phaseSignal = AbortSignal.timeout(60000);
+	try {
+		if (await Bun.file(file).exists())
+			await compose(["down", "--volumes", "--timeout", "30"]);
+	} catch (error) {
+		failures.push(error);
+	} finally {
+		await rm(scratch, { recursive: true, force: true }).catch((error) =>
+			failures.push(error),
+		);
+	}
 }
+if (failures.length)
+	throw new AggregateError(failures, "Compose smoke or cleanup failed");

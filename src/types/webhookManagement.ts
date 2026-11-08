@@ -5,11 +5,9 @@ import type { webhookModel } from "../plugins/webhooks/model";
 
 export type $Webhook = typeof webhooks.$inferSelect;
 export type $WebhookDelivery = typeof deliveries.$inferSelect;
-export type $WebhookClaim = Pick<$WebhookDelivery, "id" | "payload"> & {
-	url: string;
-	timeoutMs: number;
-};
+export type $WebhookClaim = $WebhookDelivery;
 export type $WebhookCreate = UnwrapSchema<typeof webhookModel.create>;
 export type $WebhookUpdate = UnwrapSchema<typeof webhookModel.update>;
 export type $WebhookAction = UnwrapSchema<typeof webhookModel.enable>;
 export type $WebhookDelete = UnwrapSchema<typeof webhookModel.delete>;
+export type $WebhookRecovery = UnwrapSchema<typeof webhookModel.recovery>;

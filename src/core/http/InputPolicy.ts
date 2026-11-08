@@ -113,6 +113,16 @@ export class InputPolicy {
 			throw new HttpError("INVALID_REQUEST");
 	}
 	ids(ids: string[]) {
+		if (
+			ids.length > 100 ||
+			ids.some(
+				(id) =>
+					!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+						id,
+					),
+			)
+		)
+			throw new HttpError("INVALID_REQUEST");
 		const canonical = ids.map((id) => id.toLowerCase());
 		if (!canonical.length || new Set(canonical).size !== canonical.length)
 			throw new HttpError("INVALID_REQUEST");

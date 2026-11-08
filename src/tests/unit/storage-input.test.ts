@@ -78,13 +78,13 @@ describe("storage-compatible input", () => {
 			"0e-16383",
 			"0e131071",
 			"9007199254740993",
-			`0.${"0".repeat(16382)}1`,
 		])
 			expect(
 				() => query({ "metadataNumber.cost": value }),
 				value.slice(0, 30),
 			).not.toThrow();
 		for (const value of [
+			`0.${"0".repeat(16382)}1`,
 			"1e-16384",
 			"0e-1000000",
 			"1e-1000000",

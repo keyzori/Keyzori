@@ -12,3 +12,6 @@ export type $LicenseDelete = UnwrapSchema<typeof licenseModel.delete>;
 export type $MeterAdjustment = UnwrapSchema<typeof licenseModel.adjust>;
 export type $HardwareRemoval = UnwrapSchema<typeof licenseModel.removeHardware>;
 export type $IpRemoval = UnwrapSchema<typeof licenseModel.removeIps>;
+
+export type $UsageConsume = UnwrapSchema<typeof licenseModel.consume>;
+export type $Registration = UnwrapSchema<typeof licenseModel.register>;

@@ -10,7 +10,8 @@ import { rotateLicense } from "./routes/rotate";
 import { adjustMeterLicense } from "./routes/adjust-meter";
 import { removeHardwareLicense } from "./routes/remove-hardware";
 import { removeIpLicense } from "./routes/remove-ip";
-import { selfLicense } from "./routes/self";
+import { consumeLicense } from "./routes/consume";
+import { registerLicense } from "./routes/register";
 
 export const licenseRoutes = (service: $Licenses, requests: $Requests) =>
 	new Elysia({ normalize: false })
@@ -24,4 +25,5 @@ export const licenseRoutes = (service: $Licenses, requests: $Requests) =>
 		.use(adjustMeterLicense(service, requests))
 		.use(removeHardwareLicense(service, requests))
 		.use(removeIpLicense(service, requests))
-		.use(selfLicense(service, requests));
+		.use(consumeLicense(service, requests))
+		.use(registerLicense(service, requests));

@@ -90,4 +90,98 @@ describe("environment configuration", () => {
 			expect(String(error)).not.toContain(secret);
 		}
 	});
+
+	test("migration configuration does not require runtime credentials", () => {
+		expect(
+			Config.database(
+				{ KZ_MIGRATION_DATABASE_URL: "postgresql://localhost/migration_test" },
+				true,
+			),
+		).toEqual({
+			databaseUrl: "postgresql://localhost/migration_test",
+			poolSize: 10,
+		});
+		expect(
+			Config.database({ KZ_DATABASE_URL: environment.KZ_DATABASE_URL }, true)
+				.databaseUrl,
+		).toBe(environment.KZ_DATABASE_URL);
+		expect(() =>
+			Config.database(
+				{ KZ_MIGRATION_DATABASE_URL: "https://private.invalid/secret" },
+				true,
+			),
+		).toThrow("KZ_MIGRATION_DATABASE_URL");
+	});
+
+	test("webhook encryption is optional and validates without revealing its value", () => {
+		expect(new Config(environment).webhookEncryptionKey).toBeUndefined();
+		const value = "ab".repeat(32);
+		expect(
+			new Config({ ...environment, KZ_WEBHOOK_ENCRYPTION_KEY: value })
+				.webhookEncryptionKey,
+		).toBe(value);
+		expect(
+			() => new Config({ ...environment, KZ_WEBHOOK_ENCRYPTION_KEY: "secret" }),
+		).toThrow("64 hexadecimal");
+	});
+
+	test("origin lists and workload bounds are explicit", () => {
+		const config = new Config({
+			...environment,
+			KZ_WEBHOOK_ALLOWED_ORIGINS: "https://hooks.example",
+			KZ_STREAM_ORIGINS: "http://localhost:3000,https://admin.example",
+			KZ_MAX_IN_FLIGHT: "256",
+		});
+		expect(config.webhookAllowedOrigins).toEqual(["https://hooks.example"]);
+		expect(config.streamOrigins).toHaveLength(2);
+		expect(config.maxInFlight).toBe(256);
+		for (const value of [
+			"*",
+			"https://hooks.example/path",
+			"https://user:secret@hooks.example",
+			"http://hooks.example",
+		])
+			expect(
+				() => new Config({ ...environment, KZ_WEBHOOK_ALLOWED_ORIGINS: value }),
+			).toThrow("KZ_WEBHOOK_ALLOWED_ORIGINS");
+		expect(
+			() => new Config({ ...environment, KZ_MAX_STREAMS: "10001" }),
+		).toThrow("KZ_MAX_STREAMS");
+		expect(() => new Config({ ...environment, KZ_MAX_IN_FLIGHT: "0" })).toThrow(
+			"KZ_MAX_IN_FLIGHT",
+		);
+	});
+	test("private webhook exceptions are operator-only bounded JSON and never echo credentials", () => {
+		const origin = "http://127.0.0.1:8443";
+		const config = new Config({
+			...environment,
+			KZ_WEBHOOK_ALLOWED_ORIGINS: origin,
+			KZ_WEBHOOK_PRIVATE_DESTINATIONS: JSON.stringify([
+				{ origin, cidrs: ["127.0.0.1/32"] },
+			]),
+		});
+		expect(config.webhookPrivateDestinations).toEqual([
+			{ origin, cidrs: ["127.0.0.1/32"] },
+		]);
+		expect(new Config(environment).webhookPrivateDestinations).toEqual([]);
+		for (const invalid of [
+			"{",
+			"null",
+			'{"allowPrivate":true}',
+			JSON.stringify([
+				{ origin: "http://user:private-secret@host", cidrs: ["10.0.0.0/8"] },
+			]),
+		]) {
+			try {
+				new Config({
+					...environment,
+					KZ_WEBHOOK_PRIVATE_DESTINATIONS: invalid,
+				});
+				throw new Error("Expected rejection");
+			} catch (error) {
+				expect(String(error)).toContain("KZ_WEBHOOK_PRIVATE_DESTINATIONS");
+				expect(String(error)).not.toContain("private-secret");
+			}
+		}
+	});
 });

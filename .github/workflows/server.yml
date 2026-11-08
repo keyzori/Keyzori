@@ -1,7 +1,7 @@
 name: Server
 on:
   push:
-    branches: [main, v2]
+    branches: [main, v3]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -12,20 +12,18 @@ concurrency:
 jobs:
   required:
     name: Required checks
-    needs: [workflows, verify, binaries]
+    needs: [workflows, verify]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require workflows, Linux checks and native packages
+      - name: Require workflows and Linux checks
         env:
           WORKFLOW_RESULT: ${{ needs.workflows.result }}
           VERIFY_RESULT: ${{ needs.verify.result }}
-          BINARY_RESULT: ${{ needs.binaries.result }}
         run: |
           test "$WORKFLOW_RESULT" = success
           test "$VERIFY_RESULT" = success
-          test "$BINARY_RESULT" = success
 
   workflows:
     name: Workflow checks
@@ -37,12 +35,6 @@ jobs:
           persist-credentials: false
       - name: Check workflows with actionlint 1.7.12
         run: docker run --rm --volume "$PWD:/repo:ro" --workdir /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
-
-  binaries:
-    name: Native packages
-    uses: ./.github/workflows/binaries.yml
-    with:
-      ref: ${{ github.sha }}
 
   verify:
     name: Linux checks (${{ matrix.target }})
@@ -65,9 +57,8 @@ jobs:
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - run: bun run check
-      - run: bun src/scripts/test-services.ts exec bun src/scripts/artifact-smoke.ts source
+      - run: bun run openapi
+      - run: bun run smoke:source
       - run: docker build -f src/Dockerfile -t keyzori-server:test .
-      - run: bun src/scripts/test-services.ts exec bun src/scripts/container-smoke.ts image
-      - run: bun src/scripts/compose-smoke.ts
-      - if: always()
-        run: bun src/scripts/test-services.ts stop
+      - run: bun run smoke:container
+      - run: bun run smoke:compose

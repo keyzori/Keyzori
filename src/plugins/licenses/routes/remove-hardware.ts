@@ -6,7 +6,7 @@ export const removeHardwareLicense = (
 	service: $Licenses,
 	requests: $Requests,
 ) =>
-	guard(requests, "licenses:update").post(
+	guard(requests, "devices:remove").post(
 		"/licenses/hardware/remove",
 		{
 			body: licenseModel.removeHardware,
@@ -15,7 +15,7 @@ export const removeHardwareLicense = (
 				tags: ["License"],
 				summary: "remove-hardware licenses",
 				security: [{ bearerAuth: [] }],
-				"x-required-scope": "licenses:update",
+				"x-required-scope": "devices:remove",
 			},
 		},
 		({ body, operation }) => service.removeHardware(body, operation),

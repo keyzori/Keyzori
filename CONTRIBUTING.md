@@ -1,27 +1,38 @@
 # Contributing
 
-Use the pinned Bun 1.4.4 canary and Docker. Server code lives in `src/`.
+Keyzori runs directly from TypeScript using Bun. Use the exact runtime from `.bun-version` and `.bun-revision`; dependency versions remain locked, including the Elysia 2 beta and Drizzle 1 release candidate.
 
 ```sh
+bun doctor
 bun install --frozen-lockfile
-bun run dev
-bun run check
+bun check --types
+bun lint
+bun run format:check
+bun run test:unit
 ```
 
-Set up `.env` using the [server guide](src/README.md). Development runs from TypeScript source. `bun run check` covers types, lint, migrations and tests with temporary PostgreSQL/Redis containers. `bun run test:unit` needs no services.
+`bun doctor` checks the full revision, not just `bun --version`, and reads direct installed package manifests to compare their versions with exact dependency pins. A current lockfile alone does not prove installed directories match it. The pin is `bun@1.4.4-canary.20261022.1`, revision `1.4.4-canary.1+963452075`; Bun types are `1.4.4`. The shared CI setup action and Dockerfile install this exact package and verify its revision. Moving canary tags are not substitutes. Update runtime pins, `packageManager`, and verified revision together.
 
-Use extensionless code imports, tabs, double quotes and small services with explicit dependencies. Add tests when changing behaviour. Keep API schemas and docs in sync, and never commit secrets or production data.
+`bun check --types` is a narrow diagnostic and does not start external services. It deliberately remains available when diagnosing a runtime mismatch; report the actual revision with results. `bun check` requires the pin and runs types, native lint/format checks, schema verification and all tests.
 
-For database changes, run `bun run db:generate` and `bun run db:check`. Review the generated SQL; never edit an applied migration. This rewrite starts with a fresh database.
+Set up the environment using the [server guide](src/README.md). Direct Bun development loads the local `.env` conventionally; the container explicitly disables environment-file loading and uses its supplied environment. Generate the environment master credential with `bun run master-key`.
 
-`bun run build` creates a Linux x64 binary and API reference in `dist/server/`; use `bun run build linux-arm64` for ARM64. Docker deploys the binary. `bun run build:verify` checks all supported build targets for leaked build settings. CI also checks startup, HTTPS, scheduled work, shutdown and Compose persistence.
+## Database and testing
 
-Use conventional commit messages such as `fix: correct usage reset`. [Release Please](.github/RELEASE_POLICY.md) manages v2 releases from `main`. Report security issues privately using [SECURITY.md](SECURITY.md).
+Use Drizzle. Run `bun run db:generate` for schema changes and review the generated SQL. `bun run db:migrate` is an explicit operation using `KZ_MIGRATION_DATABASE_URL`; the runtime uses `KZ_DATABASE_URL` and verifies exact history without changing schema. The migration command needs neither Redis nor an API master key. An incompatible or unversioned nonempty database is refused without modifying data.
 
-## Bun runtime
+`bun run db:check` independently generates a fresh Drizzle schema, applies it and the committed SQL to separate disposable databases, and compares columns, defaults, constraints, indexes, enums, triggers, sequences, functions and row policies. It also checks that migration execution leaves cluster-wide role authority unchanged; runtime-role privilege tests cover the separate deployment grants. It requires Docker. Database/API tests run through `bun run test <test-paths>`. Each test-service invocation owns uniquely labelled containers and removes only inspected owned container IDs. Concurrent runs do not share a state file; interrupted startup and all-settled cleanup have deadlines and focused regression coverage.
 
-`.bun-version` pins the official npm package `bun@1.4.4-canary.20261022.1`; `.bun-revision` records its verified runtime revision, `1.4.4-canary.1+963452075`. `bun --version` only reports `1.4.4`, so use `bun --revision` to identify the canary. The GitHub `canary` release and Docker canary tags move independently; they are not interchangeable with this package.
+Add regression coverage for changed behavior. Use the smallest relevant checks and follow the user's current approval/validation limits. Do not run a full suite or Docker checks when they have been held. Do not weaken checks to hide failures.
 
-The shared CI action installs the package into a temporary directory with `bun add --global --trust`, then verifies the revision before any project commands. The Docker build uses the same package and revision check. Both use stable Bun 1.4.4 only to bootstrap the installer. Bun types are pinned to 1.4.3, the newest published `@types/bun` package available for this update.
+## Runtime and delivery
 
-Update `.bun-version`, `.bun-revision` and `packageManager` together after verifying all native platforms. Runtime pins require manual review while this canary is selected. PR checks build and package all five binary targets, verify artifact downloads and prepare checksums, alongside Linux source, container and Compose checks. Windows remains experimental and macOS runtime behaviour remains untested.
+`bun run start` serves source; no application executable is built. The Docker image includes the pinned Bun runtime, production dependencies, source, migrations and LICENSE. It runs as UID 65532 with a read-only root filesystem under Compose. An explicit migrator job owns schema changes; the server role has no DDL or migration-history writes. Audit and accepted usage history are append-only to the runtime role.
+
+Runtime packaging changes require the source/container/Compose smoke checks before qualification. These checks use disposable data and share consumption/replay/rotation, credential secrecy and WebSocket reconnect/authorization/shutdown assertions. Linux source and exact-image checks also run the real signer/dispatcher against an isolated local TLS receiver, including certificate trust, redirects, cancellation and an in-flight shutdown barrier. They require OpenSSL and Linux Docker networking; Windows smoke output identifies this coverage limit. The Compose smoke additionally verifies restricted database privileges, persistence, disabled-key retention and the non-root read-only runtime.
+
+Use Bun's built-in `bun fmt <paths>` for scoped formatting and `bun run format:check` for a read-only formatting check. Native `bun lint` fails on warnings in this project; `bun lint --fix <paths>` applies lint fixes separately. Configuration lives in `bunfig.toml`, with tabs and double quotes preserved through `.editorconfig`. Generated migration assets are excluded. The scripts use `--no-script` to select the native tools explicitly. See the official [formatter](https://bun.com/docs/format) and [linter](https://bun.com/docs/lint) documentation.
+
+Use Conventional Commits and describe behavior, verification and breaking effects. [Release policy](.github/RELEASE_POLICY.md) covers the main-branch release process; `v3` pushes only run CI. Do not deploy, publish, merge or reset data without the task's authorization.
+
+Report vulnerabilities privately through [SECURITY.md](SECURITY.md).

@@ -5,12 +5,12 @@ labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: Do not include secrets, customer data, database URLs, device IDs, or vulnerability details. Use the private security process for vulnerabilities.
+      value: Do not include secrets, user data, database URLs, device IDs, or vulnerability details. Use the private security process for vulnerabilities.
   - type: input
     id: version
     attributes:
       label: Version
-      placeholder: v2.0.0 or commit
+      placeholder: Version or commit
     validations:
       required: true
   - type: dropdown

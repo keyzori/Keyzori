@@ -3,7 +3,7 @@ import { guard } from "../../../core/http/guard";
 import { licenseModel } from "../model";
 
 export const removeIpLicense = (service: $Licenses, requests: $Requests) =>
-	guard(requests, "licenses:update").post(
+	guard(requests, "ips:remove").post(
 		"/licenses/ips/remove",
 		{
 			body: licenseModel.removeIps,
@@ -12,7 +12,7 @@ export const removeIpLicense = (service: $Licenses, requests: $Requests) =>
 				tags: ["License"],
 				summary: "remove-ip licenses",
 				security: [{ bearerAuth: [] }],
-				"x-required-scope": "licenses:update",
+				"x-required-scope": "ips:remove",
 			},
 		},
 		({ body, operation }) => service.removeIps(body, operation),

@@ -13,8 +13,10 @@ import { ApiKeyService } from "../plugins/api-keys/ApiKeyService";
 import { AuditService } from "../plugins/audits/AuditService";
 import { FailureAuditService } from "../plugins/audits/FailureAuditService";
 import { HealthService } from "../plugins/health/HealthService";
-import { ItemService } from "../plugins/items/ItemService";
+import { GroupService } from "../plugins/groups/GroupService";
+import { ActivityService } from "../plugins/activity/ActivityService";
 import { LicenseService } from "../plugins/licenses/LicenseService";
+import { UsageHistory } from "../plugins/licenses/UsageHistory";
 import { LicenseDeletion } from "../plugins/licenses/LicenseDeletion";
 import { MeterService } from "../plugins/licenses/MeterService";
 import { SettingsService } from "../plugins/settings/SettingsService";
@@ -39,8 +41,10 @@ export class ServerServices {
 	readonly requests;
 	readonly apiKeys;
 	readonly health;
-	readonly items;
+	readonly groups;
+	readonly activity;
 	readonly licenses;
+	readonly usage;
 	readonly meters;
 	readonly users;
 	readonly validation;
@@ -70,9 +74,24 @@ export class ServerServices {
 			new RateLimiter(this.redis),
 			this.settings,
 			this.tracker,
+			config.maxInFlight,
+			config.peerRequestsPerMinute,
 		);
-		const idem = new IdempotencyService(this.database, this.settings);
+		const idem = new IdempotencyService(
+			this.database,
+			this.settings,
+			this.auth,
+		);
 		const events = new EventService();
+		this.activity = new ActivityService(
+			this.database,
+			this.auth,
+			this.redis,
+			config.streamOrigins,
+			config.maxStreams,
+			{},
+			this.metrics,
+		);
 		this.meters = new MeterService(this.audit, events);
 		const deletion = new LicenseDeletion(this.audit, events);
 		this.apiKeys = new ApiKeyService(
@@ -88,14 +107,13 @@ export class ServerServices {
 			this.metrics,
 			version,
 		);
-		this.items = new ItemService(
+		this.groups = new GroupService(
 			this.database,
 			this.auth,
 			this.audit,
 			events,
 			this.settings,
 			idem,
-			deletion,
 			new KeyGenerator(),
 		);
 		this.licenses = new LicenseService(
@@ -109,6 +127,7 @@ export class ServerServices {
 			deletion,
 			this.ip,
 		);
+		this.usage = new UsageHistory(this.database, this.auth);
 		this.users = new UserService(
 			this.database,
 			this.auth,
@@ -124,8 +143,6 @@ export class ServerServices {
 			this.settings,
 			this.ip,
 			this.meters,
-			idem,
-			this.audit,
 			new FailureAuditService(
 				this.database,
 				this.redis,
@@ -140,11 +157,20 @@ export class ServerServices {
 			this.audit,
 			this.settings,
 			idem,
+			{
+				encryptionKey: config.webhookEncryptionKey,
+				allowedOrigins: config.webhookAllowedOrigins,
+				privateDestinations: config.webhookPrivateDestinations,
+			},
 		);
 		this.dispatcher = new WebhookDispatcher(
 			this.database,
 			this.settings,
 			this.metrics,
+			this.auth,
+			config.webhookEncryptionKey,
+			config.webhookAllowedOrigins,
+			config.webhookPrivateDestinations,
 		);
 	}
 }

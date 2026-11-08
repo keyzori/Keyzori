@@ -15,5 +15,5 @@ export const settingsDefaults: $Settings = {
 	idempotencyRetentionSeconds: 86400,
 	webhookTimeoutSeconds: 10,
 	webhookHistoryDays: 30,
-	defaultPageLimit: 10,
+	defaultPageLimit: 50,
 };

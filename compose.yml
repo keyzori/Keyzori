@@ -1,16 +1,48 @@
 services:
+  migrate:
+    image: ghcr.io/keyzori/server:${KZ_VERSION:-3.0.0-beta.1} # x-release-please-version
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+    command: ["migrate"]
+    restart: "no"
+    environment:
+      KZ_MIGRATION_DATABASE_URL: postgresql://keyzori_migrator:${KZ_MIGRATION_DATABASE_PASSWORD:?Set KZ_MIGRATION_DATABASE_PASSWORD}@postgres:5432/keyzori
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck:
+      disable: true
   server:
-    image: ghcr.io/keyzori/server:${KZ_VERSION:-2.0.3} # x-release-please-version
+    image: ghcr.io/keyzori/server:${KZ_VERSION:-3.0.0-beta.1} # x-release-please-version
     build:
       context: .
       dockerfile: src/Dockerfile
     restart: unless-stopped
     ports:
-      - "6284:6284"
+      - "127.0.0.1:6284:6284"
     environment:
       KZ_DATABASE_URL: postgresql://keyzori_server:${KZ_SERVER_DATABASE_PASSWORD:?Set KZ_SERVER_DATABASE_PASSWORD}@postgres:5432/keyzori
       KZ_REDIS_URL: redis://redis:6379
       KZ_MASTER_KEY: ${KZ_MASTER_KEY:?Generate KZ_MASTER_KEY}
+      KZ_WEBHOOK_ENCRYPTION_KEY: ${KZ_WEBHOOK_ENCRYPTION_KEY:-}
+      KZ_WEBHOOK_ALLOWED_ORIGINS: ${KZ_WEBHOOK_ALLOWED_ORIGINS:-}
+      KZ_WEBHOOK_PRIVATE_DESTINATIONS: ${KZ_WEBHOOK_PRIVATE_DESTINATIONS:-}
+      KZ_STREAM_ORIGINS: ${KZ_STREAM_ORIGINS:-}
+      KZ_MAX_IN_FLIGHT: ${KZ_MAX_IN_FLIGHT:-128}
+      KZ_PEER_REQUESTS_PER_MINUTE: ${KZ_PEER_REQUESTS_PER_MINUTE:-600}
+      KZ_MAX_STREAMS: ${KZ_MAX_STREAMS:-100}
+      KZ_MAINTENANCE_RESET_ROWS: ${KZ_MAINTENANCE_RESET_ROWS:-100}
+      KZ_MAINTENANCE_RESET_TIME_MS: ${KZ_MAINTENANCE_RESET_TIME_MS:-5000}
+      KZ_MAINTENANCE_CLEANUP_ROWS: ${KZ_MAINTENANCE_CLEANUP_ROWS:-1000}
+      KZ_MAINTENANCE_CLEANUP_TIME_MS: ${KZ_MAINTENANCE_CLEANUP_TIME_MS:-5000}
+      KZ_MAINTENANCE_OBSERVATION_TIME_MS: ${KZ_MAINTENANCE_OBSERVATION_TIME_MS:-1000}
+      KZ_MAINTENANCE_RETRY_BASE_MS: ${KZ_MAINTENANCE_RETRY_BASE_MS:-60000}
+      KZ_MAINTENANCE_RETRY_MAX_MS: ${KZ_MAINTENANCE_RETRY_MAX_MS:-3600000}
+      KZ_EVENT_RETENTION_DAYS: ${KZ_EVENT_RETENTION_DAYS:-}
       KZ_API_HOST: 0.0.0.0
       KZ_API_PORT: 6284
       KZ_DATABASE_POOL_SIZE: ${KZ_DATABASE_POOL_SIZE:-10}
@@ -18,24 +50,23 @@ services:
       KZ_TRUSTED_PROXIES: ${KZ_TRUSTED_PROXIES:-}
       KZ_CLIENT_IP_HEADERS: ${KZ_CLIENT_IP_HEADERS:-}
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     stop_grace_period: 30s
     read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
   postgres:
-    image: postgres:18.0
+    image: postgres:18.0@sha256:41fc5342eefba6cc2ccda736aaf034bbbb7c3df0fdb81516eba1ba33f360162c
     restart: unless-stopped
     environment:
       POSTGRES_DB: keyzori
       POSTGRES_USER: keyzori
       POSTGRES_PASSWORD: ${KZ_POSTGRES_PASSWORD:?Set KZ_POSTGRES_PASSWORD}
       KZ_SERVER_DATABASE_PASSWORD: ${KZ_SERVER_DATABASE_PASSWORD:?Set KZ_SERVER_DATABASE_PASSWORD}
+      KZ_MIGRATION_DATABASE_PASSWORD: ${KZ_MIGRATION_DATABASE_PASSWORD:?Set KZ_MIGRATION_DATABASE_PASSWORD}
     volumes:
       - postgres:/var/lib/postgresql
       - ./deploy/postgres/01-roles.sh:/docker-entrypoint-initdb.d/01-roles.sh:ro
@@ -45,7 +76,7 @@ services:
       timeout: 3s
       retries: 12
   redis:
-    image: redis:8.2.1
+    image: redis:8.2.1@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     healthcheck:

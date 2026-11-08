@@ -2,16 +2,18 @@ import { t } from "elysia";
 import { httpModel } from "../../core/http/model";
 import { securityModel } from "../../core/security/model";
 import { meterModel } from "./meterModel";
+import { groupModel } from "../groups/model";
+import { userModel } from "../users/model";
 
 const fields = {
 	userId: t.Optional(t.Union([httpModel.id, t.Null()])),
-	itemId: t.Optional(t.Union([httpModel.id, t.Null()])),
+	groupId: t.Optional(t.Union([httpModel.id, t.Null()])),
 	expiresAt: t.Optional(httpModel.expiresAt),
 	deviceLimit: t.Optional(
-		t.Union([t.Integer({ minimum: 0, maximum: 2147483647 }), t.Null()]),
+		t.Union([t.Integer({ minimum: 0, maximum: 1000 }), t.Null()]),
 	),
 	ipLimit: t.Optional(
-		t.Union([t.Integer({ minimum: 0, maximum: 2147483647 }), t.Null()]),
+		t.Union([t.Integer({ minimum: 0, maximum: 1000 }), t.Null()]),
 	),
 	allowedIps: t.Optional(
 		t.Array(t.String({ minLength: 1, maxLength: 64 }), {
@@ -24,26 +26,14 @@ const fields = {
 	meters: t.Optional(meterModel.changes),
 };
 
-const meter = t.Object(
-	{
-		name: t.String(),
-		value: t.String(),
-		limit: t.String(),
-		allowOverage: t.Boolean(),
-		numericMode: t.UnionEnum(["integer", "decimal"]),
-		precision: t.Integer(),
-		schedule: t.Union([meterModel.schedule, t.Null()]),
-		nextResetAt: httpModel.expiresAt,
-		lastScheduledResetAt: httpModel.expiresAt,
-		lastResetAt: httpModel.expiresAt,
-	},
-	{ additionalProperties: false },
-);
-const safeFields = {
+const meter = meterModel.resource;
+const fieldsView = {
 	id: httpModel.id,
 	enabled: t.Boolean(),
 	userId: t.Union([httpModel.id, t.Null()]),
-	itemId: t.Union([httpModel.id, t.Null()]),
+	groupId: t.Union([httpModel.id, t.Null()]),
+	group: t.Union([groupModel.resource, t.Null()]),
+	user: t.Union([userModel.resource, t.Null()]),
 	expiresAt: httpModel.expiresAt,
 	deviceLimit: t.Union([t.Integer(), t.Null()]),
 	ipLimit: t.Union([t.Integer(), t.Null()]),
@@ -53,10 +43,9 @@ const safeFields = {
 	createdAt: t.String(),
 	updatedAt: t.String(),
 };
-const safe = t.Object(safeFields, { additionalProperties: false });
 const admin = t.Object(
 	{
-		...safeFields,
+		...fieldsView,
 		disabledReason: t.Union([t.String(), t.Null()]),
 		notes: httpModel.notes,
 		keyFormat: securityModel.keyFormat,
@@ -68,7 +57,83 @@ const admin = t.Object(
 	{ additionalProperties: false },
 );
 
+const summary = t.Object(
+	{
+		id: httpModel.id,
+		enabled: t.Boolean(),
+		disabledReason: t.Union([t.String(), t.Null()]),
+		groupId: t.Union([httpModel.id, t.Null()]),
+		userId: t.Union([httpModel.id, t.Null()]),
+		expiresAt: httpModel.expiresAt,
+		createdAt: t.String(),
+		updatedAt: t.String(),
+	},
+	{ additionalProperties: false },
+);
+const usageEntry = meterModel.usageEntry;
 export const licenseModel = {
+	resource: admin,
+	receipt: t.Object(
+		{
+			data: t.Object(
+				{
+					id: httpModel.id,
+					licenseId: httpModel.id,
+					consumedAt: t.String({ format: "date-time" }),
+					historical: t.Literal(true),
+					outcome: t.Literal("accepted"),
+					entries: t.Array(usageEntry),
+				},
+				{ additionalProperties: false },
+			),
+		},
+		{ additionalProperties: false },
+	),
+	validation: t.Object(
+		{
+			...t.Omit(admin, ["notes", "group", "user"]).properties,
+			group: t.Union([t.Omit(groupModel.resource, ["notes"]), t.Null()]),
+			user: t.Union([t.Omit(userModel.resource, ["notes"]), t.Null()]),
+		},
+		{ additionalProperties: false },
+	),
+	meter,
+	consume: t.Object(
+		{
+			licenseId: httpModel.id,
+			expectedGroupId: t.Optional(t.Union([httpModel.id, t.Null()])),
+			hardwareId: t.Optional(t.String({ minLength: 1, maxLength: 512 })),
+			usage: t.Record(
+				t.String({ minLength: 1, maxLength: 128 }),
+				t.String({ pattern: "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$" }),
+				{ minProperties: 1, maxProperties: 128 },
+			),
+		},
+		{ additionalProperties: false },
+	),
+	consumed: t.Object(
+		{
+			data: t.Object(
+				{
+					id: httpModel.id,
+					licenseId: httpModel.id,
+					consumedAt: t.String(),
+					replayed: t.Boolean(),
+					entries: t.Array(usageEntry),
+				},
+				{ additionalProperties: false },
+			),
+		},
+		{ additionalProperties: false },
+	),
+	register: t.Object(
+		{
+			licenseId: httpModel.id,
+			hardwareId: t.Optional(t.String({ minLength: 1, maxLength: 512 })),
+			ip: t.Optional(t.String({ minLength: 1, maxLength: 64 })),
+		},
+		{ additionalProperties: false },
+	),
 	create: t.Object(fields, { additionalProperties: false }),
 	update: t.Object(
 		{
@@ -98,7 +163,9 @@ export const licenseModel = {
 			ids: httpModel.ids,
 			name: t.String({ minLength: 1, maxLength: 128 }),
 			action: t.UnionEnum(["set", "increment", "decrement", "reset"]),
-			value: t.Optional(t.Number({ minimum: 0, maximum: 999999999999999 })),
+			value: t.Optional(
+				t.String({ pattern: "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$" }),
+			),
 			reason: t.Optional(httpModel.reason),
 		},
 		{ additionalProperties: false },
@@ -108,6 +175,7 @@ export const licenseModel = {
 			ids: httpModel.ids,
 			hardwareIds: t.Array(t.String({ minLength: 1, maxLength: 512 }), {
 				minItems: 1,
+				maxItems: 100,
 				uniqueItems: true,
 			}),
 			reason: t.Optional(httpModel.reason),
@@ -119,6 +187,7 @@ export const licenseModel = {
 			ids: httpModel.ids,
 			ips: t.Array(t.String({ minLength: 1, maxLength: 64 }), {
 				minItems: 1,
+				maxItems: 100,
 				uniqueItems: true,
 			}),
 			reason: t.Optional(httpModel.reason),
@@ -129,12 +198,14 @@ export const licenseModel = {
 		{ data: t.Object({ ids: httpModel.ids }, { additionalProperties: false }) },
 		{ additionalProperties: false },
 	),
-	safe: t.Object({ data: safe }, { additionalProperties: false }),
 	read: t.Union([
 		t.Object({ data: admin }, { additionalProperties: false }),
-		t.Object({ data: safe }, { additionalProperties: false }),
 		t.Object(
-			{ data: t.Array(admin), nextCursor: t.Union([t.String(), t.Null()]) },
+			{
+				data: t.Array(summary),
+				nextCursor: t.Union([t.String(), t.Null()]),
+				pageLimit: t.Integer({ minimum: 1, maximum: 100 }),
+			},
 			{ additionalProperties: false },
 		),
 	]),

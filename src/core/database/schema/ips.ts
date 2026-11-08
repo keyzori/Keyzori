@@ -5,6 +5,7 @@ import {
 	bigserial,
 	timestamp,
 	unique,
+	index,
 } from "drizzle-orm/pg-core";
 import { licenses } from "./licenses";
 
@@ -19,9 +20,12 @@ export const ips = pgTable(
 		registrationOrder: bigserial("registration_order", {
 			mode: "number",
 		}).notNull(),
-		createdAt: timestamp("created_at", { withTimezone: true })
+		createdAt: timestamp("created_at", { withTimezone: true, precision: 3 })
 			.notNull()
 			.defaultNow(),
 	},
-	(table) => [unique("ips_license_host_unique").on(table.licenseId, table.ip)],
+	(table) => [
+		unique("ips_license_host_unique").on(table.licenseId, table.ip),
+		index("ips_license_order_idx").on(table.licenseId, table.registrationOrder),
+	],
 );

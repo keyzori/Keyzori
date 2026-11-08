@@ -1,14 +1,16 @@
 export type $Principal =
 	| { kind: "root"; id: "root"; name: "Root"; scopes: string[] }
-	| { kind: "api"; id: string; name: string; scopes: string[] }
 	| {
-			kind: "license";
+			kind: "api";
 			id: string;
-			name: "License";
+			name: string;
 			scopes: string[];
-			userId: string | null;
-			itemId: string | null;
+			/** Digest evidence used to reject requests authenticated before rotation. */
 			credentialHash: string;
+			/** Includes ungrouped licences when true. */
+			allGroups: boolean;
+			/** Selected group IDs; never grants access to ungrouped licences. */
+			groupIds: string[];
 	  };
 
 export type $Actor = {

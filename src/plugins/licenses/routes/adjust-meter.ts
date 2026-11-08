@@ -3,7 +3,7 @@ import { guard } from "../../../core/http/guard";
 import { licenseModel } from "../model";
 
 export const adjustMeterLicense = (service: $Licenses, requests: $Requests) =>
-	guard(requests, "licenses:update").post(
+	guard(requests, "usage:adjust").post(
 		"/licenses/meters/adjust",
 		{
 			body: licenseModel.adjust,
@@ -12,7 +12,7 @@ export const adjustMeterLicense = (service: $Licenses, requests: $Requests) =>
 				tags: ["License"],
 				summary: "adjust-meter licenses",
 				security: [{ bearerAuth: [] }],
-				"x-required-scope": "licenses:update",
+				"x-required-scope": "usage:adjust",
 			},
 		},
 		({ body, operation }) => service.adjust(body, operation),

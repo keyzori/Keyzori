@@ -30,14 +30,14 @@ export class Database {
 			async (tx) => {
 				await tx.execute(sql`select 1`);
 			},
-			"read",
+			"none",
 			Math.min(deadlineAt, Date.now() + 4000),
 		);
 		return true;
 	}
 	async transaction<T>(
 		work: (tx: $Transaction) => Promise<T>,
-		topology: "read" | "write" = "read",
+		topology: "read" | "write" | "none" = "read",
 		deadlineAt?: number,
 	) {
 		if (deadlineAt !== undefined && !Number.isSafeInteger(deadlineAt))
@@ -62,11 +62,12 @@ export class Database {
 					set_config('transaction_timeout', ${`${remaining}ms`}, true),
 					set_config('statement_timeout', ${`${Math.min(12000, remaining)}ms`}, true),
 					set_config('lock_timeout', ${`${Math.min(5000, remaining)}ms`}, true)`);
-							await tx.execute(
-								topology === "write"
-									? sql`select pg_advisory_xact_lock(6284, 1)`
-									: sql`select pg_advisory_xact_lock_shared(6284, 1)`,
-							);
+							if (topology !== "none")
+								await tx.execute(
+									topology === "write"
+										? sql`select pg_advisory_xact_lock(6284, 1)`
+										: sql`select pg_advisory_xact_lock_shared(6284, 1)`,
+								);
 							this.remaining(deadline);
 							const result = await work(tx);
 							this.remaining(deadline);
@@ -93,6 +94,35 @@ export class Database {
 		const remaining = deadlineAt - Date.now();
 		if (remaining <= 0) throw new HttpError("SERVICE_UNAVAILABLE");
 		return remaining;
+	}
+	/** Only callbacks with durable operation identity and no external effects may opt in. */
+	async idempotentTransaction<T>(
+		work: (tx: $Transaction) => Promise<T>,
+		topology: "read" | "write" | "none" = "read",
+		deadlineAt?: number,
+	): Promise<T> {
+		const deadline = Math.min(deadlineAt ?? Infinity, Date.now() + 14000);
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return await this.transaction(work, topology, deadline);
+			} catch (error) {
+				// These errors prove rollback. Connection loss/unknown COMMIT is never retried.
+				if (attempt >= 2 || !this.retryableConflict(error)) throw error;
+				const delay = 10 * 2 ** attempt + Math.floor(Math.random() * 10);
+				if (Date.now() + delay >= deadline)
+					throw new HttpError("SERVICE_UNAVAILABLE");
+				await Bun.sleep(delay);
+			}
+		}
+	}
+	private retryableConflict(error: unknown, depth = 0): boolean {
+		if (!error || typeof error !== "object" || depth > 5) return false;
+		if (
+			("code" in error && ["40001", "40P01"].includes(String(error.code))) ||
+			("errno" in error && ["40001", "40P01"].includes(String(error.errno)))
+		)
+			return true;
+		return "cause" in error && this.retryableConflict(error.cause, depth + 1);
 	}
 	private unavailable(error: unknown, depth = 0): boolean {
 		if (depth > 5 || !error || typeof error !== "object") return false;

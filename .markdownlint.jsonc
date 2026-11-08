@@ -2,5 +2,5 @@
 	"default": true,
 	"no-inline-html": false,
 	"line-length": false,
-	"first-line-heading": false
+	"first-line-heading": false,
 }

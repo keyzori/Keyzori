@@ -1,4 +1,4 @@
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { AuthService } from "../../core/auth/AuthService";
 import type { Database } from "../../core/database/Database";
 import { users } from "../../core/database/schema/users";
@@ -69,50 +69,54 @@ export class UserService {
 				await this.events.emit(tx, "user.created", { userId: row.id }, now);
 				return { data: this.admin(row) };
 			},
-			{ topology: "write" },
+			{
+				topology: "write",
+				authorize: (tx) => this.authorize(tx, operation, "users:create"),
+			},
 		);
 	}
 
 	async read(params: URLSearchParams, operation: $Operation) {
 		this.auth.require(operation.principal, "users:read");
-		const principal = operation.principal;
-		if (
-			principal.kind === "license" &&
-			(params.size !== 1 ||
-				params.get("id")?.toLowerCase() !== principal.userId ||
-				!principal.userId)
-		) {
-			throw new HttpError("FORBIDDEN");
-		}
 		return this.database.transaction(
 			async (tx) => {
-				const license = await this.auth.assertLicense(tx, principal);
-				if (license && params.get("id")?.toLowerCase() !== license.userId)
-					throw new HttpError("FORBIDDEN");
+				const principal = await this.auth.authorize(
+					tx,
+					operation.principal,
+					"users:read",
+				);
 				const settings = await this.settings.read(tx);
 				const query = new ResourceQuery(
 					params,
 					users,
 					settings.defaultPageLimit,
 				);
+				const visibility =
+					principal.kind === "root" || principal.allGroups
+						? undefined
+						: inArray(
+								users.id,
+								tx
+									.select({ id: licenses.userId })
+									.from(licenses)
+									.where(this.auth.groupFilter(principal, licenses.groupId)),
+							);
 				const rows = await tx
 					.select()
 					.from(users)
-					.where(query.where)
+					.where(and(query.where, visibility))
 					.orderBy(...query.order)
 					.limit(query.id ? 1 : query.limit + 1);
 				if (query.id) {
 					const row = rows[0];
 					if (!row) throw new HttpError("NOT_FOUND");
-					return {
-						data:
-							principal.kind === "license" ? this.public(row) : this.admin(row),
-					};
+					return { data: this.admin(row) };
 				}
 				const selected = rows.slice(0, query.limit);
 				const last = selected.at(-1);
 				return {
 					data: selected.map((row) => this.admin(row)),
+					pageLimit: query.limit,
 					nextCursor:
 						rows.length > query.limit && last ? query.cursor(last) : null,
 				};
@@ -180,7 +184,10 @@ export class UserService {
 				}
 				return { data };
 			},
-			{ topology: "write" },
+			{
+				topology: "write",
+				authorize: (tx) => this.authorize(tx, operation, "users:update"),
+			},
 		);
 	}
 
@@ -210,7 +217,13 @@ export class UserService {
 					.select({ id: licenses.id })
 					.from(licenses)
 					.where(inArray(licenses.userId, ids))
-					.orderBy(asc(licenses.id));
+					.orderBy(asc(licenses.id))
+					.limit(1001);
+				if (children.length > 1000)
+					throw new HttpError("CONFLICT", {
+						users:
+							"Delete associated licences in batches before deleting a user with more than 1000 licences",
+					});
 				await this.deletion.remove(
 					tx,
 					children.map((row) => row.id),
@@ -232,7 +245,10 @@ export class UserService {
 				}
 				return { data: { ids } };
 			},
-			{ topology: "write" },
+			{
+				topology: "write",
+				authorize: (tx) => this.authorize(tx, operation, "users:delete"),
+			},
 		);
 	}
 
@@ -301,19 +317,16 @@ export class UserService {
 				}
 				return { data };
 			},
-			{ topology: "write" },
+			{
+				topology: "write",
+				authorize: (tx) =>
+					this.authorize(
+						tx,
+						operation,
+						`users:${enabled ? "enable" : "disable"}`,
+					),
+			},
 		);
-	}
-
-	private public(row: $User) {
-		return {
-			id: row.id,
-			name: row.name,
-			enabled: row.enabled,
-			metadata: row.metadata,
-			createdAt: row.createdAt.toISOString(),
-			updatedAt: row.updatedAt.toISOString(),
-		};
 	}
 
 	private admin(row: $User) {
@@ -329,5 +342,16 @@ export class UserService {
 			createdAt: row.createdAt.toISOString(),
 			updatedAt: row.updatedAt.toISOString(),
 		};
+	}
+	private async authorize(
+		tx: $Transaction,
+		operation: $Operation,
+		scope: string,
+	) {
+		const principal = await this.auth.authorize(tx, operation.principal, scope);
+		this.auth.requireAllGroups(principal);
+		if (scope === "users:delete")
+			this.auth.require(principal, "licenses:delete");
+		return principal;
 	}
 }

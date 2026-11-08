@@ -125,7 +125,7 @@ describe("credential security", () => {
 
 	test("rejects bytes outside the unbiased alphabet range", () => {
 		const randomness = spyOn(crypto, "getRandomValues").mockImplementationOnce(
-			(array: Parameters<Crypto["getRandomValues"]>[0]) => {
+			<T extends Parameters<Crypto["getRandomValues"]>[0]>(array: T): T => {
 				if (array instanceof Uint8Array) {
 					array.fill(0);
 					array[0] = 255;

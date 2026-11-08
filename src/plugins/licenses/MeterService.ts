@@ -1,22 +1,32 @@
 import { and, asc, eq, sql } from "drizzle-orm";
+import { TypeBoxValidator } from "elysia";
 import { meters } from "../../core/database/schema/meters";
 import { HttpError } from "../../core/http/HttpError";
-import { Decision } from "../validate/Decision";
+import { InputPolicy } from "../../core/http/InputPolicy";
 import { DecimalPolicy } from "./DecimalPolicy";
 import { MeterSchedule } from "./MeterSchedule";
+import { meterModel } from "./meterModel";
 import type { AuditService } from "../audits/AuditService";
 import type { EventService } from "../webhooks/EventService";
 import type { $Transaction } from "../../types/database";
-import type { $Meter, $MeterChanges } from "../../types/meters";
+import type {
+	$Meter,
+	$MeterChanges,
+	$MeterView,
+	$UsageEntry,
+} from "../../types/meters";
 import type { $AuditInput } from "../../types/audit";
 
 export class MeterService {
-	private readonly decimal = new DecimalPolicy();
-	private readonly calendar = new MeterSchedule();
+	private readonly validator = new TypeBoxValidator(meterModel.changes);
+	private readonly input = new InputPolicy();
 	constructor(
 		private readonly audit: AuditService,
 		private readonly events: EventService,
+		private readonly decimal = new DecimalPolicy(),
+		private readonly calendar = new MeterSchedule(),
 	) {}
+
 	async definitions(
 		tx: $Transaction,
 		licenseId: string,
@@ -24,10 +34,14 @@ export class MeterService {
 		evidence: $AuditInput,
 		now: Date,
 	) {
+		if (!this.validator.Check(changes)) throw new HttpError("INVALID_REQUEST");
+		this.input.jsonText(changes);
 		const upsert = changes.upsert ?? [];
 		const remove = changes.remove ?? [];
 		const names = upsert.map((entry) => entry.name);
 		if (
+			upsert.length > 128 ||
+			remove.length > 128 ||
 			new Set(names).size !== names.length ||
 			new Set(remove).size !== remove.length ||
 			names.some((name) => remove.includes(name))
@@ -51,6 +65,13 @@ export class MeterService {
 				action: "meter.deleted",
 				before: this.view(row),
 			});
+			await this.events.emit(
+				tx,
+				"meter.deleted",
+				this.event(row, evidence),
+				now,
+				this.visibility(evidence),
+			);
 		}
 		for (const input of upsert) {
 			const current = existing.find((row) => row.name === input.name);
@@ -66,91 +87,136 @@ export class MeterService {
 				input.precision !== 0
 			)
 				throw new HttpError("INVALID_REQUEST");
-			const reducing = current !== undefined && precision < current.precision;
-			if (!reducing) this.decimal.value(input.limit, precision);
-			else if (!Number.isFinite(input.limit) || input.limit < 0)
-				throw new HttpError("INVALID_REQUEST");
-			const schedule =
+			const suppliedLimit =
+				input.limit === undefined ? (current?.limit ?? null) : input.limit;
+			const limit =
+				suppliedLimit === null
+					? null
+					: this.decimal.value(suppliedLimit, precision);
+			const suppliedSchedule =
 				input.schedule === undefined
 					? (current?.schedule ?? null)
 					: input.schedule;
-			const nextResetAt = schedule
-				? (await this.calendar.boundaries(tx, schedule, now)).next
+			const schedule = suppliedSchedule
+				? await this.calendar.validate(tx, suppliedSchedule)
 				: null;
-			const [numbers] = await tx
-				.select({
-					value: sql<string>`trunc(${current?.value ?? "0"}::numeric, ${precision})::text`,
-					limit: sql<string>`trunc(${input.limit.toString()}::numeric, ${precision})::text`,
-					invalidLimit: sql<boolean>`scale(trim_scale(${input.limit.toString()}::numeric)) > ${reducing ? current.precision : precision} or trunc(${input.limit.toString()}::numeric, ${precision}) >= power(10::numeric, ${15 - precision})`,
-					overflow: sql<boolean>`trunc(${current?.value ?? "0"}::numeric, ${precision}) >= power(10::numeric, ${15 - precision})`,
-					reached: sql<boolean>`${current?.value ?? "0"}::numeric < ${current?.limit ?? "0"}::numeric and trunc(${current?.value ?? "0"}::numeric, ${precision}) >= trunc(${input.limit.toString()}::numeric, ${precision})`,
-				})
-				.from(sql`(values (1)) as conversion`);
-			if (!numbers) throw new Error("Meter conversion failed");
-			if (numbers.overflow || numbers.invalidLimit)
-				throw new HttpError("INVALID_REQUEST");
-			const values = {
+			const startsAt =
+				input.startsAt === undefined
+					? (current?.startsAt ?? null)
+					: input.startsAt === null
+						? null
+						: this.input.timestamp(input.startsAt);
+			// Changing precision must be explicit and cannot silently discard recorded usage.
+			if (current) this.decimal.value(current.value, precision);
+			const configuration = {
 				name: input.name,
-				limit: numbers.limit,
-				value: numbers.value,
-				allowOverage: input.allowOverage ?? current?.allowOverage ?? false,
+				limit,
 				numericMode: mode,
 				precision,
 				schedule,
-				nextResetAt:
-					current && Bun.deepEquals(schedule, current.schedule, true)
-						? current.nextResetAt
-						: nextResetAt,
+				startsAt,
 			};
-			if (current) {
-				const before = this.view(current);
-				const [updated] = await tx
-					.update(meters)
-					.set(values)
-					.where(eq(meters.id, current.id))
-					.returning();
-				if (!updated) throw new Error("Meter disappeared");
-				const diff = this.audit.changes(before, this.view(updated));
-				if (diff.changed)
-					await this.audit.record(tx, {
-						...evidence,
-						action: "meter.updated",
-						before: diff.before,
-						after: diff.after,
-					});
-				if (numbers.reached) {
-					await this.audit.record(tx, {
-						...evidence,
-						action: "meter.limit_reached",
-						before,
-						after: this.view(updated),
-					});
-					await this.events.emit(
-						tx,
-						"meter.limit_reached",
-						{
-							licenseId,
-							meter: updated.name,
-							value: updated.value,
-							limit: updated.limit,
-						},
-						now,
-					);
-				}
-			} else {
-				const [created] = await tx
-					.insert(meters)
-					.values({ id: Bun.randomUUIDv7(), licenseId, ...values })
-					.returning();
-				if (!created) throw new Error("Meter creation failed");
+			if (
+				current &&
+				Bun.deepEquals(configuration, this.configuration(current), true)
+			)
+				continue;
+			const sameSchedule =
+				current && Bun.deepEquals(schedule, current.schedule, true);
+			const boundary =
+				schedule && !sameSchedule
+					? await this.calendar.boundaries(tx, schedule, now)
+					: null;
+			const values = {
+				...configuration,
+				periodStartedAt: sameSchedule
+					? current.periodStartedAt
+					: (boundary?.previous ?? null),
+				nextResetAt: sameSchedule
+					? current.nextResetAt
+					: (boundary?.next ?? null),
+			};
+			const [row] = current
+				? await tx
+						.update(meters)
+						.set({
+							...values,
+							definitionRevision: sql`${meters.definitionRevision} + 1`,
+						})
+						.where(eq(meters.id, current.id))
+						.returning()
+				: await tx
+						.insert(meters)
+						.values({ id: Bun.randomUUIDv7(), licenseId, ...values })
+						.returning();
+			if (!row) throw new Error("Meter definition returned no record");
+			const diff = this.audit.changes(
+				current ? this.view(current) : {},
+				this.view(row),
+			);
+			if (diff.changed)
 				await this.audit.record(tx, {
 					...evidence,
-					action: "meter.created",
-					after: this.view(created),
+					action: current ? "meter.updated" : "meter.created",
+					before: diff.before,
+					after: diff.after,
 				});
-			}
+			await this.events.emit(
+				tx,
+				current ? "meter.updated" : "meter.created",
+				this.event(row, evidence),
+				now,
+				this.visibility(evidence),
+			);
+			await this.limitCrossing(tx, current, row, evidence, now);
 		}
 	}
+
+	/** Presents overdue periods without changing stored counters or audit history. */
+	async projection(tx: $Transaction, row: $Meter, now: Date) {
+		return this.project(tx, row, now);
+	}
+
+	/** One read shares schedule calculations at one database instant, never across reads. */
+	async projectMany(tx: $Transaction, rows: $Meter[], now: Date) {
+		const boundaries = new Map<
+			string,
+			Awaited<ReturnType<MeterSchedule["boundaries"]>>
+		>();
+		const projected = [];
+		for (const row of rows)
+			projected.push(await this.project(tx, row, now, boundaries));
+		return projected;
+	}
+
+	private async project(
+		tx: $Transaction,
+		row: $Meter,
+		now: Date,
+		boundaries?: Map<string, Awaited<ReturnType<MeterSchedule["boundaries"]>>>,
+	) {
+		if (!row.schedule || (row.nextResetAt && row.nextResetAt > now))
+			return this.view(row);
+		// Include every stored field so malformed schedules cannot reuse a valid
+		// schedule's result and bypass validation. Property order is immaterial.
+		const key = JSON.stringify(
+			Object.entries(row.schedule).sort(([a], [b]) => a.localeCompare(b)),
+		);
+		let boundary = boundaries?.get(key);
+		if (!boundary) {
+			boundary = await this.calendar.boundaries(tx, row.schedule, now);
+			boundaries?.set(key, boundary);
+		}
+		return this.view({
+			...row,
+			value: "0",
+			periodStartedAt: boundary.previous,
+			nextResetAt: boundary.next,
+			lastScheduledResetAt: boundary.previous,
+		});
+	}
+
+	/** Caller holds the licence row lock before applying scheduled resets. */
 	async effective(
 		tx: $Transaction,
 		licenseId: string,
@@ -162,108 +228,125 @@ export class MeterService {
 			.from(meters)
 			.where(eq(meters.licenseId, licenseId))
 			.orderBy(asc(meters.name));
-		const effective = [];
+		const effective: $Meter[] = [];
 		for (const row of rows) {
-			if (row.schedule && (!row.nextResetAt || row.nextResetAt <= now)) {
-				const boundary = await this.calendar.boundaries(tx, row.schedule, now);
-				const [reset] = await tx
-					.update(meters)
-					.set({
-						value: "0",
-						nextResetAt: boundary.next,
-						lastScheduledResetAt: boundary.previous,
-						lastResetAt: now,
-					})
-					.where(eq(meters.id, row.id))
-					.returning();
-				if (!reset) throw new Error("Meter reset failed");
-				await this.audit.record(tx, {
-					...evidence,
-					action: "meter.reset",
-					before: { name: row.name, value: row.value },
-					after: {
-						name: row.name,
-						value: "0",
-						scheduledAt: boundary.previous.toISOString(),
-						executedAt: now.toISOString(),
-					},
-				});
-				await this.events.emit(
-					tx,
-					"meter.reset",
-					{ licenseId, meter: row.name, value: "0", limit: row.limit },
-					now,
-				);
-				effective.push(reset);
-			} else effective.push(row);
+			if (!row.schedule || (row.nextResetAt && row.nextResetAt > now)) {
+				effective.push(row);
+				continue;
+			}
+			const boundary = await this.calendar.boundaries(tx, row.schedule, now);
+			const [reset] = await tx
+				.update(meters)
+				.set({
+					value: "0",
+					periodStartedAt: boundary.previous,
+					nextResetAt: boundary.next,
+					lastScheduledResetAt: boundary.previous,
+					lastResetAt: now,
+				})
+				.where(eq(meters.id, row.id))
+				.returning();
+			if (!reset) throw new Error("Meter reset failed");
+			await this.audit.record(tx, {
+				...evidence,
+				action: "meter.reset",
+				before: this.view(row),
+				after: {
+					...this.view(reset),
+					scheduledAt: boundary.previous.toISOString(),
+					executedAt: now.toISOString(),
+				},
+			});
+			await this.events.emit(
+				tx,
+				"meter.reset",
+				this.event(reset, evidence),
+				now,
+				this.visibility(evidence),
+			);
+			effective.push(reset);
 		}
 		return effective;
 	}
-	validateUsage(rows: $Meter[], usage: Record<string, number> = {}) {
-		for (const [name, increment] of Object.entries(usage)) {
+
+	validateUsage(rows: $Meter[], usage: Record<string, string>, now?: Date) {
+		if (!usage || typeof usage !== "object" || Array.isArray(usage))
+			throw new HttpError("INVALID_REQUEST");
+		const entries = Object.entries(usage);
+		if (entries.length === 0 || entries.length > 128)
+			throw new HttpError("INVALID_REQUEST");
+		for (const [name, increment] of entries) {
 			const meter = rows.find((row) => row.name === name);
 			if (!meter) throw new HttpError("INVALID_USAGE_METER");
 			this.decimal.value(increment, meter.precision, true);
+			if (now && meter.startsAt && now < meter.startsAt)
+				throw new HttpError("CONFLICT", {
+					usage: `Counter ${name} has not started`,
+				});
 		}
 	}
+
+	/** Every requested increment succeeds in the surrounding transaction, or none do. */
 	async consume(
 		tx: $Transaction,
 		rows: $Meter[],
-		usage: Record<string, number> | undefined,
+		usage: Record<string, string>,
 		evidence: $AuditInput,
 		now: Date,
 	) {
-		this.validateUsage(rows, usage);
+		this.validateUsage(rows, usage, now);
+		const entries: $UsageEntry[] = [];
 		for (const row of rows) {
-			const increment =
-				usage && Object.hasOwn(usage, row.name) ? usage[row.name] : undefined;
-			const [check] = await tx
-				.select({
-					denied: sql<boolean>`not ${row.allowOverage} and (${row.value}::numeric >= ${row.limit}::numeric or ${row.value}::numeric + ${increment?.toString() ?? "0"}::numeric > ${row.limit}::numeric)`,
-					overflow: sql<boolean>`${row.value}::numeric + ${increment?.toString() ?? "0"}::numeric >= power(10::numeric, ${15 - row.precision})`,
-					next: sql<string>`(${row.value}::numeric + ${increment?.toString() ?? "0"}::numeric)::text`,
-					reached: sql<boolean>`${row.value}::numeric < ${row.limit}::numeric and ${row.value}::numeric + ${increment?.toString() ?? "0"}::numeric >= ${row.limit}::numeric`,
-				})
-				.from(sql`(values (1)) as meter_check`);
-			if (!check) throw new Error("Meter evaluation failed");
-			if (check.denied) throw new Decision("USAGE_LIMIT_REACHED");
-			if (check.overflow) throw new HttpError("INVALID_REQUEST");
-			if (increment !== undefined) {
-				await tx
-					.update(meters)
-					.set({ value: check.next })
-					.where(eq(meters.id, row.id));
-				if (check.reached) {
-					await this.audit.record(tx, {
-						...evidence,
-						action: "meter.limit_reached",
-						before: { name: row.name, value: row.value },
-						after: { name: row.name, value: check.next, limit: row.limit },
-					});
-					await this.events.emit(
-						tx,
-						"meter.limit_reached",
-						{
-							licenseId: row.licenseId,
-							meter: row.name,
-							value: check.next,
-							limit: row.limit,
-						},
-						now,
-					);
-				}
-			}
+			const increment = Object.hasOwn(usage, row.name)
+				? usage[row.name]
+				: undefined;
+			if (increment === undefined) continue;
+			const delta = this.decimal.value(increment, row.precision, true);
+			const next = sql`${meters.value} + ${delta}::numeric`;
+			const [updated] = await tx
+				.update(meters)
+				.set({ value: next })
+				.where(
+					and(
+						eq(meters.id, row.id),
+						eq(meters.value, row.value),
+						eq(meters.definitionRevision, row.definitionRevision),
+						eq(meters.resetGeneration, row.resetGeneration),
+						sql`(${meters.limit} is null or ${next} <= ${meters.limit}) and ${next} < power(10::numeric, ${15 - row.precision})`,
+					),
+				)
+				.returning();
+			if (!updated)
+				throw new HttpError("CONFLICT", {
+					usage: `Counter ${row.name} would exceed its limit or numeric range`,
+				});
+			entries.push({
+				...this.identity(updated),
+				name: row.name,
+				delta,
+				before: this.decimal.value(row.value, row.precision),
+				after: this.decimal.value(updated.value, row.precision),
+				limit:
+					row.limit === null
+						? null
+						: this.decimal.value(row.limit, row.precision),
+			});
+			await this.limitCrossing(tx, row, updated, evidence, now);
 		}
+		return entries;
 	}
+
 	async adjust(
 		tx: $Transaction,
 		licenseId: string,
 		name: string,
 		action: "set" | "increment" | "decrement" | "reset",
-		value: number | undefined,
+		value: string | undefined,
 		evidence: $AuditInput,
 		now: Date,
 	) {
+		if (!["set", "increment", "decrement", "reset"].includes(action))
+			throw new HttpError("INVALID_REQUEST");
 		const rows = await this.effective(tx, licenseId, evidence, now);
 		const row = rows.find((meter) => meter.name === name);
 		if (!row) throw new HttpError("INVALID_USAGE_METER");
@@ -277,49 +360,130 @@ export class MeterService {
 				: action === "set"
 					? sql`${input}::numeric`
 					: action === "increment"
-						? sql`${row.value}::numeric + ${input}::numeric`
-						: sql`greatest(0, ${row.value}::numeric - ${input}::numeric)`;
-		const [result] = await tx
-			.select({
-				next: sql<string>`(${next})::text`,
-				changed: sql<boolean>`${next} <> ${row.value}::numeric`,
-				overflow: sql<boolean>`${next} >= power(10::numeric, ${15 - row.precision})`,
-				reached: sql<boolean>`${row.value}::numeric < ${row.limit}::numeric and ${next} >= ${row.limit}::numeric`,
+						? sql`${meters.value} + ${input}::numeric`
+						: sql`greatest(0, ${meters.value} - ${input}::numeric)`;
+		const [updated] = await tx
+			.update(meters)
+			.set({
+				value: next,
+				...(action === "reset"
+					? {
+							lastResetAt: now,
+							resetGeneration: sql`${meters.resetGeneration} + 1`,
+						}
+					: {}),
 			})
-			.from(sql`(values (1)) as adjustment`);
-		if (!result || result.overflow) throw new HttpError("INVALID_REQUEST");
-		if (result.changed || action === "reset") {
-			await tx
-				.update(meters)
-				.set({
-					value: result.next,
-					...(action === "reset" ? { lastResetAt: now } : {}),
-				})
-				.where(and(eq(meters.licenseId, licenseId), eq(meters.name, name)));
+			.where(
+				and(
+					eq(meters.id, row.id),
+					sql`${next} < power(10::numeric, ${15 - row.precision})`,
+				),
+			)
+			.returning();
+		if (!updated) throw new HttpError("INVALID_REQUEST");
+		if (
+			this.decimal.value(updated.value, row.precision) !==
+				this.decimal.value(row.value, row.precision) ||
+			action === "reset"
+		) {
 			await this.audit.record(tx, {
 				...evidence,
 				action: `meter.${action}`,
-				before: { name, value: row.value },
-				after: { name, value: result.next },
+				before: this.view(row),
+				after: this.view(updated),
 			});
-			if (action === "reset" || result.reached)
-				await this.events.emit(
-					tx,
-					action === "reset" ? "meter.reset" : "meter.limit_reached",
-					{ licenseId, meter: name, value: result.next, limit: row.limit },
-					now,
-				);
+			await this.events.emit(
+				tx,
+				action === "reset" ? "meter.reset" : "meter.adjusted",
+				this.event(updated, evidence),
+				now,
+				this.visibility(evidence),
+			);
+			await this.limitCrossing(tx, row, updated, evidence, now);
 		}
 	}
-	view(row: $Meter) {
+
+	private configuration(row: $Meter) {
 		return {
 			name: row.name,
-			value: row.value,
-			limit: row.limit,
-			allowOverage: row.allowOverage,
+			limit:
+				row.limit === null
+					? null
+					: this.decimal.value(row.limit, row.precision),
 			numericMode: row.numericMode,
 			precision: row.precision,
 			schedule: row.schedule,
+			startsAt: row.startsAt,
+		};
+	}
+
+	private identity(row: $Meter) {
+		const periodStartedAt = row.periodStartedAt?.toISOString() ?? null;
+		return {
+			counterId: row.id,
+			definitionRevision: row.definitionRevision,
+			resetGeneration: row.resetGeneration,
+			periodId: `${row.id}:${row.definitionRevision}:${row.resetGeneration}:${periodStartedAt ?? "lifetime"}`,
+			periodStartedAt,
+			periodEndsAt: row.nextResetAt?.toISOString() ?? null,
+		};
+	}
+
+	private event(row: $Meter, evidence: $AuditInput) {
+		return {
+			...this.identity(row),
+			licenseId: row.licenseId,
+			...(evidence.groupId !== undefined ? { groupId: evidence.groupId } : {}),
+			meter: row.name,
+			value: this.decimal.value(row.value, row.precision),
+			limit:
+				row.limit === null
+					? null
+					: this.decimal.value(row.limit, row.precision),
+		};
+	}
+
+	/** Historical authority belongs in internal routing metadata, never the payload. */
+	private visibility(evidence: $AuditInput) {
+		return {
+			requiredGroupIds: evidence.requiredGroupIds,
+			requiresAllGroups: evidence.requiresAllGroups,
+		};
+	}
+
+	/** Definition changes and administrative adjustments can also cross a limit. */
+	private async limitCrossing(
+		tx: $Transaction,
+		before: $Meter | undefined,
+		after: $Meter,
+		evidence: $AuditInput,
+		now: Date,
+	) {
+		if (after.limit === null) return;
+		const [result] = await tx
+			.select({
+				crossed: sql<boolean>`(${before?.limit ?? null}::numeric is null or ${before?.value ?? "0"}::numeric < ${before?.limit ?? null}::numeric) and ${after.value}::numeric >= ${after.limit}::numeric`,
+			})
+			.from(sql`(values (1)) as comparison`);
+		if (result?.crossed)
+			await this.events.emit(
+				tx,
+				"meter.limit_reached",
+				{
+					...this.event(after, evidence),
+					limit: this.decimal.value(after.limit, after.precision),
+				},
+				now,
+				this.visibility(evidence),
+			);
+	}
+
+	view(row: $Meter): $MeterView {
+		return {
+			...this.configuration(row),
+			...this.identity(row),
+			value: this.decimal.value(row.value, row.precision),
+			startsAt: row.startsAt?.toISOString() ?? null,
 			nextResetAt: row.nextResetAt?.toISOString() ?? null,
 			lastScheduledResetAt: row.lastScheduledResetAt?.toISOString() ?? null,
 			lastResetAt: row.lastResetAt?.toISOString() ?? null,

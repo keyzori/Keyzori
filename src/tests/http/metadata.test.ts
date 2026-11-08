@@ -2,6 +2,16 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { TestHttp } from "../fixtures/TestHttp";
 import type { $Metadata } from "../../types/metadata";
 import type { $Operation } from "../../types/operation";
+import { t } from "elysia";
+import { httpModel } from "../../core/http/model";
+import { checkedJSON } from "../fixtures/Json";
+
+const metadataResource = t.Object({
+	id: httpModel.id,
+	metadata: httpModel.metadata,
+});
+const resourceResponse = t.Object({ data: metadataResource });
+const listResponse = t.Object({ data: t.Array(metadataResource) });
 
 const context = new TestHttp();
 const operation = (): $Operation => ({
@@ -22,7 +32,7 @@ beforeAll(async () => {
 afterAll(() => context.stop());
 
 describe("recursive metadata HTTP and persistence", () => {
-	for (const resource of ["items", "users", "licenses"]) {
+	for (const resource of ["groups", "users", "licenses"]) {
 		test(`${resource} create, read and replace retain nested JSON`, async () => {
 			const metadata = {
 				plan: "pro",
@@ -43,11 +53,13 @@ describe("recursive metadata HTTP and persistence", () => {
 				headers: { "Idempotency-Key": Bun.randomUUIDv7() },
 			});
 			expect(created.status).toBe(200);
-			const result = await created.json();
+			const result = await checkedJSON(created, resourceResponse);
 			expect(result.data.metadata).toEqual(metadata);
-			const read = await context.request(`/${resource}?id=${result.data.id}`);
+			const read = await context.request(`/${resource}/${result.data.id}`);
 			expect(read.status).toBe(200);
-			expect((await read.json()).data.metadata).toEqual(metadata);
+			expect((await checkedJSON(read, resourceResponse)).data.metadata).toEqual(
+				metadata,
+			);
 			const replacement = {
 				replacement: [{ deep: { active: false, missing: null } }],
 			};
@@ -56,8 +68,10 @@ describe("recursive metadata HTTP and persistence", () => {
 				body: { ids: [result.data.id], changes: { metadata: replacement } },
 			});
 			expect(updated.status).toBe(200);
-			const reread = await context.request(`/${resource}?id=${result.data.id}`);
-			expect((await reread.json()).data.metadata).toEqual(replacement);
+			const reread = await context.request(`/${resource}/${result.data.id}`);
+			expect(
+				(await checkedJSON(reread, resourceResponse)).data.metadata,
+			).toEqual(replacement);
 		});
 	}
 	test("typed scalar filters remain top-level and literal", async () => {
@@ -69,12 +83,12 @@ describe("recursive metadata HTTP and persistence", () => {
 			nested: { plan: "deep" },
 			"nested.plan": "literal",
 		};
-		const created = await context.request("/items", {
+		const created = await context.request("/groups", {
 			method: "POST",
 			body: { name: "Filtering", metadata },
 		});
 		expect(created.status).toBe(200);
-		const id = (await created.json()).data.id;
+		const id = (await checkedJSON(created, resourceResponse)).data.id;
 		for (const [key, value, matches] of [
 			["metadata.plan", "pro", true],
 			["metadataNumber.seats", "2", true],
@@ -86,15 +100,15 @@ describe("recursive metadata HTTP and persistence", () => {
 			["metadata.nested", '{"plan":"deep"}', false],
 		] as const) {
 			const response = await context.request(
-				`/items?${new URLSearchParams({ [key]: value })}`,
+				`/groups?${new URLSearchParams({ [key]: value })}`,
 			);
 			expect(response.status).toBe(200);
-			const rows = (await response.json()).data as { id: string }[];
+			const rows = (await checkedJSON(response, listResponse)).data;
 			expect(rows.some((row) => row.id === id)).toBe(matches);
 		}
 	});
 	test("unsafe keys are rejected on create and update without changing stored metadata", async () => {
-		for (const resource of ["items", "users", "licenses"]) {
+		for (const resource of ["groups", "users", "licenses"]) {
 			const created = await context.request(`/${resource}`, {
 				method: "POST",
 				body: {
@@ -104,7 +118,7 @@ describe("recursive metadata HTTP and persistence", () => {
 				headers: { "Idempotency-Key": Bun.randomUUIDv7() },
 			});
 			expect(created.status).toBe(200);
-			const id = (await created.json()).data.id;
+			const id = (await checkedJSON(created, resourceResponse)).data.id;
 			for (const key of ["__proto__", "constructor", "prototype"]) {
 				const metadata = JSON.parse(
 					`{"nested":[{"${key}":{"injected":true}}]}`,
@@ -123,16 +137,18 @@ describe("recursive metadata HTTP and persistence", () => {
 					});
 					expect(response.status).toBe(400);
 					expect(await response.json()).toMatchObject({
-						code: "INVALID_REQUEST",
+						error: { code: "INVALID_REQUEST" },
 					});
 				}
 			}
-			const read = await context.request(`/${resource}?id=${id}`);
-			expect((await read.json()).data.metadata).toEqual({ preserved: true });
+			const read = await context.request(`/${resource}/${id}`);
+			expect((await checkedJSON(read, resourceResponse)).data.metadata).toEqual(
+				{ preserved: true },
+			);
 		}
 	});
 	test("extreme nesting is rejected before recursive schema evaluation", async () => {
-		const response = await fetch(new URL("/items", context.app.server?.url), {
+		const response = await fetch(new URL("/groups", context.app.server?.url), {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${context.master}`,
@@ -141,7 +157,9 @@ describe("recursive metadata HTTP and persistence", () => {
 			body: `{"name":"Deep","metadata":${'{"child":'.repeat(10000)}true${"}".repeat(10000)}}`,
 		});
 		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({ code: "INVALID_REQUEST" });
+		expect(await response.json()).toMatchObject({
+			error: { code: "INVALID_REQUEST" },
+		});
 	});
 	test("invalid JSONB text is rejected before reaching storage", async () => {
 		for (const text of ["\0", "\ud800", "\udfff"]) {
@@ -149,13 +167,13 @@ describe("recursive metadata HTTP and persistence", () => {
 				{ nested: { value: text } },
 				{ nested: { [text]: true } },
 			]) {
-				const response = await context.request("/items", {
+				const response = await context.request("/groups", {
 					method: "POST",
 					body: { name: "Invalid text", metadata },
 				});
 				expect(response.status).toBe(400);
 				expect(await response.json()).toMatchObject({
-					code: "INVALID_REQUEST",
+					error: { code: "INVALID_REQUEST" },
 				});
 			}
 		}
@@ -169,7 +187,7 @@ describe("recursive metadata HTTP and persistence", () => {
 			{ values: Array(257).fill(true) },
 		]) {
 			await expect(
-				context.services.items.create(
+				context.services.groups.create(
 					{ name: "Invalid service", metadata },
 					operation(),
 				),

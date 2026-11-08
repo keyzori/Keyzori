@@ -1,12 +1,18 @@
 import { Elysia, t } from "elysia";
 import type { $Health } from "../../../types/application";
 
+export const healthProperties = {
+	healthy: t.Boolean(),
+	postgresql: t.Boolean(),
+	redis: t.Boolean(),
+	version: t.String(),
+	checkedAt: t.String({ format: "date-time" }),
+	ageMs: t.Integer({ minimum: 0 }),
+};
+
 const responseModel = t.Object(
 	{
-		healthy: t.Boolean(),
-		postgresql: t.Boolean(),
-		redis: t.Boolean(),
-		version: t.String(),
+		...healthProperties,
 	},
 	{ additionalProperties: false },
 );

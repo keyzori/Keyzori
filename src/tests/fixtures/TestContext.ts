@@ -11,6 +11,8 @@ import { MeterService } from "../../plugins/licenses/MeterService";
 import { LicenseDeletion } from "../../plugins/licenses/LicenseDeletion";
 import { LicenseService } from "../../plugins/licenses/LicenseService";
 import { ApiKeyService } from "../../plugins/api-keys/ApiKeyService";
+import { GroupService } from "../../plugins/groups/GroupService";
+import { UserService } from "../../plugins/users/UserService";
 import { ValidationService } from "../../plugins/validate/ValidationService";
 import { FailureAuditService } from "../../plugins/audits/FailureAuditService";
 import type { $Operation } from "../../types/operation";
@@ -24,10 +26,32 @@ export class TestContext {
 	readonly audit = new AuditService();
 	readonly ip = new ClientIpResolver(this.database);
 	readonly settings = new SettingsService(this.database, this.audit, this.ip);
-	readonly idempotency = new IdempotencyService(this.database, this.settings);
+	readonly idempotency = new IdempotencyService(
+		this.database,
+		this.settings,
+		this.auth,
+	);
 	readonly events = new EventService();
 	readonly meters = new MeterService(this.audit, this.events);
 	readonly deletion = new LicenseDeletion(this.audit, this.events);
+	readonly groups = new GroupService(
+		this.database,
+		this.auth,
+		this.audit,
+		this.events,
+		this.settings,
+		this.idempotency,
+		new KeyGenerator(),
+	);
+	readonly users = new UserService(
+		this.database,
+		this.auth,
+		this.audit,
+		this.events,
+		this.settings,
+		this.idempotency,
+		this.deletion,
+	);
 	readonly licenses = new LicenseService(
 		this.database,
 		this.auth,
@@ -64,8 +88,6 @@ export class TestContext {
 			this.settings,
 			this.ip,
 			this.meters,
-			this.idempotency,
-			this.audit,
 			this.failures,
 		);
 	}

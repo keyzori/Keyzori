@@ -75,7 +75,11 @@ export const userModel = {
 			{ additionalProperties: false },
 		),
 		t.Object(
-			{ data: t.Array(resource), nextCursor: t.Union([t.String(), t.Null()]) },
+			{
+				data: t.Array(resource),
+				nextCursor: t.Union([t.String(), t.Null()]),
+				pageLimit: t.Integer({ minimum: 1, maximum: 100 }),
+			},
 			{ additionalProperties: false },
 		),
 	]),

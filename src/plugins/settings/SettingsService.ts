@@ -2,6 +2,8 @@ import { IdempotencyService } from "../../core/security/IdempotencyService";
 import { eq } from "drizzle-orm";
 import { settings } from "../../core/database/schema/settings";
 import { settingsDefaults } from "./defaults";
+import { TypeBoxValidator } from "elysia";
+import { settingsModel } from "./model";
 import { KeyGenerator } from "../../core/security/KeyGenerator";
 import { HttpError } from "../../core/http/HttpError";
 import type { Database } from "../../core/database/Database";
@@ -26,6 +28,14 @@ export class SettingsService {
 				deadlineAt,
 			);
 		const [row] = await tx.select().from(settings).where(eq(settings.id, 1));
+		if (
+			row &&
+			(row.version !== 1 ||
+				!new TypeBoxValidator(settingsModel.value).Check(row.value))
+		)
+			throw new Error(
+				"Stored settings schema is invalid; restore or repair explicitly",
+			);
 		return row?.value ?? structuredClone(settingsDefaults);
 	}
 	async update(

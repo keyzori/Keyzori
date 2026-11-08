@@ -8,7 +8,7 @@ describe("default pagination boundaries", () => {
 	const validator = new TypeBoxValidator(settingsModel.changes);
 
 	test("every boundary admitted by settings works as a default and an explicit limit", () => {
-		for (const limit of [1, 10, 2147483645, 2147483646]) {
+		for (const limit of [1, 50, 99, 100]) {
 			expect(validator.Check({ defaultPageLimit: limit })).toBe(true);
 			expect(
 				new ResourceQuery(new URLSearchParams(), licenses, limit).limit,
@@ -21,7 +21,7 @@ describe("default pagination boundaries", () => {
 			).toBe(limit);
 		}
 		expect(validator.Check({})).toBe(true);
-		expect(new ResourceQuery(new URLSearchParams(), licenses).limit).toBe(10);
+		expect(new ResourceQuery(new URLSearchParams(), licenses).limit).toBe(50);
 	});
 
 	test("rejects zero, negative, fractional, overflowing and mistyped settings", () => {
@@ -29,6 +29,7 @@ describe("default pagination boundaries", () => {
 			0,
 			-1,
 			1.5,
+			101,
 			2147483647,
 			2147483648,
 			Number.MAX_SAFE_INTEGER,

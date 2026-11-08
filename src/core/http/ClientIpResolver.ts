@@ -128,13 +128,11 @@ export class ClientIpResolver {
 		addresses: string[],
 		rules: string[],
 	) {
-		return tx
-			.select({
-				input: sql<string>`hosts.input`,
-				address: sql<string>`host(hosts.address)`,
-				trusted: sql<boolean>`hosts.trusted`,
-			})
-			.from(sql`(
+		return tx.select({
+			input: sql<string>`hosts.input`,
+			address: sql<string>`host(hosts.address)`,
+			trusted: sql<boolean>`hosts.trusted`,
+		}).from(sql`(
 			with raw as (
 				select value as input, value::inet as address, false as is_rule
 				from jsonb_array_elements_text(${JSON.stringify(addresses)}::text::jsonb)

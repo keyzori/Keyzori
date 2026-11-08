@@ -3,13 +3,16 @@
 	"bootstrap-sha": "06cee2b437d30391627d5203fe44e61d7dbc0f72",
 	"always-update": true,
 	"draft": true,
+	"prerelease": true,
+	"versioning": "prerelease",
+	"prerelease-type": "beta",
 	"force-tag-creation": true,
 	"include-component-in-tag": false,
 	"include-v-in-tag": true,
 	"packages": {
 		".": {
 			"extra-files": ["compose.yml", ".env.example"],
-			"initial-version": "2.0.0",
+			"initial-version": "3.0.0-beta.1",
 			"package-name": "keyzori",
 			"release-type": "node"
 		}
