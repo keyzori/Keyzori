@@ -21,7 +21,7 @@ bun run db:migrate
 bun run start
 ```
 
-The migration command needs only database configuration. `KZ_MIGRATION_DATABASE_URL` selects its credential; if absent, it uses `KZ_DATABASE_URL`. The server never migrates, resets or repairs data during startup. It verifies exact migration history and refuses missing, modified or incompatible history. `bun run dev` runs source with automatic restarts. V3 is beta; changing database formats does not authorise deleting existing data.
+The migration command needs only database configuration. `KZ_MIGRATION_DATABASE_URL` selects its credential; if absent, it uses `KZ_DATABASE_URL`. The server never migrates, resets or repairs data during startup. It verifies exact migration history and refuses missing, modified or incompatible history. V2 databases require a separate fresh v3 database; no in-place conversion is supported. `bun run dev` runs source with automatic restarts. V3 is beta; changing database formats does not authorise deleting existing data.
 
 ## Environment
 
@@ -51,7 +51,7 @@ The migration command needs only database configuration. `KZ_MIGRATION_DATABASE_
 | `KZ_MAINTENANCE_RETRY_BASE_MS`       | Failed-record retry base, default 60000 ms, range 1–86400000.                                                                                                                                         |
 | `KZ_MAINTENANCE_RETRY_MAX_MS`        | Failed-record retry cap, default 3600000 ms, range 1–86400000 and at least the base.                                                                                                                  |
 | `KZ_EVENT_RETENTION_DAYS`            | Optional event retention, 1–3650 days; unset/empty retains events indefinitely. Audit and accepted-usage identity have separate indefinite retention.                                                 |
-| `KZ_VERSION`                         | Compose image version, default `3.0.0-beta.1`.                                                                                                                                                        |
+| `KZ_VERSION`                         | Compose image version, default `3.0.0-beta.2`. <!-- x-release-please-version -->                                                                                                                      |
 
 Compose has three separate bootstrap password inputs described above. Source runs load `.env` conventionally; the container uses supplied environment only. Never commit credentials or put master/API keys in URLs. A trusted proxy must replace forwarded headers, not append untrusted client claims. Only configured headers from a trusted immediate peer influence the client IP; right-to-left forwarded-chain parsing stops at the first untrusted hop.
 

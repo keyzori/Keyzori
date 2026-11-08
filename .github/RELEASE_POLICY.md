@@ -1,6 +1,6 @@
 # Releases
 
-Keyzori v3 is beta. `package.json` supplies the server version; Release Please updates the matching Compose and example environment version. Distribution consists of TypeScript source and a non-root Bun container. Nothing publishes to npm, and no application executables are built or attached.
+Keyzori v3 is beta. `package.json` supplies the server version; Release Please updates the matching Compose, example environment and developer-guide versions. Distribution consists of TypeScript source and a non-root Bun container. Nothing publishes to npm, and no application executables are built or attached.
 
 Server and CodeQL checks run on `main`, `v3` and pull requests. Server CI validates workflows and runs pinned-runtime types/lint/schema/tests, API-reference generation and source/container/Compose smoke checks on Linux AMD64 and ARM64. These are required checks, not a claim that another platform was tested.
 
