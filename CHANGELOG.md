@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.0.0-beta.2](https://github.com/keyzori/Keyzori/compare/v3.0.0-beta.1...v3.0.0-beta.2) (2026-11-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* v2 replaces the v1 HTTP API, settings, credential formats and database schema. V1 databases require a separate fresh v2 deployment; no in-place upgrade is supported. The console, installable plugins and Stripe integration are not included. Stable deployment support is Linux x64 and ARM64; Windows remains experimental and macOS runtime behaviour is untested. Elysia 2 beta remains a pinned dependency.
+
+### Features
+
+* integrate v2 licensing server into main ([e00df80](https://github.com/keyzori/Keyzori/commit/e00df8031882274ca08c00088afd34eae2af0701))
+
+
+### Bug Fixes
+
+* handle auth edge cases and refresh bun workflows ([#143](https://github.com/keyzori/Keyzori/issues/143)) ([6bf99c1](https://github.com/keyzori/Keyzori/commit/6bf99c17ded544b42b236d4255de57ea29acc081))
+* **release:** locate staged drafts through the release list ([c0f60fd](https://github.com/keyzori/Keyzori/commit/c0f60fd43495ca649e641d5873493e058aec9666))
+* **release:** stage immutable release assets before publication ([d705316](https://github.com/keyzori/Keyzori/commit/d705316975e642af213a8d210e43bab643cc2b26))
+* restore listener host isolation ([#135](https://github.com/keyzori/Keyzori/issues/135)) ([ba3ba16](https://github.com/keyzori/Keyzori/commit/ba3ba16fc0ce9b586b73103bd83502213fcb8be0))
+
 ## 3.0.0-beta.1 (unreleased)
 
 ### Breaking changes
