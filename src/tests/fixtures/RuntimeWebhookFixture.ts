@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomInt } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { command } from "../../scripts/command";
@@ -21,7 +22,7 @@ type Observation = {
 export class RuntimeWebhookFixture {
 	constructor(private readonly signal?: AbortSignal) {}
 	readonly name = `keyzori-tls-${Bun.randomUUIDv7()}`;
-	readonly address = `11.254.${1 + ((crypto.getRandomValues(new Uint8Array(1))[0] ?? 0) % 250)}.2`;
+	readonly address = `11.254.${randomInt(1, 251)}.2`;
 	private readonly token = Bun.randomUUIDv7();
 	private directory = "";
 	private containerId: string | undefined;
