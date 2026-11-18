@@ -1,6 +1,6 @@
 services:
   migrate:
-    image: ${KZ_IMAGE:-ghcr.io/keyzori/server:${KZ_VERSION:-3.0.0-beta.1}} # x-release-please-version
+    image: ${KZ_IMAGE:-ghcr.io/keyzori/server:${KZ_VERSION:-3.0.0-beta.2}} # x-release-please-version
     command: ["migrate"]
     restart: "no"
     environment:
@@ -14,7 +14,7 @@ services:
     healthcheck:
       disable: true
   server:
-    image: ${KZ_IMAGE:-ghcr.io/keyzori/server:${KZ_VERSION:-3.0.0-beta.1}} # x-release-please-version
+    image: ${KZ_IMAGE:-ghcr.io/keyzori/server:${KZ_VERSION:-3.0.0-beta.2}} # x-release-please-version
     restart: unless-stopped
     ports:
       - "127.0.0.1:6284:6284"
