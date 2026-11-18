@@ -12,6 +12,10 @@
 - Replace webhook delivery with encrypted signing secrets, HMAC signatures, bounded retries, owner-authority checks, public-HTTPS egress validation and delivery history.
 - Run TypeScript source with the pinned Bun runtime. Use separate explicit migration and runtime roles; serving verifies exact schema history without modifying it. Remove compiled-application build/release machinery.
 - Bound request admission, cascade work, event streams, webhook backlogs, background retries and fixture subprocesses. Keep exact arithmetic, transactional writes, secure credentials, trusted-proxy handling and fail-closed dependencies.
+- Require an explicit counter adjustment action and schedule interval. Timestamp writes use millisecond precision. Disable an enabled licence before moving it off a disabled parent. Write-only group, user and licence operations return identifiers instead of existing administrative detail; newly issued credentials are still returned once.
+- Bind combined history to receiver group selections as well as owner grants. Stage webhook signing-key rotation, install the new key at the receiver and explicitly activate its ID. Measure webhook history retention from the terminal transition.
+- Bind event cursors to grant generations, include a snapshot watermark in the stream ready frame, and start cursorless replay at the retained floor. Reject incompatible administrative receipts without repeating an unexpired operation.
+- Require explicit migrator credentials for restore preparation and restricted privileges for serving. Apply the forward migration before restarting replicas; serving no longer reconstructs a missing event checkpoint.
 
 V3 is beta. Incompatible databases are refused without resetting or deleting their data. The developer and implementation guides describe the resulting contract; no compatibility layer or in-place data conversion is supplied.
 

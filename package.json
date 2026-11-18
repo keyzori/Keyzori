@@ -5,9 +5,9 @@
 	"type": "module",
 	"license": "Apache-2.0",
 	"description": "Internal licence-key management for developer integrations",
-	"packageManager": "bun@1.4.4-canary.20261022.1",
+	"packageManager": "bun@1.4.4-canary.20261118.1",
 	"engines": {
-		"bun": ">=1.4.4-canary.1"
+		"bun": "1.4.5-canary.1"
 	},
 	"scripts": {
 		"prepare": "husky",
@@ -24,7 +24,7 @@
 		"format:check": "bun fmt --no-script --check",
 		"test": "bun src/scripts/test-services.ts exec bun test",
 		"test:unit": "bun test src/tests/unit",
-		"db:generate": "bunx --bun drizzle-kit generate --config=src/drizzle.config.ts",
+		"db:generate": "bunx --bun --no-install drizzle-kit generate --config=src/drizzle.config.ts",
 		"db:migrate": "bun src/main.ts migrate",
 		"db:check": "bun src/scripts/test-services.ts exec bun src/scripts/check-migrations.ts",
 		"openapi": "bun src/scripts/openapi.ts",
@@ -41,6 +41,10 @@
 		"husky": "9.1.7",
 		"typescript": "7.0.2",
 		"@elysia/openapi": "2.0.0-beta.4"
+	},
+	"overrides": {
+		"fast-uri": "3.1.9",
+		"zod": "4.6.7"
 	},
 	"dependencies": {
 		"@elysia/cors": "2.0.0-beta.1",

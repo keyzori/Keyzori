@@ -87,6 +87,8 @@ async function history(licenseId: string) {
 
 test("counters are opt-in and default to unlimited lifetime integer balances", async () => {
 	const issued = await context.licenses.create({}, context.operation());
+	if (!("meters" in issued.data))
+		throw new Error("Expected master licence view");
 	expect(issued.data.meters).toEqual([]);
 	await define(
 		issued.data.id,
@@ -524,6 +526,8 @@ test("definition, adjustment and limit-crossing events are emitted once with tra
 		"meter.reset",
 		"meter.deleted",
 	]);
+	if (!("meters" in issued.data))
+		throw new Error("Expected master licence view");
 	const counterId = issued.data.meters[0]?.counterId;
 	for (const event of emitted)
 		expect(event.payload.data).toMatchObject({

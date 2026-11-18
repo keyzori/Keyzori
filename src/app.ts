@@ -27,9 +27,8 @@ export const createApp = (
 	logger: Logger,
 	metrics: Metrics,
 ) => {
-	const boundary = new HttpBoundary(tracker, logger);
+	const boundary = new HttpBoundary(tracker, logger, validateResponse);
 	const origins = new ValidateCors(services.settings);
-	const paths = new Set<string>();
 	const responseChecks = new Map<
 		string,
 		ReturnType<typeof responseValidator>
@@ -40,6 +39,7 @@ export const createApp = (
 		// The streaming boundary enforces 1 MiB. Leave room for its structured 413.
 		serve: { maxRequestBodySize: 16777216, idleTimeout: 15 },
 	})
+		.wrap((next) => tracker.wrap(next))
 		.headers({
 			"Cache-Control": "no-store",
 			"X-Content-Type-Options": "nosniff",
@@ -78,7 +78,7 @@ export const createApp = (
 			}),
 		)
 		.parse(({ request }) => boundary.parse(request))
-		.mapResponse(({ responseValue, request, set, route, path }) => {
+		.mapResponse(({ responseValue, request, set }) => {
 			if (
 				responseValue instanceof Response ||
 				responseValue === undefined ||
@@ -88,19 +88,7 @@ export const createApp = (
 			)
 				return;
 			const status = typeof set.status === "number" ? set.status : 200;
-			const routePath = route ?? path;
-			const key = `${request.method}:${routePath}`;
-			let check = responseChecks.get(key);
-			if (!check) {
-				const declared = app.routes.find(
-					(entry) =>
-						entry.method === request.method &&
-						(entry.path === routePath || `${entry.path}/` === routePath),
-				);
-				check = responseValidator(declared?.hooks.response);
-				responseChecks.set(key, check);
-			}
-			check(responseValue, status);
+			validateResponse(request, responseValue, status);
 			return Response.json(
 				success(responseValue, tracker.begin(request).requestId),
 				{ status },
@@ -111,14 +99,6 @@ export const createApp = (
 			set.headers["X-Request-Id"] = tracker.begin(request).requestId;
 			set.status = response.status;
 			return response;
-		})
-		.afterResponse(({ request, set }) => {
-			const path = new URL(request.url).pathname;
-			tracker.finish(
-				request,
-				paths.has(path) ? path : "unmatched",
-				typeof set.status === "number" ? set.status : 200,
-			);
 		})
 		.use(healthRoutes(services.health, services.requests))
 		.use(validationRoutes(services.validation, services.requests, metrics))
@@ -131,7 +111,25 @@ export const createApp = (
 		.use(settingsRoutes(services.settings, services.requests))
 		.use(webhookRoutes(services.webhooks, services.requests))
 		.use(metricsRoutes(metrics, services.requests));
-	for (const route of app.routes) paths.add(route.path);
 	assertOperations(app.routes);
 	return app;
+
+	function validateResponse(
+		request: Request,
+		value: unknown,
+		status: number,
+	): void {
+		const policy = operationFor(request.method, new URL(request.url).pathname);
+		if (!policy) throw new Error("Response from an undeclared operation");
+		const key = `${policy.method}:${policy.path}`;
+		let check = responseChecks.get(key);
+		if (!check) {
+			const declared = app.routes.find(
+				(entry) => entry.method === policy.method && entry.path === policy.path,
+			);
+			check = responseValidator(declared?.hooks.response);
+			responseChecks.set(key, check);
+		}
+		check(value, status);
+	}
 };

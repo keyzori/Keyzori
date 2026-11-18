@@ -8,6 +8,7 @@ import { enableWebhook } from "./routes/enable";
 import { disableWebhook } from "./routes/disable";
 import { deliveryHistoryWebhook } from "./routes/deliveryHistory";
 import { rotateWebhookSecret } from "./routes/rotateSecret";
+import { activateWebhookSecret } from "./routes/activateSecret";
 import { replayWebhook } from "./routes/replay";
 import { recoverWebhook } from "./routes/recover";
 
@@ -21,5 +22,6 @@ export const webhookRoutes = (service: $Webhooks, requests: $Requests) =>
 		.use(disableWebhook(service, requests))
 		.use(deliveryHistoryWebhook(service, requests))
 		.use(rotateWebhookSecret(service, requests))
+		.use(activateWebhookSecret(service, requests))
 		.use(replayWebhook(service, requests))
 		.use(recoverWebhook(service, requests));

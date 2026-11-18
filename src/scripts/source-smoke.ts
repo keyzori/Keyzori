@@ -21,9 +21,8 @@ const probe = Bun.serve({
 const port = probe.port;
 await probe.stop(true);
 const env = {
-	...Bun.env,
-	KZ_DATABASE_URL: fixture.url,
-	KZ_MIGRATION_DATABASE_URL: fixture.url,
+	PATH: Bun.env.PATH,
+	SystemRoot: Bun.env.SystemRoot,
 	KZ_REDIS_URL: Bun.env.KZ_TEST_REDIS_URL,
 	KZ_MASTER_KEY: master,
 	KZ_WEBHOOK_ENCRYPTION_KEY: new Bun.CryptoHasher("sha256")
@@ -44,16 +43,20 @@ process.once("SIGTERM", interrupt);
 try {
 	await tls?.prepare();
 	if (tls) Object.assign(env, { NODE_EXTRA_CA_CERTS: tls.certificate });
-	await fixture.start(false);
+	const { runtimeUrl, migrationUrl } = await fixture.startWithRoles();
 	await command([process.execPath, "--no-env-file", "src/main.ts", "migrate"], {
-		env,
+		env: {
+			PATH: env.PATH,
+			SystemRoot: env.SystemRoot,
+			KZ_MIGRATION_DATABASE_URL: migrationUrl,
+		},
 		signal: cancellation.signal,
 	});
 	cancellation.signal.throwIfAborted();
 	child = Bun.spawn(
 		[process.execPath, "--no-env-file", "src/main.ts", "serve"],
 		{
-			env: { ...env, KZ_MIGRATION_DATABASE_URL: undefined },
+			env: { ...env, KZ_DATABASE_URL: runtimeUrl },
 			stdout: "ignore",
 			stderr: "inherit",
 		},

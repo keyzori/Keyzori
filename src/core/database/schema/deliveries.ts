@@ -27,7 +27,8 @@ export const deliveries = pgTable(
 		global: boolean().notNull(),
 		endpointVersion: integer("endpoint_version").notNull(),
 		url: text().notNull(),
-		secretCiphertext: text("secret_ciphertext").notNull(),
+		/** Only unfinished deliveries retain the recoverable signing snapshot. */
+		secretCiphertext: text("secret_ciphertext"),
 		signingKeyId: uuid("signing_key_id").notNull(),
 		payload: jsonb().$type<$EventEnvelope>().notNull(),
 		state: text({
@@ -54,6 +55,7 @@ export const deliveries = pgTable(
 		}),
 		status: integer(),
 		error: text(),
+		terminalAt: timestamp("terminal_at", { withTimezone: true, precision: 3 }),
 		createdAt: timestamp("created_at", { withTimezone: true, precision: 3 })
 			.notNull()
 			.defaultNow(),
@@ -66,10 +68,14 @@ export const deliveries = pgTable(
 		index("deliveries_expired_lease_idx")
 			.on(table.leaseUntil)
 			.where(sql`${table.state} = 'claimed'`),
-		index("deliveries_retention_idx")
-			.on(table.createdAt, table.id)
+		index("deliveries_terminal_retention_idx")
+			.on(table.terminalAt, table.id)
 			.where(sql`${table.state} in ('succeeded','failed','cancelled')`),
 		index("deliveries_webhook_idx").on(table.webhookId, table.createdAt),
+		check(
+			"deliveries_terminal_check",
+			sql`(${table.state} in ('succeeded','failed','cancelled')) = (${table.terminalAt} is not null) and ((${table.terminalAt} is null) = (${table.secretCiphertext} is not null))`,
+		),
 		check(
 			"deliveries_state_check",
 			sql`${table.state} in ('pending','claimed','succeeded','failed','cancelled') and ${table.attempts} between 0 and 8`,

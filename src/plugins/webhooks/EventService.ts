@@ -13,6 +13,93 @@ import type {
 } from "../../types/webhooks";
 import { eventAuthoritySchema, readEventEnvelope } from "./events";
 import { Assert } from "typebox/value";
+import type { $WebhookDelivery } from "../../types/webhookManagement";
+
+export class StoredEventError extends Error {
+	constructor() {
+		super("Inconsistent persisted event");
+	}
+}
+
+export function scopedEvent(event: $WebhookEvent) {
+	return (
+		event.startsWith("license.") ||
+		event.startsWith("meter.") ||
+		event.startsWith("group.") ||
+		event === "usage.consumed" ||
+		event === "validation.failed"
+	);
+}
+
+function resourceOf(
+	envelope: $EventEnvelope,
+): Omit<$EventEnvelope["resource"], "revision"> {
+	const data = envelope.data;
+	if ("licenseId" in data && data.licenseId)
+		return { type: "license", id: data.licenseId };
+	if ("userId" in data) return { type: "user", id: data.userId };
+	if ("apiKeyId" in data) return { type: "api-key", id: data.apiKeyId };
+	if ("webhookId" in data) return { type: "webhook", id: data.webhookId };
+	if (envelope.event === "settings.updated")
+		return { type: "settings", id: "settings" };
+	if ("groupId" in data && data.groupId)
+		return { type: "group", id: data.groupId };
+	return { type: "validation", id: "anonymous" };
+}
+
+type Snapshot = Pick<
+	$WebhookDelivery,
+	"payload" | "groupId" | "global" | "requiredGroupIds" | "requiresAllGroups"
+>;
+
+function checkedSnapshot(row: Snapshot, eventId: string) {
+	try {
+		if (Buffer.byteLength(JSON.stringify(row.payload)) > 32768)
+			throw new StoredEventError();
+		Assert(eventAuthoritySchema, {
+			requiredGroupIds: row.requiredGroupIds,
+			requiresAllGroups: row.requiresAllGroups,
+		});
+		const payload = readEventEnvelope(row.payload);
+		const subject = resourceOf(payload);
+		const global =
+			!scopedEvent(payload.event) ||
+			(payload.event === "validation.failed" &&
+				payload.data.licenseId === null);
+		if (
+			payload.id !== eventId ||
+			global !== row.global ||
+			("groupId" in payload.data ? payload.data.groupId : null) !==
+				row.groupId ||
+			subject.type !== payload.resource.type ||
+			subject.id !== payload.resource.id
+		)
+			throw new StoredEventError();
+		return payload;
+	} catch {
+		// Validation diagnostics can contain the original JSON. Never expose them.
+		throw new StoredEventError();
+	}
+}
+
+/** One boundary for activity reads and outbound enqueue, before trusting persisted JSON. */
+export function readStoredEvent(row: typeof activityEvents.$inferSelect) {
+	const payload = checkedSnapshot(row, row.id);
+	if (
+		payload.event !== row.event ||
+		payload.resource.type !== row.resourceType ||
+		payload.resource.id !== row.resourceId ||
+		payload.resource.revision !== String(row.resourceRevision) ||
+		Date.parse(payload.createdAt) !== row.createdAt.getTime()
+	)
+		throw new StoredEventError();
+	return payload;
+}
+
+/** Source events can be pruned. Delivery validation must stand on the snapshot alone. */
+export function readStoredDelivery(row: Snapshot & { eventId: string }) {
+	return checkedSnapshot(row, row.eventId);
+}
 
 export class EventService {
 	async emit<const E extends $WebhookEvent>(
@@ -75,12 +162,7 @@ export class EventService {
 			if (!license) throw new Error("Missing event authorization context");
 			groupId = license.groupId;
 		}
-		const scoped =
-			event.startsWith("license.") ||
-			event.startsWith("meter.") ||
-			event.startsWith("group.") ||
-			event === "usage.consumed" ||
-			event === "validation.failed";
+		const scoped = scopedEvent(event);
 		if (scoped) Object.assign(data, { groupId: groupId ?? null });
 		if (event === "validation.failed") {
 			Object.assign(data, { licenseId: licenseId ?? null });
@@ -97,7 +179,7 @@ export class EventService {
 			resource: { type: "validation", id, revision: "1" },
 			createdAt: now.toISOString(),
 		});
-		const resource = this.resource(validated);
+		const resource = resourceOf(validated);
 		// The upsert holds a per-resource lock through COMMIT. Allocate ordinal only
 		// afterwards: later revisions cannot become visible before an earlier one.
 		const [version] = await tx
@@ -129,21 +211,5 @@ export class EventService {
 			createdAt: now,
 		});
 		return payload;
-	}
-
-	private resource(
-		envelope: $EventEnvelope,
-	): Omit<$EventEnvelope["resource"], "revision"> {
-		const data = envelope.data;
-		if ("licenseId" in data && data.licenseId)
-			return { type: "license", id: data.licenseId };
-		if ("userId" in data) return { type: "user", id: data.userId };
-		if ("apiKeyId" in data) return { type: "api-key", id: data.apiKeyId };
-		if ("webhookId" in data) return { type: "webhook", id: data.webhookId };
-		if (envelope.event === "settings.updated")
-			return { type: "settings", id: "settings" };
-		if ("groupId" in data && data.groupId)
-			return { type: "group", id: data.groupId };
-		return { type: "validation", id: "anonymous" };
 	}
 }

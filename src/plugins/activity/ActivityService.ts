@@ -1,4 +1,15 @@
-import { and, asc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
+import {
+	and,
+	asc,
+	eq,
+	getColumns,
+	gt,
+	inArray,
+	isNull,
+	lte,
+	notInArray,
+	sql,
+} from "drizzle-orm";
 import type { Database } from "../../core/database/Database";
 import type { AuthService } from "../../core/auth/AuthService";
 import type { Redis } from "../../core/redis/Redis";
@@ -13,7 +24,7 @@ import {
 	allowedEvents,
 	historicalGroupFilter,
 } from "../../core/auth/EventAuthorization";
-import { readEventEnvelope } from "../webhooks/events";
+import { readStoredEvent } from "../webhooks/EventService";
 import type { $PublishedEvent } from "../../types/webhooks";
 import { activityOptions, type ActivityOptions } from "./options";
 import { Check } from "typebox/value";
@@ -34,6 +45,7 @@ type Session = {
 	principal: $Principal;
 	ip: string;
 	cursor?: string;
+	readyCursor?: string;
 	timer?: ReturnType<typeof setTimeout>;
 	watchdog?: ReturnType<typeof setTimeout>;
 	leaseWatchdog?: ReturnType<typeof setTimeout>;
@@ -41,6 +53,7 @@ type Session = {
 	admission?: Promise<void>;
 	leasedAt: number;
 	expiresAt: number;
+	lifetimeDeadline: number;
 	stopped: boolean;
 	queuedFrames: number;
 	queuedBytes: number;
@@ -48,6 +61,9 @@ type Session = {
 
 export class ActivityService {
 	private readonly sessions = new Map<string, Session>();
+	private readonly pending = new Set<Promise<void>>();
+	private queuedFrames = 0;
+	private queuedBytes = 0;
 	private readonly options;
 	private stopped = false;
 	constructor(
@@ -57,12 +73,16 @@ export class ActivityService {
 		readonly origins: string[] = [],
 		private readonly maxStreams = 100,
 		options: ActivityOptions = {},
-		private readonly metrics?: Pick<Metrics, "setGauge">,
+		private readonly metrics?: Pick<Metrics, "setGauge"> & {
+			streamBackpressureClose?(): void;
+		},
 	) {
 		this.options = activityOptions(options);
 		if (!Number.isSafeInteger(maxStreams) || maxStreams < 1)
 			throw new Error("Invalid activity stream limit");
-		this.updateGauges();
+		this.metrics?.setGauge("keyzori_streams_active", 0);
+		this.metrics?.setGauge("keyzori_stream_queue_messages", 0);
+		this.metrics?.setGauge("keyzori_stream_queue_bytes", 0);
 	}
 
 	/** Short serialized publication; never includes domain mutations or network sends. */
@@ -70,10 +90,6 @@ export class ActivityService {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
 			throw new RangeError("Invalid publication batch limit");
 		return this.database.transaction(async (tx) => {
-			await tx
-				.insert(eventState)
-				.values({ id: 1, epoch: Bun.randomUUIDv7() })
-				.onConflictDoNothing();
 			const [state] = await tx
 				.select()
 				.from(eventState)
@@ -114,13 +130,13 @@ export class ActivityService {
 	 * historical payload. Save a cursor only after its invalidations are processed.
 	 * A 410 (retention, grants or epoch change) restarts this flow.
 	 */
-	async watermark(operation: $Operation) {
+	async watermark(operation: $Operation, subscription = false) {
 		return this.database.transaction(
 			async (tx) => {
 				const principal = await this.auth.authorize(
 					tx,
 					operation.principal,
-					"events:read",
+					subscription ? "events:subscribe" : "events:read",
 				);
 				const [state] = await tx
 					.select()
@@ -165,7 +181,6 @@ export class ActivityService {
 			"read",
 			deadlineAt,
 		);
-		const queue = this.queueStats();
 		let measuredBytes: number | undefined = 0;
 		for (const session of this.sessions.values()) {
 			const bytes = transportBufferedBytes(session.socket);
@@ -178,8 +193,8 @@ export class ActivityService {
 		return {
 			...result,
 			activeStreams: this.sessions.size,
-			queueMessages: queue.messages,
-			queueBytes: queue.bytes,
+			queueMessages: this.queuedFrames,
+			queueBytes: this.queuedBytes,
 			...(measuredBytes === undefined
 				? {}
 				: { transportBufferedBytes: measuredBytes }),
@@ -286,6 +301,7 @@ export class ActivityService {
 		params: URLSearchParams,
 		operation: $Operation,
 		subscription = false,
+		readyCursor?: string,
 	) {
 		for (const key of params.keys())
 			if (!["cursor", "limit"].includes(key) || params.getAll(key).length !== 1)
@@ -308,9 +324,13 @@ export class ActivityService {
 					.for("share");
 				if (!state) throw new HttpError("SERVICE_UNAVAILABLE");
 				const binding = this.binding(principal);
+				if (readyCursor !== undefined)
+					// Even a cursorless subscribe (at the current floor) must
+					// belong to the authority and epoch of its ready frame.
+					this.decode(readyCursor, state.epoch, binding);
 				const after = params.has("cursor")
 					? this.decode(params.get("cursor") ?? "", state.epoch, binding)
-					: 0n;
+					: state.retainedAfter;
 				if (after > state.sequence || after < state.retainedAfter)
 					throw new HttpError("CURSOR_EXPIRED");
 				const rows = await tx
@@ -333,17 +353,7 @@ export class ActivityService {
 				const data: $PublishedEvent[] = [];
 				let bytes = 1024; // Cursor and protocol framing reserve.
 				for (const row of rows.slice(0, limit)) {
-					const payload = readEventEnvelope(row.payload);
-					if (
-						payload.id !== row.id ||
-						payload.event !== row.event ||
-						("groupId" in payload.data ? payload.data.groupId : null) !==
-							row.groupId ||
-						payload.resource.type !== row.resourceType ||
-						payload.resource.id !== row.resourceId ||
-						payload.resource.revision !== String(row.resourceRevision)
-					)
-						throw new Error("Inconsistent persisted event");
+					const payload = readStoredEvent(row);
 					const event = {
 						...payload,
 						sequence: String(row.sequence),
@@ -390,14 +400,32 @@ export class ActivityService {
 					50,
 				);
 				const rows = await tx
-					.select()
+					.select({
+						...getColumns(audits),
+						// Legacy webhook evidence can contain a token in the destination
+						// path or query. Remove that field even for operator history.
+						before: sql<
+							typeof audits.$inferSelect.before
+						>`case when ${audits.targetType} = 'webhook' then ${audits.before} - 'url' else ${audits.before} end`,
+						after: sql<
+							typeof audits.$inferSelect.after
+						>`case when ${audits.targetType} = 'webhook' then ${audits.after} - 'url' else ${audits.after} end`,
+					})
 					.from(audits)
 					.where(
 						and(
 							query.where,
 							this.auth.groupFilter(principal, audits.groupId),
 							principal.kind === "api" && !principal.allGroups
-								? eq(audits.global, false)
+								? and(
+										eq(audits.global, false),
+										// These combined before/after records include the
+										// ungrouped side, even on legacy immutable rows.
+										notInArray(audits.action, [
+											"license.group_deleted",
+											"license.group_detached",
+										]),
+									)
 								: undefined,
 							historicalGroupFilter(principal, audits),
 						),
@@ -425,7 +453,7 @@ export class ActivityService {
 
 	assertOrigin(request: Request) {
 		const origin = request.headers.get("origin");
-		if (origin && !this.origins.includes(origin))
+		if (origin !== null && !this.origins.includes(origin))
 			throw new HttpError("FORBIDDEN");
 		if (new URL(request.url).search) throw new HttpError("INVALID_REQUEST");
 	}
@@ -441,35 +469,60 @@ export class ActivityService {
 			ip: operation.clientIp,
 			leasedAt: 0,
 			expiresAt: Date.now() + this.options.sessionLifetimeMs,
+			lifetimeDeadline: performance.now() + this.options.sessionLifetimeMs,
 			subscribed: false,
 			stopped: false,
 			queuedFrames: 0,
 			queuedBytes: 0,
 		};
 		this.sessions.set(socket.id, session);
-		this.updateGauges();
+		this.metrics?.setGauge("keyzori_streams_active", this.sessions.size);
 		session.watchdog = setTimeout(
 			() => this.close(socket.id, 1008, "Subscribe deadline expired"),
 			this.options.subscribeTimeoutMs,
 		);
-		session.admission = this.lease(session);
+		session.admission = this.track(this.admit(session, operation));
 		try {
 			await session.admission;
-			if (session.stopped) return;
+		} catch (error) {
 			if (
-				this.send(session, {
-					type: "ready",
-					schemaVersion: 1,
-					protocol: "invalidation-refetch",
-					stateConsistency: "non-atomic",
-					resync: "/events/watermark",
-					sessionExpiresAt: new Date(session.expiresAt).toISOString(),
-				}) <= 0
-			)
-				this.close(socket.id, 1013, "Slow consumer");
-		} catch {
-			this.close(socket.id, 1013, "Admission unavailable");
+				error instanceof HttpError &&
+				(error.code === "UNAUTHORIZED" || error.code === "FORBIDDEN")
+			) {
+				this.send(session, { type: "error", code: error.code });
+				this.close(socket.id, 1008, "Subscription authority unavailable");
+			} else this.close(socket.id, 1013, "Admission unavailable");
 		}
+	}
+
+	private async admit(session: Session, operation: $Operation) {
+		await this.lease(session);
+		if (session.stopped) return;
+		const { data: watermark } = await this.watermark(
+			{
+				...operation,
+				deadlineAt: Math.min(
+					operation.deadlineAt ?? Infinity,
+					Date.now() + 5000,
+				),
+			},
+			true,
+		);
+		if (session.stopped) return;
+		if (this.expired(session)) throw new HttpError("SERVICE_UNAVAILABLE");
+		session.readyCursor = watermark.cursor;
+		if (
+			this.send(session, {
+				type: "ready",
+				schemaVersion: 1,
+				protocol: "invalidation-refetch",
+				stateConsistency: "non-atomic",
+				resync: "/events/watermark",
+				watermark,
+				sessionExpiresAt: new Date(session.expiresAt).toISOString(),
+			}) <= 0
+		)
+			this.slowConsumer(session, "Slow consumer");
 	}
 
 	async message(id: string, value: unknown) {
@@ -497,7 +550,7 @@ export class ActivityService {
 		if (session.stopped) return;
 		clearTimeout(session.watchdog);
 		session.cursor = cursor;
-		await this.pump(session);
+		await this.track(this.pump(session));
 	}
 
 	close(id: string, code = 1000, reason = "Closed") {
@@ -508,30 +561,54 @@ export class ActivityService {
 		clearTimeout(session.watchdog);
 		clearTimeout(session.leaseWatchdog);
 		this.sessions.delete(id);
-		session.queuedFrames = 0;
-		session.queuedBytes = 0;
-		this.updateGauges();
-		session.socket.close(code, reason);
-		void this.releaseLease(session).catch(() => undefined);
+		this.queue(session, 0, 0);
+		this.metrics?.setGauge("keyzori_streams_active", this.sessions.size);
+		try {
+			session.socket.close(code, reason);
+		} finally {
+			void this.track(this.releaseLease(session)).catch(() => undefined);
+		}
 	}
 	stop() {
 		this.stopped = true;
 		for (const id of this.sessions.keys())
 			this.close(id, 1012, "Server restarting; reconnect with cursor");
 	}
+	/** Call after stop before tearing down Redis/SQL. All work has service deadlines. */
+	async drain() {
+		while (this.pending.size) await Promise.allSettled([...this.pending]);
+	}
+
+	private track(work: Promise<void>) {
+		this.pending.add(work);
+		const settled = () => this.pending.delete(work);
+		void work.then(settled, settled);
+		return work;
+	}
+
+	private expired(session: Session) {
+		const now = performance.now();
+		return (
+			now >= session.lifetimeDeadline ||
+			now - session.leasedAt >=
+				this.options.leaseMs - this.options.leaseSafetyMs
+		);
+	}
+
+	private slowConsumer(session: Session, reason: string) {
+		if (session.stopped) return;
+		this.metrics?.streamBackpressureClose?.();
+		this.close(session.socket.id, 1013, reason);
+	}
 
 	private async pump(session: Session) {
 		try {
 			if (session.stopped) return;
-			if (
-				Date.now() >= session.expiresAt ||
-				Date.now() - session.leasedAt >=
-					this.options.leaseMs - this.options.leaseSafetyMs
-			) {
+			if (this.expired(session)) {
 				this.close(session.socket.id, 1008, "Session expired");
 				return;
 			}
-			if (Date.now() - session.leasedAt >= this.options.renewEveryMs)
+			if (performance.now() - session.leasedAt >= this.options.renewEveryMs)
 				await this.lease(session);
 			if (session.stopped) return;
 			const params = new URLSearchParams({ limit: "100" });
@@ -545,13 +622,9 @@ export class ActivityService {
 					deadlineAt: Date.now() + 5000,
 				},
 				true,
+				session.readyCursor,
 			);
-			if (
-				session.stopped ||
-				Date.now() >= session.expiresAt ||
-				Date.now() - session.leasedAt >=
-					this.options.leaseMs - this.options.leaseSafetyMs
-			) {
+			if (session.stopped || this.expired(session)) {
 				this.close(session.socket.id, 1013, "Lease expired");
 				return;
 			}
@@ -561,78 +634,65 @@ export class ActivityService {
 				cursor: result.cursor,
 				hasMore: result.hasMore,
 			});
-			if (Buffer.byteLength(bytes) > 262144 || this.send(session, bytes) <= 0) {
-				this.close(
-					session.socket.id,
-					1013,
+			if (Buffer.byteLength(bytes) > 262144)
+				throw new Error("Outgoing activity frame exceeds budget");
+			if (this.send(session, bytes) <= 0) {
+				this.slowConsumer(
+					session,
 					"Slow consumer; reconnect with processed cursor",
 				);
 				return;
 			}
 			session.cursor = result.cursor;
+			session.readyCursor = undefined;
 			session.timer = setTimeout(
 				() => {
-					void this.pump(session);
+					void this.track(this.pump(session));
 				},
 				result.hasMore
 					? this.options.replayIntervalMs
 					: this.options.pollIntervalMs,
 			);
 		} catch (error) {
-			if (!session.stopped && error instanceof HttpError)
-				this.send(session, {
-					type: "error",
-					code: error.code,
-					...(error.code === "CURSOR_EXPIRED"
-						? { resync: "/events/watermark" }
-						: {}),
-				});
+			if (session.stopped) return;
+			const code = error instanceof HttpError ? error.code : "INTERNAL_ERROR";
+			this.send(session, {
+				type: "error",
+				code,
+				...(code === "CURSOR_EXPIRED" ? { resync: "/events/watermark" } : {}),
+			});
 			this.close(
 				session.socket.id,
-				1008,
+				code === "INTERNAL_ERROR" ? 1011 : 1008,
 				"Authorization or dependency unavailable; reconnect",
 			);
 		}
 	}
 
 	/** These gauges count serialized application frames, not events or kernel buffers. */
-	private queueStats() {
-		let messages = 0;
-		let bytes = 0;
-		for (const session of this.sessions.values()) {
-			messages += session.queuedFrames;
-			bytes += session.queuedBytes;
-		}
-		return { messages, bytes };
-	}
-
-	private updateGauges() {
-		if (!this.metrics) return;
-		const queue = this.queueStats();
-		this.metrics.setGauge("keyzori_streams_active", this.sessions.size);
-		this.metrics.setGauge("keyzori_stream_queue_messages", queue.messages);
-		this.metrics.setGauge("keyzori_stream_queue_bytes", queue.bytes);
+	private queue(session: Session, frames: number, bytes: number) {
+		if (session.queuedFrames === frames && session.queuedBytes === bytes)
+			return;
+		this.queuedFrames += frames - session.queuedFrames;
+		this.queuedBytes += bytes - session.queuedBytes;
+		session.queuedFrames = frames;
+		session.queuedBytes = bytes;
+		this.metrics?.setGauge("keyzori_stream_queue_messages", this.queuedFrames);
+		this.metrics?.setGauge("keyzori_stream_queue_bytes", this.queuedBytes);
 	}
 
 	private send(session: Session, value: unknown) {
 		if (session.stopped) return 0;
 		const frame = typeof value === "string" ? value : JSON.stringify(value);
-		session.queuedFrames = 1;
-		session.queuedBytes = Buffer.byteLength(frame);
-		this.updateGauges();
+		this.queue(session, 1, Buffer.byteLength(frame));
 		try {
 			const status = session.socket.send(frame);
-			if (status > 0) {
-				session.queuedFrames = 0;
-				session.queuedBytes = 0;
-			}
+			if (status > 0) this.queue(session, 0, 0);
 			// A backpressured frame remains tracked until the caller closes; it is
 			// never added to an unbounded retry queue or silently reported as drained.
 			return status;
 		} catch {
 			return 0;
-		} finally {
-			this.updateGauges();
 		}
 	}
 	private leaseKeys(session: Session) {
@@ -654,17 +714,21 @@ export class ActivityService {
 	}
 	private async lease(session: Session) {
 		if (session.stopped) return;
-		const started = Date.now();
-		const result = await this.redis.send("EVAL", [
-			"local t=redis.call('TIME'); local now=t[1]*1000+math.floor(t[2]/1000); for i=1,2 do redis.call('ZREMRANGEBYSCORE',KEYS[i],'-inf',now); local member=redis.call('ZSCORE',KEYS[i],ARGV[1]); if ARGV[5]=='1' and not member then return 0 end; if not member and redis.call('ZCARD',KEYS[i]) >= tonumber(ARGV[i+1]) then return 0 end end; for i=1,2 do redis.call('ZADD',KEYS[i],now+tonumber(ARGV[4]),ARGV[1]); redis.call('PEXPIRE',KEYS[i],ARGV[4]) end; return 1",
-			"2",
-			...this.leaseKeys(session),
-			session.socket.id,
-			"5",
-			"20",
-			String(this.options.leaseMs),
-			session.leasedAt ? "1" : "0",
-		]);
+		const started = performance.now();
+		const result = await this.redis
+			.send("EVAL", [
+				"local t=redis.call('TIME'); local now=t[1]*1000+math.floor(t[2]/1000); for i=1,2 do redis.call('ZREMRANGEBYSCORE',KEYS[i],'-inf',now); local member=redis.call('ZSCORE',KEYS[i],ARGV[1]); if ARGV[5]=='1' and not member then return 0 end; if not member and redis.call('ZCARD',KEYS[i]) >= tonumber(ARGV[i+1]) then return 0 end end; for i=1,2 do redis.call('ZADD',KEYS[i],now+tonumber(ARGV[4]),ARGV[1]); redis.call('PEXPIRE',KEYS[i],ARGV[4]) end; return 1",
+				"2",
+				...this.leaseKeys(session),
+				session.socket.id,
+				"5",
+				"20",
+				String(this.options.leaseMs),
+				session.leasedAt ? "1" : "0",
+			])
+			.catch(() => {
+				throw new HttpError("SERVICE_UNAVAILABLE");
+			});
 		if (result !== 1) throw new HttpError("SERVICE_UNAVAILABLE");
 		if (session.stopped) {
 			await this.releaseLease(session);
@@ -672,10 +736,11 @@ export class ActivityService {
 		}
 		session.leasedAt = started;
 		clearTimeout(session.leaseWatchdog);
-		const remaining = Math.min(
-			session.expiresAt - Date.now(),
-			started + this.options.leaseMs - this.options.leaseSafetyMs - Date.now(),
-		);
+		const remaining =
+			Math.min(
+				session.lifetimeDeadline,
+				started + this.options.leaseMs - this.options.leaseSafetyMs,
+			) - performance.now();
 		if (remaining <= 0) throw new HttpError("SERVICE_UNAVAILABLE");
 		session.leaseWatchdog = setTimeout(
 			() => this.close(session.socket.id, 1008, "Session or lease expired"),
@@ -690,6 +755,7 @@ export class ActivityService {
 						? ["root"]
 						: [
 								principal.id,
+								String(principal.grantGeneration ?? 0),
 								principal.scopes.slice().sort(),
 								principal.allGroups,
 								principal.groupIds.slice().sort(),
@@ -716,6 +782,10 @@ export class ActivityService {
 			!Array.isArray(value) ||
 			value.length !== 4 ||
 			value[0] !== 1 ||
+			typeof value[1] !== "string" ||
+			!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(value[1]) ||
+			typeof value[3] !== "string" ||
+			!/^[0-9a-f]{64}$/.test(value[3]) ||
 			typeof value[2] !== "string" ||
 			!/^(0|[1-9][0-9]{0,18})$/.test(value[2])
 		)

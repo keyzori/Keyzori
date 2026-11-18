@@ -29,22 +29,27 @@ bun install --frozen-lockfile
 bun run master-key
 ```
 
-Set `KZ_MASTER_KEY`, the runtime `KZ_DATABASE_URL`, the separate `KZ_MIGRATION_DATABASE_URL`, and `KZ_REDIS_URL`. Provision database roles using the [deployment guidance](src/README.md#run), then:
+For local development, set `KZ_MASTER_KEY`, the runtime `KZ_DATABASE_URL`, the separate `KZ_MIGRATION_DATABASE_URL`, and `KZ_REDIS_URL`. Provision database roles using the [deployment guidance](src/README.md#run), then:
 
 ```sh
 bun run db:migrate
 bun run start
 ```
 
-`bun run dev` restarts source during development. `/health` reports readiness and dependency probe age. [Create a first licence](src/README.md#first-licence), then use the [API guide](src/README.md#responses-and-api-access). Generate `dist/server/openapi.json` with `bun run openapi`; the running server does not host the reference UI.
+For production source runs, supply migration and serving credentials to separate processes, as described in the [server guide](src/README.md#run). `bun run dev` restarts source during development. `/health` reports readiness and dependency probe age. [Create a first licence](src/README.md#first-licence), then use the [API guide](src/README.md#responses-and-api-access). Generate `dist/server/openapi.json` with `bun run openapi`; the running server does not host the reference UI.
 
 ## Docker
 
 Copy `.env.example` to `.env`. Set `KZ_MASTER_KEY`, `KZ_POSTGRES_PASSWORD`, `KZ_SERVER_DATABASE_PASSWORD`, and `KZ_MIGRATION_DATABASE_PASSWORD`. Generate the master with `bun run master-key`; use separate random 64-character hexadecimal values for the three database passwords.
 
+To build this checkout, use the explicit source override:
+
 ```sh
-docker compose up --build -d
+docker compose -f compose.yml -f compose.build.yml build migrate
+docker compose -f compose.yml -f compose.build.yml up --no-build -d
 ```
+
+To install a published V3 image, set `KZ_IMAGE` to its registry digest (or `KZ_VERSION` to its published version) and run `docker compose up --pull always -d` without the build override.
 
 Compose starts PostgreSQL and Redis, runs an explicit one-shot migration job, then starts the API with its restricted runtime database role. The source container runs as UID 65532 with a read-only root filesystem. PostgreSQL persists in a named volume. Only the API is published, at `http://127.0.0.1:6284`.
 

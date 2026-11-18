@@ -16,6 +16,7 @@ test("webhook collection/detail routes have stable shapes and reject legacy id s
 		allGroups: true,
 		groupIds: [],
 		signingKeyId: Bun.randomUUIDv7(),
+		stagedSigningKeyId: null,
 		version: 1,
 		lastError: null,
 		createdBy: "root",
@@ -32,6 +33,7 @@ test("webhook collection/detail routes have stable shapes and reject legacy id s
 		state: "pending" as const,
 		attempts: 0,
 		attemptedAt: null,
+		terminalAt: null,
 		nextAttemptAt: new Date().toISOString(),
 		expiresAt: new Date().toISOString(),
 		status: null,
@@ -41,12 +43,16 @@ test("webhook collection/detail routes have stable shapes and reject legacy id s
 	const unavailable = (): never => {
 		throw new Error("Unexpected operation");
 	};
+	let required: string | undefined;
 	const requests: $Requests = {
-		authorize: async () => ({
-			principal: { kind: "root", id: "root", name: "Root", scopes: [] },
-			clientIp: "127.0.0.1",
-			requestId: Bun.randomUUIDv7(),
-		}),
+		authorize: async (_request, _peer, scope) => {
+			required = scope;
+			return {
+				principal: { kind: "root", id: "root", name: "Root", scopes: [] },
+				clientIp: "127.0.0.1",
+				requestId: Bun.randomUUIDv7(),
+			};
+		},
 		runtime: unavailable,
 		admit: unavailable,
 	};
@@ -57,6 +63,9 @@ test("webhook collection/detail routes have stable shapes and reject legacy id s
 		enable: unavailable,
 		disable: unavailable,
 		rotateSecret: unavailable,
+		activateSecret: async ({ id, signingKeyId }) => ({
+			data: { id, signingKeyId },
+		}),
 		replay: unavailable,
 		recover: unavailable,
 		read: async (params) =>
@@ -112,4 +121,26 @@ test("webhook collection/detail routes have stable shapes and reject legacy id s
 		"/webhooks?limit=101",
 	])
 		expect((await get(path)).status).toBe(400);
+	const activation = { id, signingKeyId: Bun.randomUUIDv7() };
+	const activate = (body: unknown) =>
+		app.handle(
+			new Request("http://localhost/webhooks/activate-secret", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"idempotency-key": "activation-fixture",
+				},
+				body: JSON.stringify(body),
+			}),
+		);
+	expect(
+		(
+			await checkedJSON(
+				await activate(activation),
+				webhookModel.activatedResponse,
+			)
+		).data,
+	).toEqual(activation);
+	expect(required).toBe("webhooks:rotate-secret");
+	expect((await activate({ id })).status).toBe(400);
 });

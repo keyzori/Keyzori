@@ -3,7 +3,11 @@ import { websocket } from "elysia/websocket";
 import type { ActivityService } from "./ActivityService";
 import type { $Requests } from "../../types/application";
 import { guard } from "../../core/http/guard";
-import { activityModel } from "./model";
+import {
+	activityModel,
+	activityServerFrameSchema,
+	activitySubscribeSchema,
+} from "./model";
 
 export const activityRoutes = (
 	service: Pick<ActivityService, keyof ActivityService>,
@@ -24,7 +28,7 @@ export const activityRoutes = (
 						"x-required-scope": "events:read",
 						security: [{ bearerAuth: [] }],
 						description:
-							"Capture before listing resources, then replay this cursor. List pages are non-atomic. Event payloads are historical invalidations, never current snapshots: serialize authorized refetches per resource, retain its highest processed event revision, and save only processed cursors. CURSOR_EXPIRED restarts this process with a fresh watermark.",
+							"Capture before listing resources. Stage non-atomic pages privately and replay this cursor before promoting the staged state. Reset per-resource revision high-waters on epoch changes. Events invalidate only their authorized event families; independently refresh composite and linked projections. CURSOR_EXPIRED discards the stage and restarts with a fresh watermark.",
 					},
 				},
 				({ operation }) => service.watermark(operation),
@@ -94,6 +98,8 @@ export const activityRoutes = (
 					detail: {
 						tags: ["Activity"],
 						"x-required-scope": "events:subscribe",
+						"x-websocket-subscribe": activitySubscribeSchema,
+						"x-websocket-server-frame": activityServerFrameSchema,
 						security: [{ bearerAuth: [] }],
 					},
 					// Validation lives in service.message so invalid frames CLOSE rather

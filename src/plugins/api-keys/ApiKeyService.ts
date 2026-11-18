@@ -1,4 +1,5 @@
-import { asc, eq, inArray } from "drizzle-orm";
+import { asc, eq, getColumns, inArray, sql } from "drizzle-orm";
+import { apiKeyGrantIds } from "../../core/auth/apiKeyGrants";
 import { apiKeys } from "../../core/database/schema/apiKeys";
 import { apiKeyGroups } from "../../core/database/schema/apiKeyGroups";
 import { groups } from "../../core/database/schema/groups";
@@ -6,6 +7,7 @@ import { KeyGenerator } from "../../core/security/KeyGenerator";
 import { SecretHasher } from "../../core/security/SecretHasher";
 import { ScopeService } from "../../core/auth/ScopeService";
 import { InputPolicy } from "../../core/http/InputPolicy";
+import { writeInstant } from "../../core/http/instant";
 import { HttpError } from "../../core/http/HttpError";
 import { ResourceQuery } from "../../core/http/ResourceQuery";
 import type { Database } from "../../core/database/Database";
@@ -21,6 +23,12 @@ import type {
 } from "../../types/apiKeys";
 import type { $Operation } from "../../types/operation";
 import type { $Transaction } from "../../types/database";
+
+const {
+	secretHash: _secretHash,
+	grantGeneration: _generation,
+	...viewColumns
+} = getColumns(apiKeys);
 
 export class ApiKeyService {
 	private readonly keys = new KeyGenerator();
@@ -51,9 +59,8 @@ export class ApiKeyService {
 						scopes: [],
 						allGroups: false,
 						secretHash: this.hashes.hash(generated.secret),
-						expiresAt: input.expiresAt
-							? this.input.timestamp(input.expiresAt)
-							: null,
+						expiresAt:
+							input.expiresAt == null ? null : writeInstant(input.expiresAt),
 						createdBy: "root",
 						updatedBy: "root",
 					})
@@ -83,23 +90,19 @@ export class ApiKeyService {
 					(await this.settings.read(tx)).defaultPageLimit,
 				);
 				const rows = await tx
-					.select()
+					.select({ ...viewColumns, groupIds: apiKeyGrantIds })
 					.from(apiKeys)
 					.where(query.where)
 					.orderBy(...query.order)
 					.limit(query.id ? 1 : query.limit + 1);
-				const grants = await this.grants(
-					tx,
-					rows.map((row) => row.id),
-				);
 				if (query.id) {
 					if (!rows[0]) throw new HttpError("NOT_FOUND");
-					return { data: this.view(rows[0], grants.get(rows[0].id) ?? []) };
+					return { data: this.view(rows[0], rows[0].groupIds) };
 				}
 				const page = rows.slice(0, query.limit);
 				const last = page.at(-1);
 				return {
-					data: page.map((row) => this.view(row, grants.get(row.id) ?? [])),
+					data: page.map((row) => this.view(row, row.groupIds)),
 					pageLimit: query.limit,
 					nextCursor:
 						rows.length > query.limit && last ? query.cursor(last) : null,
@@ -127,6 +130,7 @@ export class ApiKeyService {
 			async (tx, now) => {
 				const rows = await this.lock(tx, ids);
 				const grants = await this.grants(tx, ids);
+				const liveGroups = new Set<string>();
 				if (selectedGroups?.length) {
 					const existing = await tx
 						.select({ id: groups.id })
@@ -134,14 +138,19 @@ export class ApiKeyService {
 						.where(inArray(groups.id, selectedGroups))
 						.orderBy(asc(groups.id))
 						.for("key share");
-					if (existing.length !== selectedGroups.length)
-						throw new HttpError("INVALID_REQUEST", {
-							groupIds: "Unknown group",
-						});
+					for (const group of existing) liveGroups.add(group.id);
 				}
 				for (const row of rows) {
 					const beforeGroups = grants.get(row.id) ?? [];
 					const groupIds = selectedGroups ?? beforeGroups;
+					if (
+						selectedGroups?.some(
+							(id) => !liveGroups.has(id) && !beforeGroups.includes(id),
+						)
+					)
+						throw new HttpError("INVALID_REQUEST", {
+							groupIds: "Unknown group",
+						});
 					const allGroups = input.changes.allGroups ?? row.allGroups;
 					if (allGroups && groupIds.length)
 						throw new HttpError("INVALID_REQUEST", {
@@ -153,14 +162,19 @@ export class ApiKeyService {
 							input.changes.description === undefined
 								? row.description
 								: input.changes.description,
-						scopes: scopes ?? row.scopes,
+						scopes:
+							scopes &&
+							(scopes.length !== row.scopes.length ||
+								scopes.some((scope) => !row.scopes.includes(scope)))
+								? scopes
+								: row.scopes,
 						allGroups,
 						expiresAt:
 							input.changes.expiresAt === undefined
 								? row.expiresAt
-								: input.changes.expiresAt
-									? this.input.timestamp(input.changes.expiresAt)
-									: null,
+								: input.changes.expiresAt === null
+									? null
+									: writeInstant(input.changes.expiresAt),
 					};
 					const diff = this.audit.changes(
 						{
@@ -174,11 +188,27 @@ export class ApiKeyService {
 						{ ...changes, groupIds },
 					);
 					if (!diff.changed) continue;
+					const authorityChanged = [
+						"scopes",
+						"allGroups",
+						"groupIds",
+						"expiresAt",
+					].some((field) => Object.hasOwn(diff.after, field));
 					await tx
 						.update(apiKeys)
-						.set({ ...changes, updatedAt: now, updatedBy: "root" })
+						.set({
+							...changes,
+							...(authorityChanged
+								? { grantGeneration: sql`${apiKeys.grantGeneration} + 1` }
+								: {}),
+							updatedAt: now,
+							updatedBy: "root",
+						})
 						.where(eq(apiKeys.id, row.id));
-					if (selectedGroups !== undefined) {
+					if (
+						selectedGroups !== undefined &&
+						Object.hasOwn(diff.after, "groupIds")
+					) {
 						await tx
 							.delete(apiKeyGroups)
 							.where(eq(apiKeyGroups.apiKeyId, row.id));
@@ -226,7 +256,12 @@ export class ApiKeyService {
 					if (row.enabled === enabled) continue;
 					await tx
 						.update(apiKeys)
-						.set({ enabled, updatedAt: now, updatedBy: "root" })
+						.set({
+							enabled,
+							grantGeneration: sql`${apiKeys.grantGeneration} + 1`,
+							updatedAt: now,
+							updatedBy: "root",
+						})
 						.where(eq(apiKeys.id, row.id));
 					await this.audit.record(tx, {
 						...operation,
@@ -294,6 +329,7 @@ export class ApiKeyService {
 						.update(apiKeys)
 						.set({
 							secretHash: this.hashes.hash(generated.secret),
+							grantGeneration: sql`${apiKeys.grantGeneration} + 1`,
 							updatedAt: now,
 							updatedBy: "root",
 						})
@@ -313,7 +349,10 @@ export class ApiKeyService {
 			{ secretIds: (result) => result.data.map((row) => row.id) },
 		);
 	}
-	private view(row: $ApiKey, groupIds: string[]) {
+	private view(
+		row: Omit<$ApiKey, "secretHash" | "grantGeneration">,
+		groupIds: string[],
+	) {
 		return {
 			id: row.id,
 			name: row.name,

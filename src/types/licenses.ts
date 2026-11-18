@@ -3,7 +3,7 @@ import type { licenseModel } from "../plugins/licenses/model";
 import type { licenses } from "../core/database/schema/licenses";
 
 export type $License = typeof licenses.$inferSelect;
-export type $LicenseAdmin = UnwrapSchema<typeof licenseModel.issued>["data"];
+export type $LicenseAdmin = UnwrapSchema<typeof licenseModel.resource>;
 export type $LicenseCreate = UnwrapSchema<typeof licenseModel.create>;
 export type $LicenseUpdate = UnwrapSchema<typeof licenseModel.update>;
 export type $LicenseAction = UnwrapSchema<typeof licenseModel.action>;
@@ -14,4 +14,6 @@ export type $HardwareRemoval = UnwrapSchema<typeof licenseModel.removeHardware>;
 export type $IpRemoval = UnwrapSchema<typeof licenseModel.removeIps>;
 
 export type $UsageConsume = UnwrapSchema<typeof licenseModel.consume>;
-export type $Registration = UnwrapSchema<typeof licenseModel.register>;
+export type $Registration =
+	| (UnwrapSchema<typeof licenseModel.registerHardware> & { ip?: never })
+	| (UnwrapSchema<typeof licenseModel.registerIp> & { hardwareId?: never });

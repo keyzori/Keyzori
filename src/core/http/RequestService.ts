@@ -8,6 +8,7 @@ import type { SettingsService } from "../../plugins/settings/SettingsService";
 import type { $Principal } from "../../types/auth";
 import type { $Operation } from "../../types/operation";
 import type { Access } from "./operations";
+import type { Metrics, AdmissionFailure } from "../observability/Metrics";
 
 export class RequestService {
 	private readonly admitted = new WeakMap<Request, Promise<$Operation>>();
@@ -19,13 +20,14 @@ export class RequestService {
 		private readonly tracker = new RequestTracker(),
 		private readonly maxInFlight = 128,
 		private readonly peerRequestsPerMinute = 600,
+		private readonly metrics?: Metrics,
 	) {}
 	/** Runs before parsing or database access. Proxies share the direct-peer budget. */
 	async admit(request: Request, peer: string | null) {
 		const context = this.tracker.begin(request);
-		if (this.tracker.draining || this.tracker.active > this.maxInFlight)
-			throw new HttpError("SERVICE_UNAVAILABLE");
-		if (!peer) throw new HttpError("SERVICE_UNAVAILABLE");
+		if (this.tracker.draining) this.unavailable("draining");
+		if (this.tracker.active > this.maxInFlight) this.unavailable("capacity");
+		if (!peer) this.unavailable("peer_missing");
 		if (
 			request.url.length > 8192 ||
 			Array.from(request.headers).reduce(
@@ -34,12 +36,33 @@ export class RequestService {
 			) > 16384
 		)
 			throw new HttpError("INVALID_REQUEST");
-		if (new URL(request.url).pathname === "/live") return;
-		await this.limiter.check(
+		const path = new URL(request.url).pathname.replace(/\/$/, "");
+		if (
+			(request.method === "GET" || request.method === "HEAD") &&
+			path === "/live"
+		)
+			return;
+		await this.checkLimit(
 			`peer:${peer}`,
 			this.peerRequestsPerMinute,
 			context.deadlineAt,
 		);
+	}
+	private unavailable(reason: AdmissionFailure): never {
+		this.metrics?.admissionFailure(reason);
+		throw new HttpError("SERVICE_UNAVAILABLE");
+	}
+	private async checkLimit(bucket: string, limit: number, deadlineAt: number) {
+		try {
+			await this.limiter.check(bucket, limit, deadlineAt);
+		} catch (error) {
+			this.metrics?.admissionFailure(
+				error instanceof HttpError && error.status === 429
+					? "rate_limited"
+					: "limiter_unavailable",
+			);
+			throw error;
+		}
 	}
 	async authorize(
 		request: Request,
@@ -80,7 +103,7 @@ export class RequestService {
 				error instanceof HttpError &&
 				error.status === 401
 			)
-				await this.limiter.check(
+				await this.checkLimit(
 					`invalid:${context.clientIp}`,
 					settings.adminRequestsPerMinute,
 					context.deadlineAt,
@@ -88,7 +111,7 @@ export class RequestService {
 			throw error;
 		}
 		if (settings.rateLimitEnabled)
-			await this.limiter.check(
+			await this.checkLimit(
 				`${principal.kind}:${principal.id}:${context.clientIp}`,
 				settings.adminRequestsPerMinute,
 				context.deadlineAt,
@@ -115,7 +138,7 @@ export class RequestService {
 		};
 		const settings = await this.settings.read(undefined, context.deadlineAt);
 		if (settings.rateLimitEnabled)
-			await this.limiter.check(
+			await this.checkLimit(
 				`validate:${context.clientIp}`,
 				settings.validateRequestsPerMinute,
 				context.deadlineAt,

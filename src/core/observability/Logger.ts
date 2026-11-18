@@ -19,10 +19,17 @@ const safeCauses = new Set([
 	"SCHEMA_INCOMPATIBLE",
 	"UNSUPPORTED_DATABASE_VERSION",
 	"MIGRATION_ROLE_REQUIRED",
+	"RUNTIME_ROLE_REQUIRED",
+	"INVALID_CONFIGURATION",
+	"REDIS_CLOSED",
+	"REDIS_CAPACITY",
+	"FORCED_SHUTDOWN",
+	"SHUTDOWN_FAILED",
 ]);
 
 export class Logger {
 	private readonly levels = { debug: 0, info: 1, warn: 2, error: 3 };
+	private nextUnavailableLog = 0;
 	constructor(
 		private readonly level: "debug" | "info" | "warn" | "error" = "info",
 	) {}
@@ -72,6 +79,11 @@ export class Logger {
 		} = {},
 	) {
 		if (this.levels[level] < this.levels[this.level]) return;
+		if (event === "request.failed" && fields.code === "SERVICE_UNAVAILABLE") {
+			const now = performance.now();
+			if (now < this.nextUnavailableLog) return;
+			this.nextUnavailableLog = now + 5000;
+		}
 		console.log(
 			JSON.stringify({
 				time: new Date().toISOString(),

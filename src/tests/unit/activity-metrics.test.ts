@@ -5,6 +5,7 @@ import { AuthService } from "../../core/auth/AuthService";
 import type { Database } from "../../core/database/Database";
 import { transportBufferedBytes } from "../../plugins/activity/SocketQueue";
 import type { $Operation } from "../../types/operation";
+import { fixtureWatermark } from "./activity.fixture";
 
 const database: Pick<Database, "transaction"> = {
 	transaction: async () => {
@@ -19,6 +20,7 @@ const operation: $Operation = {
 
 test("stream gauges track local admission, exact serialized frames and backpressure cleanup", async () => {
 	const gauges = new Map<OperationalGauge, number>();
+	let backpressureCloses = 0;
 	const service = new ActivityService(
 		database,
 		new AuthService(database, "fixture"),
@@ -27,11 +29,15 @@ test("stream gauges track local admission, exact serialized frames and backpress
 		100,
 		{},
 		{
+			streamBackpressureClose: () => {
+				backpressureCloses++;
+			},
 			setGauge: (name, value) => {
 				gauges.set(name, value);
 			},
 		},
 	);
+	spyOn(service, "watermark").mockResolvedValue({ data: fixtureWatermark });
 	const read = spyOn(service, "read").mockResolvedValue({
 		data: [],
 		pageLimit: 100,
@@ -67,6 +73,7 @@ test("stream gauges track local admission, exact serialized frames and backpress
 		await service.subscribe(socket.id);
 		expect(frames).toHaveLength(2);
 		expect(closes).toEqual([1013]);
+		expect(backpressureCloses).toBe(1);
 		expect(gauges.get("keyzori_streams_active")).toBe(0);
 		expect(gauges.get("keyzori_stream_queue_messages")).toBe(0);
 		expect(gauges.get("keyzori_stream_queue_bytes")).toBe(0);

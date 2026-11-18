@@ -10,7 +10,8 @@ import {
 	or,
 	sql,
 } from "drizzle-orm";
-import { activityEvents } from "../../core/database/schema/events";
+import { activityEvents, eventState } from "../../core/database/schema/events";
+import { apiKeys } from "../../core/database/schema/apiKeys";
 import {
 	deliveries,
 	deliveryAttempts,
@@ -19,6 +20,12 @@ import { webhooks } from "../../core/database/schema/webhooks";
 import { HttpError } from "../../core/http/HttpError";
 import { WebhookAuthority } from "./WebhookAuthority";
 import { WebhookSecrets } from "./WebhookSecrets";
+import {
+	readStoredDelivery,
+	readStoredEvent,
+	StoredEventError,
+} from "./EventService";
+import { AuditService } from "../audits/AuditService";
 import {
 	WebhookTransport,
 	type $WebhookPrivateDestination,
@@ -31,7 +38,14 @@ import type { $WebhookClaim } from "../../types/webhookManagement";
 import type { $Transaction } from "../../types/database";
 
 type Gate =
-	"ready" | "lost" | "expired" | "authority_revoked" | "endpoint_unavailable";
+	| "ready"
+	| "busy"
+	| "lost"
+	| "expired"
+	| "authority_revoked"
+	| "endpoint_unavailable"
+	| "invalid_payload"
+	| "signing_key_unavailable";
 type Outcome = {
 	status?: number | null;
 	error: string | null;
@@ -55,6 +69,7 @@ export class WebhookDispatcher {
 		encryptionKey?: string,
 		allowedOrigins: readonly string[] = [],
 		privateDestinations: readonly $WebhookPrivateDestination[] = [],
+		private readonly audit = new AuditService(),
 	) {
 		this.authority = auth ? new WebhookAuthority(auth) : undefined;
 		this.secrets = new WebhookSecrets(encryptionKey);
@@ -84,66 +99,148 @@ export class WebhookDispatcher {
 
 	private async dispatch(limit: number) {
 		if (!this.authority) throw new HttpError("SERVICE_UNAVAILABLE");
-		const endpoints = await this.database.transaction((tx) =>
-			tx
-				.select({ id: webhooks.id })
+		const endpoints = await this.database.transaction(async (tx) => {
+			const [checkpoint] = await tx
+				.select({ sequence: eventState.sequence })
+				.from(eventState)
+				.where(eq(eventState.id, 1));
+			if (!checkpoint) throw new HttpError("SERVICE_UNAVAILABLE");
+			return tx
+				.select({
+					id: webhooks.id,
+					version: webhooks.version,
+					// Grant edits publish activity and advance the high-water mark.
+					// Expiry, deletion and key rotation are also observable while idle.
+					reviewOwner: sql<boolean>`${webhooks.ownerApiKeyId} is not null and not exists (
+						select 1 from ${apiKeys} where ${apiKeys.id} = ${webhooks.ownerApiKeyId}
+						and ${apiKeys.enabled} and ${apiKeys.secretHash} = ${webhooks.ownerCredentialHash}
+						and (${apiKeys.expiresAt} is null or ${apiKeys.expiresAt} > clock_timestamp()))`,
+					lastError: webhooks.lastError,
+					failures: webhooks.dispatchFailures,
+					deferred: sql<boolean>`coalesce(${webhooks.dispatchRetryAt} > clock_timestamp(), false)`,
+					behind: sql<boolean>`${webhooks.lastSequence} < ${String(checkpoint.sequence)}::bigint`,
+					due: sql<
+						string | null
+					>`(select ${deliveries.id} from ${deliveries} where ${deliveries.webhookId} = ${webhooks.id} and ${this.due()} order by ${deliveries.nextAttemptAt}, ${deliveries.id} limit 1)`,
+				})
 				.from(webhooks)
 				.where(eq(webhooks.enabled, true))
 				.orderBy(
 					sql`${webhooks.lastDispatchAt} asc nulls first`,
 					asc(webhooks.id),
 				)
-				.limit(101),
-		);
+				.limit(101);
+		});
 		if (endpoints.length > 100) throw new HttpError("SERVICE_UNAVAILABLE");
-		let failures = 0;
 		let remaining = limit;
-		// A corrupt signing key or failing endpoint must not prevent other cursors progressing.
-		await this.parallel(endpoints, async ({ id }) => {
-			try {
-				await this.enqueue(id);
-			} catch {
-				failures++;
-				await this.endpointError(id, "enqueue_unavailable");
-			}
-			if (remaining <= 0 || this.shutdown.signal.aborted) return;
-			try {
-				const candidate = await this.database.transaction(async (tx) => {
-					const now = await this.now(tx);
-					const [row] = await tx
-						.select({ id: deliveries.id })
-						.from(deliveries)
-						.where(
-							and(
-								eq(deliveries.webhookId, id),
-								or(
+		let sharedFailure = false;
+		type Endpoint = (typeof endpoints)[number];
+		let round = endpoints;
+		let first = true;
+		do {
+			const again: Endpoint[] = [];
+			await this.parallel(round, async (endpoint) => {
+				const { id, version } = endpoint;
+				let failure: string | undefined;
+				try {
+					// A healthy, caught-up endpoint takes no per-endpoint locks.
+					if (
+						endpoint.deferred &&
+						endpoint.lastError === "dispatch_unavailable"
+					)
+						return;
+					let inserted: string | undefined;
+					if (
+						first &&
+						!endpoint.deferred &&
+						(endpoint.behind || endpoint.reviewOwner || endpoint.lastError)
+					) {
+						try {
+							inserted = await this.enqueue(id);
+						} catch (error) {
+							failure =
+								error instanceof StoredEventError
+									? "stored_event_inconsistent"
+									: "enqueue_unavailable";
+						}
+					}
+					// A malformed newer event cannot strand already-validated queued work.
+					if (remaining > 0 && !this.shutdown.signal.aborted) {
+						const candidate = first
+							? (endpoint.due ?? inserted)
+							: await this.nextDue(id);
+						if (candidate && remaining > 0) {
+							remaining--;
+							const claim = await this.claim(candidate, id);
+							if (claim) {
+								await this.send(claim);
+								again.push(endpoint);
+							} else remaining++;
+						}
+					}
+					if (first && endpoint.failures && !endpoint.deferred && !failure)
+						await this.database.transaction((tx) =>
+							tx
+								.update(webhooks)
+								.set({
+									dispatchFailures: 0,
+									dispatchRetryAt: null,
+									lastError: sql`case when ${webhooks.lastError} = 'backlog_full' then 'backlog_full' else null end`,
+								})
+								.where(
 									and(
-										eq(deliveries.state, "pending"),
-										lte(deliveries.nextAttemptAt, now),
-									),
-									and(
-										eq(deliveries.state, "claimed"),
-										lte(deliveries.leaseUntil, now),
+										eq(webhooks.id, id),
+										eq(webhooks.version, version),
+										eq(webhooks.dispatchFailures, endpoint.failures),
+										lte(webhooks.dispatchRetryAt, sql`clock_timestamp()`),
 									),
 								),
-							),
-						)
-						.orderBy(asc(deliveries.nextAttemptAt), asc(deliveries.id))
-						.limit(1);
-					return row;
-				});
-				if (!candidate || remaining <= 0) return;
-				remaining--;
-				const claim = await this.claim(candidate.id, id);
-				if (claim) await this.send(claim);
-				else remaining++;
-			} catch {
-				failures++;
-				await this.endpointError(id, "dispatch_unavailable");
-			}
+						);
+				} catch {
+					failure = "dispatch_unavailable";
+				}
+				if (failure) {
+					try {
+						await this.endpointError(id, version, failure);
+					} catch {
+						sharedFailure = true;
+					}
+				}
+			});
+			first = false;
+			round = again;
+		} while (
+			remaining > 0 &&
+			round.length &&
+			!sharedFailure &&
+			!this.shutdown.signal.aborted
+		);
+		if (sharedFailure) throw new HttpError("SERVICE_UNAVAILABLE");
+	}
+	private due() {
+		// Stable for this discovery statement and usable as an index bound. Claim
+		// and settlement still compare against a fresh DB clock under the row lock.
+		return or(
+			and(
+				eq(deliveries.state, "pending"),
+				lte(deliveries.nextAttemptAt, sql`statement_timestamp()`),
+			),
+			and(
+				eq(deliveries.state, "claimed"),
+				lte(deliveries.leaseUntil, sql`statement_timestamp()`),
+			),
+		);
+	}
+	private nextDue(id: string) {
+		return this.database.transaction(async (tx) => {
+			const [candidate] = await tx
+				.select({ id: deliveries.id })
+				.from(deliveries)
+				.where(and(eq(deliveries.webhookId, id), this.due()))
+				.orderBy(asc(deliveries.nextAttemptAt), asc(deliveries.id))
+				.limit(1);
+			return candidate?.id;
 		});
-		if (failures)
-			throw new Error(`${failures} webhook endpoint operations failed`);
 	}
 	private async parallel<T>(items: T[], work: (item: T) => Promise<void>) {
 		const pending = [...items];
@@ -157,23 +254,40 @@ export class WebhookDispatcher {
 			}),
 		);
 	}
-	private async endpointError(id: string, error: string) {
-		try {
-			await this.database.transaction(async (tx) => {
-				await tx
-					.update(webhooks)
-					.set({ lastError: error, lastDispatchAt: await this.now(tx) })
-					.where(eq(webhooks.id, id));
-			});
-		} catch {
-			/* A database outage leaves durable work available for a later pass. */
-		}
+	private endpointError(id: string, version: number, error: string) {
+		return this.database.transaction((tx) =>
+			tx
+				.update(webhooks)
+				.set({
+					lastError: error,
+					lastDispatchAt: sql`clock_timestamp()`,
+					dispatchFailures: sql`least(6, ${webhooks.dispatchFailures} + 1)`,
+					dispatchRetryAt: sql`clock_timestamp() + least(30, power(2, ${webhooks.dispatchFailures} + 1)) * interval '1 second'`,
+				})
+				.where(
+					and(
+						eq(webhooks.id, id),
+						eq(webhooks.enabled, true),
+						eq(webhooks.version, version),
+						or(
+							isNull(webhooks.dispatchRetryAt),
+							lte(webhooks.dispatchRetryAt, sql`clock_timestamp()`),
+						),
+					),
+				),
+		);
 	}
 
 	private async enqueue(id: string) {
 		return this.database.transaction(async (tx) => {
 			const locked = await this.authority?.lock(tx, id, "update");
-			if (!locked?.endpoint.enabled || !this.authority) return;
+			if (
+				!locked ||
+				locked === "busy" ||
+				!locked.endpoint.enabled ||
+				!this.authority
+			)
+				return;
 			const { endpoint, owner } = locked;
 			try {
 				if (!owner) throw new HttpError("UNAUTHORIZED");
@@ -185,15 +299,18 @@ export class WebhookDispatcher {
 				);
 			} catch (error) {
 				if (!this.authority.revoked(error)) throw error;
-				await tx
-					.update(webhooks)
-					.set({ enabled: false, lastError: "owner_authority_revoked" })
-					.where(eq(webhooks.id, id));
-				await this.authority.cancel(tx, id, "owner_authority_revoked");
+				await this.authority.disableRevoked(tx, endpoint, this.audit);
 				return;
 			}
 			if (!owner) return;
-			this.secrets.decrypt(endpoint.secretCiphertext);
+			const window = await tx
+				.select({ sequence: activityEvents.sequence })
+				.from(activityEvents)
+				.where(gt(activityEvents.sequence, endpoint.lastSequence))
+				.orderBy(asc(activityEvents.sequence))
+				.limit(100);
+			const high = window.at(-1)?.sequence;
+			if (high == null && endpoint.lastError !== "backlog_full") return;
 			const [backlog] = await tx
 				.select({ count: sql<number>`count(*)::integer` })
 				.from(deliveries)
@@ -203,40 +320,46 @@ export class WebhookDispatcher {
 						inArray(deliveries.state, ["pending", "claimed"]),
 					),
 				);
-			let capacity = Math.max(0, 1000 - (backlog?.count ?? 1000));
+			const capacity = Math.max(0, 1000 - (backlog?.count ?? 1000));
 			if (!capacity) {
+				if (endpoint.lastError !== "backlog_full")
+					await tx
+						.update(webhooks)
+						.set({ lastError: "backlog_full" })
+						.where(eq(webhooks.id, id));
+				return;
+			}
+			if (high == null) {
 				await tx
 					.update(webhooks)
-					.set({ lastError: "backlog_full" })
+					.set({ lastError: null })
 					.where(eq(webhooks.id, id));
 				return;
 			}
 			const rows = await tx
 				.select()
 				.from(activityEvents)
-				.where(gt(activityEvents.sequence, endpoint.lastSequence))
+				.where(
+					and(
+						gt(activityEvents.sequence, endpoint.lastSequence),
+						lte(activityEvents.sequence, high),
+						this.authority.enqueueFilter(owner, endpoint),
+					),
+				)
 				.orderBy(asc(activityEvents.sequence))
-				.limit(100);
+				.limit(Math.min(capacity + 1, 100));
+			const batch = rows.slice(0, capacity);
+			const overflow = rows[capacity]?.sequence;
+			// Only pass contiguous classified positions, never the first unqueued match.
+			const lastSequence = overflow == null ? high : overflow - 1n;
 			const now = await this.now(tx);
-			let lastSequence = endpoint.lastSequence;
-			for (const event of rows) {
-				if (event.sequence === null) continue;
-				if (
-					this.authority.allowsEvent(
-						owner,
-						endpoint,
-						event.event,
-						event.groupId,
-						event.global,
-						event,
-					)
-				) {
-					if (!capacity) break;
-					if (Buffer.byteLength(JSON.stringify(event.payload)) > 32768)
-						throw new Error("Webhook event exceeds payload limit");
-					await tx
-						.insert(deliveries)
-						.values({
+			let inserted: { id: string }[] = [];
+			if (batch.length) {
+				this.secrets.decrypt(endpoint.secretCiphertext);
+				inserted = await tx
+					.insert(deliveries)
+					.values(
+						batch.map((event) => ({
 							id: Bun.randomUUIDv7(),
 							webhookId: endpoint.id,
 							eventId: event.id,
@@ -246,34 +369,39 @@ export class WebhookDispatcher {
 							global: event.global,
 							endpointVersion: endpoint.version,
 							url: endpoint.url,
-							payload: event.payload,
+							payload: readStoredEvent(event),
 							secretCiphertext: endpoint.secretCiphertext,
 							signingKeyId: endpoint.signingKeyId,
 							expiresAt: new Date(now.getTime() + 86400000),
 							nextAttemptAt: now,
 							createdAt: now,
-						})
-						.onConflictDoNothing();
-					capacity--;
-				}
-				lastSequence = event.sequence;
+						})),
+					)
+					.onConflictDoNothing({
+						target: [deliveries.webhookId, deliveries.eventId],
+						where: isNull(deliveries.replayOf),
+					})
+					.returning({ id: deliveries.id });
 			}
 			await tx
 				.update(webhooks)
-				.set({ lastSequence, lastError: capacity ? null : "backlog_full" })
+				.set({
+					lastSequence,
+					lastError: inserted.length === capacity ? "backlog_full" : null,
+				})
 				.where(eq(webhooks.id, id));
+			return inserted[0]?.id;
 		});
 	}
 
 	private async claim(id: string, webhookId: string) {
-		return this.database.transaction(async (tx) => {
+		const claimed = await this.database.transaction(async (tx) => {
 			const locked = await this.authority?.lock(tx, webhookId, "update");
-			if (!locked || !this.authority) return;
-			const { endpoint, owner } = locked;
+			if (!locked || locked === "busy" || !this.authority) return;
 			const [delivery] = await tx
 				.select()
 				.from(deliveries)
-				.where(eq(deliveries.id, id))
+				.where(and(eq(deliveries.id, id), eq(deliveries.webhookId, webhookId)))
 				.for("update", { skipLocked: true });
 			if (
 				!delivery ||
@@ -301,35 +429,24 @@ export class WebhookDispatcher {
 							isNull(deliveryAttempts.completedAt),
 						),
 					);
-			const unavailable =
-				!endpoint.enabled || endpoint.version !== delivery.endpointVersion;
-			const allowed =
-				owner &&
-				this.authority.allowsEvent(
-					owner,
-					endpoint,
-					delivery.payload.event,
-					delivery.groupId,
-					delivery.global,
-					delivery,
-				);
+			const check = this.checkDelivery(locked, delivery, now);
 			if (
-				unavailable ||
-				!allowed ||
+				check !== "ready" ||
 				delivery.attempts >= 8 ||
 				delivery.expiresAt <= now
 			) {
 				await tx
 					.update(deliveries)
 					.set({
-						state: unavailable || !allowed ? "cancelled" : "failed",
-						error: unavailable
-							? "endpoint_unavailable"
-							: !allowed
-								? "authority_revoked"
-								: "retry_window_exhausted",
+						state:
+							check === "endpoint_unavailable" || check === "authority_revoked"
+								? "cancelled"
+								: "failed",
+						error: check === "ready" ? "retry_window_exhausted" : check,
 						claimToken: null,
 						leaseUntil: null,
+						terminalAt: now,
+						secretCiphertext: null,
 					})
 					.where(eq(deliveries.id, id));
 				return;
@@ -370,87 +487,158 @@ export class WebhookDispatcher {
 				attempt: delivery.attempts + 1,
 				startedAt: now,
 			});
-			this.metrics?.webhook("claimed");
 			return claim;
 		});
+		if (claimed) this.metrics?.webhook("claimed");
+		return claimed;
 	}
 
-	private async gate(tx: $Transaction, attempt: $WebhookClaim): Promise<Gate> {
+	private checkDelivery(
+		locked: Exclude<
+			Awaited<ReturnType<WebhookAuthority["lock"]>>,
+			"busy" | undefined
+		>,
+		current: $WebhookClaim,
+		now: Date,
+	): Gate {
+		const { endpoint, owner } = locked;
+		if (
+			!endpoint.enabled ||
+			endpoint.version !== current.endpointVersion ||
+			endpoint.id !== current.webhookId ||
+			endpoint.url !== current.url
+		)
+			return "endpoint_unavailable";
+		let payload;
+		try {
+			payload = readStoredDelivery(current);
+		} catch (error) {
+			if (error instanceof StoredEventError) return "invalid_payload";
+			throw error;
+		}
+		if (
+			!owner ||
+			!this.authority ||
+			(owner.kind === "api" && owner.expiresAt && owner.expiresAt <= now)
+		)
+			return "authority_revoked";
+		try {
+			this.authority.selection(
+				owner,
+				endpoint.events,
+				endpoint.allGroups,
+				endpoint.groupIds,
+			);
+		} catch (error) {
+			if (this.authority.revoked(error)) return "authority_revoked";
+			throw error;
+		}
+		return this.authority.allowsEvent(
+			owner,
+			endpoint,
+			payload.event,
+			current.groupId,
+			current.global,
+			current,
+		)
+			? "ready"
+			: "authority_revoked";
+	}
+
+	private async gate(
+		tx: $Transaction,
+		attempt: $WebhookClaim,
+		preparing = false,
+	): Promise<Exclude<Gate, "ready"> | $WebhookClaim> {
 		const locked = await this.authority?.lock(tx, attempt.webhookId, "share");
-		if (!locked || !this.authority) return "lost";
-		const [current] = await tx
+		if (locked === "busy") return "busy";
+		if (!locked) return "lost";
+		const query = tx
 			.select()
 			.from(deliveries)
 			.where(eq(deliveries.id, attempt.id));
+		const [current] = preparing ? await query.for("update") : await query;
 		if (
 			current?.state !== "claimed" ||
 			current.claimToken !== attempt.claimToken
 		)
 			return "lost";
-		if (!current.leaseUntil || current.leaseUntil <= (await this.now(tx)))
-			return "expired";
-		const { endpoint, owner } = locked;
-		if (!endpoint.enabled || endpoint.version !== attempt.endpointVersion)
-			return "endpoint_unavailable";
-		return owner &&
-			this.authority.allowsEvent(
-				owner,
-				endpoint,
-				attempt.payload.event,
-				attempt.groupId,
-				attempt.global,
-				current,
-			)
-			? "ready"
-			: "authority_revoked";
+		const now = await this.now(tx);
+		if (!current.leaseUntil || current.leaseUntil <= now) return "expired";
+		const check = this.checkDelivery(locked, current, now);
+		return check === "ready" ? current : check;
 	}
 	private async prepare(attempt: $WebhookClaim) {
-		return this.database.transaction(async (tx) => {
-			const timeoutSeconds = (await this.settings.read(tx))
-				.webhookTimeoutSeconds;
-			const gate = await this.gate(tx, attempt);
-			if (gate !== "ready") return { gate };
-			const checkedAt = performance.now();
-			const now = await this.now(tx);
-			// This commit is the uncertainty boundary. Claims alone do not consume sends.
-			const [claim] = await tx
-				.update(deliveries)
-				.set({ attempts: sql`${deliveries.attempts} + 1`, attemptedAt: now })
-				.where(
-					and(
-						this.fence(attempt),
-						eq(deliveries.attempts, attempt.attempts),
-						sql`${deliveries.attempts} < 8`,
-						gt(deliveries.expiresAt, sql`clock_timestamp()`),
+		return this.database.transaction(
+			async (tx) => {
+				const timeoutSeconds = (await this.settings.read(tx))
+					.webhookTimeoutSeconds;
+				const verified = await this.gate(tx, attempt, true);
+				if (typeof verified === "string") return { gate: verified };
+				const checkedAt = performance.now();
+				const now = await this.now(tx);
+				// Authorize, validate and sign the same locked database snapshot. Avoid
+				// using the caller's earlier copy of the JSON, destination or key.
+				const body = JSON.stringify(verified.payload);
+				const timestamp = String(Math.floor(now.getTime() / 1000));
+				let signature: string;
+				try {
+					if (!verified.secretCiphertext)
+						return { gate: "signing_key_unavailable" as const };
+					signature = this.secrets.sign(
+						verified.secretCiphertext,
+						timestamp,
+						verified.id,
+						body,
+					);
+				} catch {
+					return { gate: "signing_key_unavailable" as const };
+				}
+				// This commit is the uncertainty boundary. Claims alone do not consume sends.
+				const [claim] = await tx
+					.update(deliveries)
+					.set({ attempts: sql`${deliveries.attempts} + 1`, attemptedAt: now })
+					.where(
+						and(
+							this.fence(attempt),
+							eq(deliveries.attempts, attempt.attempts),
+							sql`${deliveries.attempts} < 8`,
+							gt(deliveries.expiresAt, sql`clock_timestamp()`),
+						),
+					)
+					.returning();
+				if (!claim) return { gate: "expired" as const };
+				const [marked] = await tx
+					.update(deliveryAttempts)
+					.set({ sendStartedAt: now, attempt: claim.attempts })
+					.where(
+						and(
+							eq(deliveryAttempts.id, claim.claimToken ?? ""),
+							isNull(deliveryAttempts.sendStartedAt),
+							isNull(deliveryAttempts.completedAt),
+						),
+					)
+					.returning({ id: deliveryAttempts.id });
+				if (!marked) throw new Error("Webhook send marker unavailable");
+				return {
+					gate: "ready" as const,
+					claim,
+					body,
+					timestamp,
+					signature,
+					deadlineAt:
+						checkedAt + (claim.leaseUntil?.getTime() ?? 0) - now.getTime(),
+					timeoutMs: Math.floor(
+						Math.min(
+							timeoutSeconds * 1000,
+							(claim.leaseUntil?.getTime() ?? 0) - now.getTime(),
+						),
 					),
-				)
-				.returning();
-			if (!claim) return { gate: "expired" as const };
-			const [marked] = await tx
-				.update(deliveryAttempts)
-				.set({ sendStartedAt: now, attempt: claim.attempts })
-				.where(
-					and(
-						eq(deliveryAttempts.id, claim.claimToken ?? ""),
-						isNull(deliveryAttempts.sendStartedAt),
-						isNull(deliveryAttempts.completedAt),
-					),
-				)
-				.returning({ id: deliveryAttempts.id });
-			if (!marked) throw new Error("Webhook send marker unavailable");
-			return {
-				gate,
-				claim,
-				deadlineAt:
-					checkedAt + (claim.leaseUntil?.getTime() ?? 0) - now.getTime(),
-				timeoutMs: Math.floor(
-					Math.min(
-						timeoutSeconds * 1000,
-						(claim.leaseUntil?.getTime() ?? 0) - now.getTime(),
-					),
-				),
-			};
-		});
+				};
+			},
+			"read",
+			Date.now() + 2000,
+		);
 	}
 	private async send(attempt: $WebhookClaim) {
 		if (!attempt.claimToken || !attempt.leaseUntil)
@@ -462,24 +650,18 @@ export class WebhookDispatcher {
 			});
 			return;
 		}
-		const body = JSON.stringify(attempt.payload);
-		const timestamp = String(Math.floor(Date.now() / 1000));
-		let signature: string;
+		let prepared: Awaited<ReturnType<WebhookDispatcher["prepare"]>>;
 		try {
-			signature = this.secrets.sign(
-				attempt.secretCiphertext,
-				timestamp,
-				attempt.id,
-				body,
-			);
-		} catch {
+			prepared = await this.prepare(attempt);
+		} catch (error) {
+			if (!(error instanceof HttpError && error.code === "SERVICE_UNAVAILABLE"))
+				throw error;
 			await this.settle(attempt, {
-				error: "signing_key_unavailable",
+				error: "authority_check_unavailable_before_send",
 				retry: true,
 			});
 			return;
 		}
-		const prepared = await this.prepare(attempt);
 		if (!prepared.claim || !prepared.timeoutMs) {
 			// Lost ownership and expired leases are NEVER terminal delivery failures.
 			if (
@@ -487,6 +669,13 @@ export class WebhookDispatcher {
 				prepared.gate === "endpoint_unavailable"
 			)
 				await this.settle(attempt, { error: prepared.gate, cancelled: true });
+			else if (prepared.gate === "invalid_payload")
+				await this.settle(attempt, { error: prepared.gate });
+			else if (
+				prepared.gate === "busy" ||
+				prepared.gate === "signing_key_unavailable"
+			)
+				await this.settle(attempt, { error: prepared.gate, retry: true });
 			return;
 		}
 		const claim = prepared.claim;
@@ -503,7 +692,7 @@ export class WebhookDispatcher {
 			checking = this.database
 				.transaction((tx) => this.gate(tx, claim), "read", Date.now() + 1000)
 				.then((gate) => {
-					if (gate !== "ready") {
+					if (typeof gate === "string") {
 						interruption = gate;
 						cancellation.abort();
 					}
@@ -520,16 +709,17 @@ export class WebhookDispatcher {
 		try {
 			const response = await this.transport.send(
 				claim.url,
-				body,
+				prepared.body,
 				{
 					"X-Keyzori-Delivery-Id": claim.id,
 					"X-Keyzori-Event-Id": claim.eventId,
-					"X-Keyzori-Timestamp": timestamp,
+					"X-Keyzori-Timestamp": prepared.timestamp,
 					"X-Keyzori-Signing-Key-Id": claim.signingKeyId,
-					"X-Keyzori-Signature": `v1=${signature}`,
+					"X-Keyzori-Signature": `v1=${prepared.signature}`,
 				},
 				timeoutMs,
 				signal,
+				claim.attempts,
 			);
 			const status = response.status;
 			outcome = {
@@ -537,7 +727,10 @@ export class WebhookDispatcher {
 				error: null,
 				retryAfter: response.retryAfter,
 				retry:
-					status === 408 || status === 425 || status === 429 || status >= 500,
+					status === 408 ||
+					status === 425 ||
+					status === 429 ||
+					(status >= 500 && status < 600),
 			};
 		} catch (error) {
 			const denied = error instanceof HttpError;
@@ -555,9 +748,13 @@ export class WebhookDispatcher {
 			interruption === "endpoint_unavailable"
 		)
 			outcome = { error: interruption, cancelled: true };
+		else if (interruption === "invalid_payload")
+			outcome = { error: interruption };
 		else if (interruption || this.shutdown.signal.aborted)
 			outcome = {
-				error: interruption ?? "shutdown_outcome_unknown",
+				error: interruption
+					? `${interruption}_outcome_unknown`
+					: "shutdown_outcome_unknown",
 				retry: true,
 			};
 		await this.settle(claim, outcome);
@@ -572,7 +769,7 @@ export class WebhookDispatcher {
 	}
 	private async settle(attempt: $WebhookClaim, outcome: Outcome) {
 		if (!attempt.claimToken) throw new Error("Missing claim token");
-		return this.database.transaction(async (tx) => {
+		const result = await this.database.transaction(async (tx) => {
 			const [current] = await tx
 				.select()
 				.from(deliveries)
@@ -612,11 +809,14 @@ export class WebhookDispatcher {
 					nextAttemptAt,
 					claimToken: null,
 					leaseUntil: null,
+					terminalAt: state === "pending" ? null : now,
+					secretCiphertext:
+						state === "pending" ? current.secretCiphertext : null,
 				})
 				.where(this.fence(attempt))
 				.returning({ id: deliveries.id });
 			if (!updated.length) return;
-			await tx
+			const [completed] = await tx
 				.update(deliveryAttempts)
 				.set({ completedAt: now, status, error: outcome.error })
 				.where(
@@ -624,9 +824,12 @@ export class WebhookDispatcher {
 						eq(deliveryAttempts.id, attempt.claimToken ?? ""),
 						isNull(deliveryAttempts.completedAt),
 					),
-				);
-			this.metrics?.webhook(succeeded ? "succeeded" : "failed");
+				)
+				.returning({ sendStartedAt: deliveryAttempts.sendStartedAt });
+			if (completed?.sendStartedAt)
+				return succeeded ? ("succeeded" as const) : ("failed" as const);
 		});
+		if (result) this.metrics?.webhook(result);
 	}
 	private async now(tx: $Transaction) {
 		const [clock] = await tx

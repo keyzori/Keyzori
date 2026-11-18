@@ -61,8 +61,24 @@ export const userModel = {
 	),
 	query: t.Record(t.String(), t.String()),
 	singleResponse: t.Object({ data: resource }, { additionalProperties: false }),
+	created: t.Object(
+		{
+			data: t.Union([
+				resource,
+				t.Object({ id: httpModel.id }, { additionalProperties: false }),
+			]),
+		},
+		{ additionalProperties: false },
+	),
 	bulkResponse: t.Object(
-		{ data: t.Array(resource) },
+		{
+			data: t.Array(
+				t.Union([
+					resource,
+					t.Object({ id: httpModel.id }, { additionalProperties: false }),
+				]),
+			),
+		},
 		{ additionalProperties: false },
 	),
 	removeResponse: t.Object(

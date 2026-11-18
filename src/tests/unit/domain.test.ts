@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { TypeBoxValidator } from "elysia";
+import { Elysia, TypeBoxValidator } from "elysia";
 import { DecimalPolicy } from "../../plugins/licenses/DecimalPolicy";
 import { validationModel } from "../../plugins/validate/model";
 import { meterModel } from "../../plugins/licenses/meterModel";
 import { Decision } from "../../plugins/validate/Decision";
+import { licenseModel } from "../../plugins/licenses/model";
 
 const decimal = new DecimalPolicy();
 
@@ -66,6 +67,41 @@ test("counter definitions allow unlimited and no-reset without an overage bypass
 	expect(
 		validator.Errors({ name: "requests", allowOverage: true }).length,
 	).toBeGreaterThan(0);
+});
+
+test("HTTP decoding never supplies a destructive meter action or overwrites omitted definition policy", async () => {
+	const app = new Elysia({ normalize: false })
+		.post("/adjust", { body: licenseModel.adjust }, ({ body }) => body)
+		.post("/definition", { body: meterModel.definition }, ({ body }) => body);
+	const post = (path: string, body: unknown) =>
+		app.handle(
+			new Request(`http://localhost${path}`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+			}),
+		);
+	expect(
+		(
+			await post("/adjust", {
+				ids: [Bun.randomUUIDv7()],
+				name: "credits",
+				value: "2",
+			})
+		).status,
+	).toBeGreaterThanOrEqual(400);
+	expect(
+		(
+			await post("/definition", {
+				name: "credits",
+				schedule: { time: "00:00" },
+			})
+		).status,
+	).toBeGreaterThanOrEqual(400);
+	const partial = { name: "credits", limit: "15" };
+	const result = await post("/definition", partial);
+	expect(result.status).toBe(200);
+	expect(await result.json()).toEqual(partial);
 });
 
 test("disabled decisions expose the custom reason with a stable code", () => {

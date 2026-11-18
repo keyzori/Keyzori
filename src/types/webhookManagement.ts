@@ -9,5 +9,8 @@ export type $WebhookClaim = $WebhookDelivery;
 export type $WebhookCreate = UnwrapSchema<typeof webhookModel.create>;
 export type $WebhookUpdate = UnwrapSchema<typeof webhookModel.update>;
 export type $WebhookAction = UnwrapSchema<typeof webhookModel.enable>;
+export type $WebhookActivation = UnwrapSchema<
+	typeof webhookModel.activateSecret
+>;
 export type $WebhookDelete = UnwrapSchema<typeof webhookModel.delete>;
 export type $WebhookRecovery = UnwrapSchema<typeof webhookModel.recovery>;

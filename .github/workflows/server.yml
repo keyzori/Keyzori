@@ -7,12 +7,12 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: server-${{ github.workflow }}-${{ github.ref }}
+  group: server-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   required:
     name: Required checks
-    needs: [workflows, verify]
+    needs: [workflows, verify, postgres17]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -21,9 +21,11 @@ jobs:
         env:
           WORKFLOW_RESULT: ${{ needs.workflows.result }}
           VERIFY_RESULT: ${{ needs.verify.result }}
+          PG17_RESULT: ${{ needs.postgres17.result }}
         run: |
           test "$WORKFLOW_RESULT" = success
           test "$VERIFY_RESULT" = success
+          test "$PG17_RESULT" = success
 
   workflows:
     name: Workflow checks
@@ -35,6 +37,26 @@ jobs:
           persist-credentials: false
       - name: Check workflows with actionlint 1.7.12
         run: docker run --rm --volume "$PWD:/repo:ro" --workdir /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+  postgres17:
+    name: Minimum PostgreSQL version and migration compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      HUSKY: "0"
+      KZ_TEST_POSTGRES_MAJOR: "17"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-bun
+      - name: Require the accepted v3 migration prefix
+        env:
+          KZ_MIGRATION_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: bun .github/scripts/migration-prefix.ts
+      - run: bun install --frozen-lockfile
+      - run: bun run test src/tests/integration/database.test.ts src/tests/integration/migration-compatibility.test.ts
 
   verify:
     name: Linux checks (${{ matrix.target }})
@@ -59,6 +81,9 @@ jobs:
       - run: bun run check
       - run: bun run openapi
       - run: bun run smoke:source
-      - run: docker build -f src/Dockerfile -t keyzori-server:test .
+      - name: Build and identify the exact smoke image
+        run: |
+          docker build --load --provenance=false --sbom=false -f src/Dockerfile -t keyzori-server:test .
+          echo "KZ_SMOKE_IMAGE_ID=$(docker image inspect --format '{{.Id}}' keyzori-server:test)" >> "$GITHUB_ENV"
       - run: bun run smoke:container
       - run: bun run smoke:compose

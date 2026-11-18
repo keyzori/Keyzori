@@ -24,8 +24,8 @@ export const readHealth = (service: $Health) =>
 			response: { 200: responseModel, 503: responseModel },
 			detail: { tags: ["Operations"], security: [] },
 		},
-		async ({ set }) => {
-			const result = await service.status();
+		async ({ request, set }) => {
+			const result = await service.status(request);
 			if (!result.healthy) set.status = 503;
 			return result;
 		},

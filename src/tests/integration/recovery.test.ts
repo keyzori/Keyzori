@@ -1,7 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { MigrationService } from "../../core/database/MigrationService";
+import { RestoreService } from "../../core/database/RestoreService";
+import { Database } from "../../core/database/Database";
 import { eventState } from "../../core/database/schema/events";
 import { deliveries } from "../../core/database/schema/deliveries";
 import { webhooks } from "../../core/database/schema/webhooks";
@@ -9,6 +11,8 @@ import { ActivityService } from "../../plugins/activity/ActivityService";
 import { WebhookSecrets } from "../../plugins/webhooks/WebhookSecrets";
 import { WebhookDispatcher } from "../../plugins/webhooks/WebhookDispatcher";
 import { WebhookTransport } from "../../plugins/webhooks/WebhookTransport";
+import { WebhookService } from "../../plugins/webhooks/WebhookService";
+import { IdempotencyService } from "../../core/security/IdempotencyService";
 import { TestContext } from "../fixtures/TestContext";
 
 async function docker(args: string[], password = "", input?: Uint8Array) {
@@ -36,7 +40,10 @@ async function docker(args: string[], password = "", input?: Uint8Array) {
 
 /** Only exec pg_dump/restore inside the project fixture container owning this exact port. */
 async function fixtureClient(url: URL) {
+	const run = Bun.env.KZ_TEST_RUN_ID;
 	if (
+		!run ||
+		!/^[a-f0-9-]{36}$/.test(run) ||
 		url.hostname !== "127.0.0.1" ||
 		!/^\/keyzori_test_[a-f0-9]+$/.test(url.pathname)
 	)
@@ -46,7 +53,7 @@ async function fixtureClient(url: URL) {
 			await docker([
 				"ps",
 				"--filter",
-				"label=dev.keyzori.test-run",
+				`label=dev.keyzori.test-run=${run}`,
 				"--format",
 				"{{.ID}}",
 			]),
@@ -81,8 +88,12 @@ async function fixtureClient(url: URL) {
 			command: "pg_dump" | "pg_restore",
 			database: string,
 			input?: Uint8Array,
+			role?: string,
 		) => {
-			if (!/^keyzori_test_[a-f0-9]+$/.test(database))
+			if (
+				!/^keyzori_test_[a-f0-9]+$/.test(database) ||
+				(role && !/^kz_owner_[a-f0-9]{32}$/.test(role))
+			)
 				throw new Error("Invalid disposable restore target");
 			return docker(
 				[
@@ -96,6 +107,7 @@ async function fixtureClient(url: URL) {
 					`--username=${decodeURIComponent(url.username)}`,
 					"--no-owner",
 					"--no-privileges",
+					...(role ? [`--role=${role}`] : []),
 					...(command === "pg_dump"
 						? ["--format=custom"]
 						: ["--exit-on-error", "--single-transaction"]),
@@ -111,7 +123,7 @@ async function fixtureClient(url: URL) {
 	);
 }
 
-test("a real disposable backup restores history, rejects old stream cursors and resumes signed pending work only explicitly", async () => {
+test("a logical restore detects stripped privileges, fences pending sends, and replays only after explicit review", async () => {
 	const source = new TestContext();
 	const restored = new TestContext();
 	const sourceActivity = new ActivityService(
@@ -131,16 +143,17 @@ test("a real disposable backup restores history, rejects old stream cursors and 
 		status: 204,
 		retryAfter: null,
 	});
-	const dispatcher = new WebhookDispatcher(
-		restored.database,
-		restored.settings,
-		undefined,
-		restored.auth,
-		encryptionKey,
-	);
+	let dispatcher: WebhookDispatcher | undefined;
+	const connections: Database[] = [];
 	try {
-		await source.start();
-		await restored.fixture.start(false);
+		const sourceRoles = await source.fixture.startWithRoles();
+		const targetRoles = await restored.fixture.startWithRoles();
+		const sourceMigration = new Database(sourceRoles.migrationUrl, 1);
+		const targetMigration = new Database(targetRoles.migrationUrl, 1);
+		const runtime = new Database(targetRoles.runtimeUrl, 2);
+		connections.push(sourceMigration, targetMigration, runtime);
+		await new MigrationService(sourceMigration).run();
+		await source.redis.connect();
 		await restored.redis.connect();
 		await source.licenses.create({}, source.operation());
 		await sourceActivity.publish();
@@ -156,7 +169,7 @@ test("a real disposable backup restores history, rejects old stream cursors and 
 			allGroups: true,
 			secretCiphertext: issued.secretCiphertext,
 			signingKeyId: issued.signingKeyId,
-			enabled: false,
+			enabled: true,
 			lastSequence: BigInt(checkpoint.data.sequence),
 			createdBy: "root",
 			updatedBy: "root",
@@ -188,13 +201,40 @@ test("a real disposable backup restores history, rejects old stream cursors and 
 		const client = await fixtureClient(sourceUrl);
 		const backup = await client("pg_dump", sourceUrl.pathname.slice(1));
 		expect(backup.byteLength).toBeGreaterThan(0);
-		await client("pg_restore", targetUrl.pathname.slice(1), backup);
+		const owner = new URL(targetRoles.migrationUrl).username;
+		const target = sql.identifier(targetUrl.pathname.slice(1));
+		// The target database is newly created and empty. Let the archive create
+		// its own drizzle schema, with the correct target owner but WITHOUT ACLs.
+		await restored.database.client`drop schema drizzle`;
+		await restored.database.orm.execute(
+			sql`grant create on database ${target} to ${sql.identifier(owner)}`,
+		);
+		await client("pg_restore", targetUrl.pathname.slice(1), backup, owner);
+		await restored.database.orm.execute(
+			sql`revoke create on database ${target} from ${sql.identifier(owner)}`,
+		);
 		expect(await new MigrationService(restored.database).verify()).toEqual(
 			await new MigrationService(source.database).verify(),
 		);
 		const [before] = await restored.database.orm.select().from(eventState);
 		expect(before?.epoch).toBe(checkpoint.data.epoch);
-		const epoch = await restoredActivity.resetEpoch();
+		expect(
+			(
+				await restored.database
+					.client`select has_table_privilege('keyzori_server','audit_logs','UPDATE') as mutable`
+			)[0]?.mutable,
+		).toBe(true);
+		await expect(
+			new RestoreService(targetMigration).prepare(),
+		).rejects.toMatchObject({ code: "RUNTIME_ROLE_REQUIRED" });
+		expect(
+			(await restored.database.orm.select().from(eventState))[0]?.epoch,
+		).toBe(before?.epoch);
+		// Explicit owner provisioning restores the canonical evidence/journal ACLs;
+		// neither serving nor restore preparation silently reconciles permissions.
+		await new MigrationService(targetMigration).run();
+		await new MigrationService(runtime).verifyRuntime();
+		const epoch = await new RestoreService(targetMigration).prepare();
 		expect(epoch.epoch).not.toBe(checkpoint.data.epoch);
 		expect(epoch.sequence).toBe(checkpoint.data.sequence);
 		await expect(
@@ -207,43 +247,70 @@ test("a real disposable backup restores history, rejects old stream cursors and 
 			.select()
 			.from(deliveries)
 			.where(eq(deliveries.id, deliveryId));
-		expect(pending?.state).toBe("pending");
+		expect(pending?.state).toBe("cancelled");
 		expect(pending?.attempts).toBe(0);
 		expect(sent).not.toHaveBeenCalled();
-		if (!pending) throw new Error("Restored delivery missing");
-		expect(() =>
-			new WebhookSecrets("e".repeat(64)).decrypt(pending.secretCiphertext),
-		).toThrow();
-		expect(secrets.decrypt(pending.secretCiphertext)).toBe(issued.secret);
-		// The dispatcher has not been running during verification or epoch repair.
-		await restored.database.orm
-			.update(webhooks)
-			.set({ enabled: true })
+		expect(pending?.secretCiphertext).toBeNull();
+		const [hook] = await runtime.orm
+			.select()
+			.from(webhooks)
 			.where(eq(webhooks.id, webhookId));
+		if (!hook) throw new Error("Restored webhook missing");
+		expect(hook.enabled).toBe(false);
+		expect(() =>
+			new WebhookSecrets("e".repeat(64)).decrypt(hook.secretCiphertext),
+		).toThrow();
+		expect(secrets.decrypt(hook.secretCiphertext)).toBe(issued.secret);
+		dispatcher = new WebhookDispatcher(
+			runtime,
+			restored.settings,
+			undefined,
+			restored.auth,
+			encryptionKey,
+		);
+		await dispatcher.runOnce();
+		expect(sent).not.toHaveBeenCalled();
+		const service = new WebhookService(
+			runtime,
+			restored.auth,
+			restored.audit,
+			restored.settings,
+			new IdempotencyService(runtime, restored.settings, restored.auth),
+			{ encryptionKey },
+		);
+		await service.enable({ ids: [webhookId] }, restored.operation());
+		const reviewed = await service.replay(
+			{ ids: [deliveryId], confirm: true, reason: "Reviewed restored work" },
+			restored.operation(),
+		);
+		const replayId = reviewed.data[0]?.id;
+		if (!replayId || replayId === deliveryId)
+			throw new Error("Expected distinct replay identity");
 		await dispatcher.runOnce();
 		expect(sent).toHaveBeenCalledTimes(1);
 		const call = sent.mock.calls[0];
 		if (!call) throw new Error("Restored webhook was not sent");
 		const [, body, headers] = call;
-		expect(headers["X-Keyzori-Delivery-Id"]).toBe(deliveryId);
+		expect(headers["X-Keyzori-Delivery-Id"]).toBe(replayId);
 		expect(headers["X-Keyzori-Signing-Key-Id"]).toBe(issued.signingKeyId);
 		expect(headers["X-Keyzori-Signature"]).toBe(
-			`v1=${createHmac("sha256", Buffer.from(issued.secret, "hex")).update(`${headers["X-Keyzori-Timestamp"]}.${deliveryId}.${body}`).digest("hex")}`,
+			`v1=${createHmac("sha256", Buffer.from(issued.secret, "hex")).update(`${headers["X-Keyzori-Timestamp"]}.${replayId}.${body}`).digest("hex")}`,
 		);
 		expect(
 			(
 				await restored.database.orm
 					.select()
 					.from(deliveries)
-					.where(eq(deliveries.id, deliveryId))
+					.where(eq(deliveries.id, replayId))
 			)[0]?.state,
 		).toBe("succeeded");
 	} finally {
-		dispatcher.stop();
-		await dispatcher.drain();
+		dispatcher?.stop();
+		await dispatcher?.drain();
 		sent.mockRestore();
 		sourceActivity.stop();
 		restoredActivity.stop();
+		await Promise.all(connections.map((db) => db.close()));
 		await Promise.all([source.stop(), restored.stop()]);
 	}
 }, 60000);

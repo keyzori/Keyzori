@@ -1,5 +1,6 @@
 import { t } from "elysia";
 import { httpModel } from "../../core/http/model";
+import { instantModel } from "../../core/http/instant";
 import { actions, scopes } from "../../core/auth/scopes";
 
 const description = t.Union([t.String({ maxLength: 1024 }), t.Null()]);
@@ -20,7 +21,7 @@ const create = t.Object(
 	{
 		name: httpModel.name,
 		description: t.Optional(description),
-		expiresAt: t.Optional(httpModel.expiresAt),
+		expiresAt: t.Optional(t.Union([instantModel, t.Null()])),
 	},
 	{ additionalProperties: false },
 );
@@ -52,7 +53,7 @@ export const apiKeyModel = {
 				{
 					name: t.Optional(httpModel.name),
 					description: t.Optional(description),
-					expiresAt: t.Optional(httpModel.expiresAt),
+					expiresAt: t.Optional(t.Union([instantModel, t.Null()])),
 					...grantChanges,
 				},
 				{ additionalProperties: false, minProperties: 1 },

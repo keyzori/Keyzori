@@ -18,6 +18,10 @@ export class TestHttp {
 				KZ_API_HOST: "127.0.0.1",
 				KZ_LOG_LEVEL: "error",
 			}),
+			// Independent HTTP servers use independent databases. Give each the
+			// same isolation for peer, admin and validation buckets, without
+			// changing admission thresholds or flushing the shared Redis fixture.
+			`kz:test:${Bun.randomUUIDv7()}:rate`,
 		);
 		this.app = createApp(
 			this.services,
@@ -36,6 +40,7 @@ export class TestHttp {
 	async stop() {
 		this.services.activity.stop();
 		await this.app.stop(true);
+		await this.services.activity.drain();
 		this.services.redis.close();
 		await this.services.database.close();
 		await this.fixture.stop();

@@ -1,5 +1,6 @@
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { apiKeys } from "../../core/database/schema/apiKeys";
+import { activityEvents } from "../../core/database/schema/events";
 import { webhooks } from "../../core/database/schema/webhooks";
 import {
 	deliveries,
@@ -16,9 +17,21 @@ import type { AuthService } from "../../core/auth/AuthService";
 import type { $Principal } from "../../types/auth";
 import type { $Transaction } from "../../types/database";
 import type { $Webhook, $WebhookDelivery } from "../../types/webhookManagement";
+import { readStoredDelivery, scopedEvent } from "./EventService";
+import type { AuditService } from "../audits/AuditService";
 
 export class WebhookAuthority {
 	constructor(private readonly auth: AuthService) {}
+	deliverable(endpoint: Pick<$Webhook, "events" | "groupIds" | "allGroups">) {
+		if (
+			!endpoint.allGroups &&
+			(!endpoint.groupIds.length || !endpoint.events.some(scopedEvent))
+		)
+			throw new HttpError("INVALID_REQUEST", {
+				groupIds:
+					"Select at least one group and a group-scoped event, or select all groups",
+			});
+	}
 	selection(
 		principal: $Principal,
 		events: readonly string[],
@@ -40,8 +53,18 @@ export class WebhookAuthority {
 			this.auth.require(principal, scope);
 		}
 	}
-	subscriptions(principal: $Principal, events: readonly string[]) {
-		const permitted = allowedEvents(this.auth, principal);
+	subscriptions(
+		principal: $Principal,
+		events: readonly string[],
+		owner = principal,
+	) {
+		const actorEvents = allowedEvents(this.auth, principal);
+		const permitted =
+			owner === principal
+				? actorEvents
+				: allowedEvents(this.auth, owner).filter((event) =>
+						actorEvents.includes(event),
+					);
 		if (events.length === 1 && events[0] === "*") {
 			if (!permitted.length) throw new HttpError("FORBIDDEN");
 			return permitted;
@@ -107,6 +130,7 @@ export class WebhookAuthority {
 					inArray(deliveries.id, ids),
 					this.auth.groupFilter(principal, deliveries.groupId),
 					this.historyFilter(principal),
+					this.receiverHistoryFilter(),
 					principal.kind === "api"
 						? eq(webhooks.ownerApiKeyId, principal.id)
 						: undefined,
@@ -140,13 +164,14 @@ export class WebhookAuthority {
 			.for("update");
 		if (rows.length !== ids.length) throw new HttpError("NOT_FOUND");
 		return rows.map((delivery) => {
+			const payload = readStoredDelivery(delivery);
 			const endpoint = endpoints.find((row) => row.id === delivery.webhookId);
 			if (
 				!endpoint ||
 				!this.allowsEvent(
 					principal,
 					endpoint,
-					delivery.payload.event,
+					payload.event,
 					delivery.groupId,
 					delivery.global,
 					delivery,
@@ -179,6 +204,44 @@ export class WebhookAuthority {
 	/** Historical provenance is an additional SQL boundary, including after deletion. */
 	historyFilter(principal: $Principal) {
 		return historicalGroupFilter(principal, deliveries);
+	}
+	/** A receiver's selection bounds both the current routing group and all historical groups. */
+	receiverHistoryFilter() {
+		return or(
+			eq(webhooks.allGroups, true),
+			and(
+				eq(deliveries.global, false),
+				eq(deliveries.requiresAllGroups, false),
+				sql`${deliveries.groupId} = any(${webhooks.groupIds})`,
+				sql`${deliveries.requiredGroupIds} <@ ${webhooks.groupIds}`,
+			),
+		);
+	}
+	/** Apply both principals' boundaries before hydrating JSON for a fixed sequence window. */
+	enqueueFilter(principal: $Principal, endpoint: $Webhook) {
+		const permitted = allowedEvents(this.auth, principal);
+		return and(
+			inArray(
+				activityEvents.event,
+				endpoint.events.filter((event) => permitted.includes(event)),
+			),
+			this.auth.groupFilter(principal, activityEvents.groupId),
+			historicalGroupFilter(principal, activityEvents),
+			principal.kind === "api" && !principal.allGroups
+				? eq(activityEvents.global, false)
+				: undefined,
+			endpoint.allGroups
+				? undefined
+				: and(
+						eq(activityEvents.global, false),
+						eq(activityEvents.requiresAllGroups, false),
+						inArray(activityEvents.groupId, endpoint.groupIds),
+						sql`${activityEvents.requiredGroupIds} <@ ARRAY[${sql.join(
+							endpoint.groupIds.map((id) => sql`${id}::uuid`),
+							sql`, `,
+						)}]::uuid[]`,
+					),
+		);
 	}
 	async owner(
 		tx: $Transaction,
@@ -223,16 +286,16 @@ export class WebhookAuthority {
 		} catch (error) {
 			if (!this.revoked(error)) throw error;
 		}
-		const [endpoint] = await tx
-			.select()
-			.from(webhooks)
-			.where(eq(webhooks.id, id))
-			.for(mode, { skipLocked: true });
-		if (
-			!endpoint ||
-			endpoint.ownerCredentialHash !== snapshot.ownerCredentialHash
-		)
-			return;
+		const query = tx.select().from(webhooks).where(eq(webhooks.id, id));
+		// Discovery can skip work. A send gate must wait (within its DB deadline)
+		// for a real view of the endpoint instead of interpreting a lock as deletion.
+		const [endpoint] =
+			mode === "update"
+				? await query.for("update", { skipLocked: true })
+				: await query.for("share");
+		if (!endpoint) return mode === "update" ? ("busy" as const) : undefined;
+		if (endpoint.ownerCredentialHash !== snapshot.ownerCredentialHash)
+			return "busy" as const;
 		return { endpoint, owner };
 	}
 	revoked(error: unknown) {
@@ -241,11 +304,55 @@ export class WebhookAuthority {
 			(error.status === 401 || error.status === 403)
 		);
 	}
+	/** Used by both the worker and explicit credential rebinding under the endpoint lock. */
+	async disableRevoked(
+		tx: $Transaction,
+		endpoint: $Webhook,
+		audit: AuditService,
+	) {
+		if (!endpoint.enabled) return;
+		await tx
+			.update(webhooks)
+			.set({
+				enabled: false,
+				lastError: "owner_authority_revoked",
+				dispatchFailures: 0,
+				dispatchRetryAt: null,
+				stagedSigningKeyId: null,
+				stagedSecretCiphertext: null,
+				updatedAt: sql`clock_timestamp()`,
+				updatedBy: "webhook-dispatcher",
+			})
+			.where(eq(webhooks.id, endpoint.id));
+		await this.cancel(tx, endpoint.id, "owner_authority_revoked");
+		await audit.record(tx, {
+			actor: {
+				kind: "system",
+				id: "webhook-dispatcher",
+				name: "Webhook dispatcher",
+			},
+			requestId: Bun.randomUUIDv7(),
+			clientIp: "",
+			targetType: "webhook",
+			targetId: endpoint.id,
+			action: "webhook.disabled",
+			reason: "owner_authority_revoked",
+			before: { enabled: true },
+			after: { enabled: false },
+		});
+	}
 	/** Endpoint changes fence every outstanding claim, including requests in flight. */
 	async cancel(tx: $Transaction, id: string, error = "endpoint_changed") {
 		const cancelled = await tx
 			.update(deliveries)
-			.set({ state: "cancelled", error, claimToken: null, leaseUntil: null })
+			.set({
+				state: "cancelled",
+				error,
+				claimToken: null,
+				leaseUntil: null,
+				terminalAt: sql`clock_timestamp()`,
+				secretCiphertext: null,
+			})
 			.where(
 				and(
 					eq(deliveries.webhookId, id),
@@ -292,7 +399,13 @@ export class WebhookAuthority {
 			if (global) this.auth.requireAllGroups(principal);
 			return (
 				webhook.allGroups ||
-				(!global && groupId !== null && webhook.groupIds.includes(groupId))
+				(!global &&
+					groupId !== null &&
+					webhook.groupIds.includes(groupId) &&
+					!historical.requiresAllGroups &&
+					historical.requiredGroupIds.every((id) =>
+						webhook.groupIds.includes(id),
+					))
 			);
 		} catch {
 			return false;

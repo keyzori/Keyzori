@@ -178,6 +178,12 @@ export const operations: readonly Operation[] = [
 	},
 	{
 		method: "POST",
+		path: "/webhooks/activate-secret",
+		access: "webhooks:rotate-secret",
+		idempotency: "required",
+	},
+	{
+		method: "POST",
 		path: "/webhooks/replay",
 		access: "webhooks:replay",
 		idempotency: "required",
@@ -196,9 +202,12 @@ const exact = new Map(
 		operation,
 	]),
 );
-const parameterized = operations.filter((operation) =>
-	operation.path.includes(":"),
-);
+const parameterized = operations
+	.filter((operation) => operation.path.includes(":"))
+	.map((operation) => ({
+		operation,
+		path: new RegExp(`^${operation.path.replace(/:[^/]+/g, "[^/]+")}$`),
+	}));
 
 export function operationFor(method: string, path: string) {
 	const verb = method === "HEAD" || method === "WS" ? "GET" : method;
@@ -206,13 +215,37 @@ export function operationFor(method: string, path: string) {
 	return (
 		exact.get(`${verb}:${normalized}`) ??
 		parameterized.find(
-			(operation) =>
-				operation.method === verb &&
-				new RegExp(`^${operation.path.replace(/:[^/]+/g, "[^/]+")}$`).test(
-					normalized,
-				),
-		)
+			(entry) => entry.operation.method === verb && entry.path.test(normalized),
+		)?.operation
 	);
+}
+
+/** Secondary authority checked transactionally by the resource services. */
+export function operationAuthority(operation: Operation) {
+	const { method, path, access } = operation;
+	const required: $Action[] =
+		access === "public" || access === "root" ? [] : [access];
+	const conditional: { when: string; scope: $Action }[] = [];
+	if (path.startsWith("/webhooks")) required.push("events:read");
+	if (access === "groups:delete") required.push("licenses:disable");
+	if (access === "users:delete") required.push("licenses:delete");
+	if (path === "/licenses" && method === "PATCH")
+		conditional.push({
+			when: "changes.meters is present",
+			scope: "usage:adjust",
+		});
+	if (path === "/licenses" && (method === "PATCH" || method === "POST"))
+		conditional.push({
+			when: `${method === "PATCH" ? "changes.userId" : "userId"} selects a user`,
+			scope: "users:read",
+		});
+	return {
+		required,
+		conditional,
+		allGroups:
+			access === "groups:create" ||
+			(access.startsWith("users:") && access !== "users:read"),
+	};
 }
 
 export function assertOperations(

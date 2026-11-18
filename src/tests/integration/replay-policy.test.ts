@@ -1,5 +1,7 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
+import { eq, sql } from "drizzle-orm";
+import { apiKeys } from "../../core/database/schema/apiKeys";
+import { licenses } from "../../core/database/schema/licenses";
 import { TestContext } from "../fixtures/TestContext";
 import { meters } from "../../core/database/schema/meters";
 import { usageOperations } from "../../core/database/schema/usageOperations";
@@ -194,7 +196,9 @@ test("consumption replay requires access to both the current and original group"
 		);
 		await expect(
 			context.licenses.consume(input, operation),
-		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		).rejects.toMatchObject({
+			code: groupId === currentGroup.data.id ? "FORBIDDEN" : "NOT_FOUND",
+		});
 	}
 	await context.apiKeys.update(
 		{
@@ -224,4 +228,71 @@ test("consumption replay requires access to both the current and original group"
 				.where(eq(meters.licenseId, issued.data.id))
 		)[0]?.value,
 	).toBe("2");
+});
+
+test("a waiting consume uses the caller's expiry at the post-licence-lock accounting instant", async () => {
+	const { issued, input } = await accepted();
+	const api = await context.apiKeys.create(
+		{ name: "Short-lived accounting grant" },
+		context.operation(),
+	);
+	await context.apiKeys.update(
+		{
+			ids: [api.data.id],
+			changes: { scopes: ["usage:consume"], allGroups: true },
+		},
+		context.operation(),
+	);
+	await context.apiKeys.enable({ ids: [api.data.id] }, context.operation());
+	const principal = await context.auth.authenticate(`Bearer ${api.credential}`);
+	const [clock] = await context.database.orm
+		.update(apiKeys)
+		.set({ expiresAt: sql`clock_timestamp() + interval '1200 milliseconds'` })
+		.where(eq(apiKeys.id, api.data.id))
+		.returning({ expiry: apiKeys.expiresAt });
+	if (!clock?.expiry) throw new Error("Missing caller expiry");
+	const reached = Promise.withResolvers<void>(),
+		held = Promise.withResolvers<void>(),
+		release = Promise.withResolvers<void>();
+	const blocker = context.database.orm.transaction(async (tx) => {
+		await tx
+			.select({ id: licenses.id })
+			.from(licenses)
+			.where(eq(licenses.id, issued.data.id))
+			.for("update");
+		held.resolve();
+		await release.promise;
+	});
+	await held.promise;
+	const authorize = context.auth.authorize.bind(context.auth);
+	const hook = spyOn(context.auth, "authorize").mockImplementationOnce(
+		async (...args) => {
+			const fresh = await authorize(...args);
+			reached.resolve();
+			return fresh;
+		},
+	);
+	const pending = context.licenses.consume(input, {
+		...context.operation(),
+		principal,
+	});
+	// Attach the rejection observer before releasing the DB lock.
+	const check = expect(pending).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+	try {
+		await Promise.race([reached.promise, pending]);
+		await context.database.orm.execute(
+			sql`select pg_sleep_until(${clock.expiry.toISOString()}::timestamptz)`,
+		);
+	} finally {
+		release.resolve();
+		hook.mockRestore();
+		await blocker;
+	}
+	await check;
+	expect(
+		await context.database.orm
+			.select({ id: usageOperations.id })
+			.from(usageOperations)
+			.where(eq(usageOperations.principalId, api.data.id)),
+	).toHaveLength(0);
 });

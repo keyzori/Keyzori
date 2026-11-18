@@ -17,6 +17,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
 	activity.stop();
+	await activity.drain();
 	await context.stop();
 });
 
@@ -42,6 +43,105 @@ async function reader(groupIds: string[], allGroups = false) {
 		principal: await context.auth.authenticate(`Bearer ${key.credential}`),
 	};
 }
+
+test("a cursor cannot validate a resource scan spanning A → B → A grants", async () => {
+	const a = await context.groups.create(
+		{ name: "Generation A" },
+		context.operation(),
+	);
+	const b = await context.groups.create(
+		{ name: "Generation B" },
+		context.operation(),
+	);
+	const original = await reader([a.data.id]);
+	const temporary = await context.licenses.create(
+		{ groupId: b.data.id },
+		context.operation(),
+	);
+	const key = original.principal.id;
+	const captured = (await activity.watermark(original)).data.cursor;
+	await context.apiKeys.update(
+		{ ids: [key], changes: { groupIds: [b.data.id] } },
+		context.operation(),
+	);
+	const staged = await context.licenses.read(
+		new URLSearchParams({ id: temporary.data.id }),
+		original,
+	);
+	expect(staged.data).toMatchObject({
+		id: temporary.data.id,
+		groupId: b.data.id,
+	});
+	await context.apiKeys.update(
+		{ ids: [key], changes: { groupIds: [a.data.id] } },
+		context.operation(),
+	);
+	await expect(
+		activity.read(new URLSearchParams({ cursor: captured }), original),
+	).rejects.toMatchObject({ code: "CURSOR_EXPIRED" });
+	const fresh = (await activity.watermark(original)).data.cursor;
+	expect(fresh).not.toBe(captured);
+	await expect(
+		activity.read(new URLSearchParams({ cursor: fresh }), original),
+	).resolves.toMatchObject({ data: [] });
+});
+
+test("legacy combined detach evidence is all-groups-only; webhook history never returns a full URL", async () => {
+	const a = await context.groups.create(
+		{ name: "Legacy detach" },
+		context.operation(),
+	);
+	const selected = await reader([a.data.id]);
+	const all = await reader([], true);
+	const legacy = (action: string) => ({
+		id: Bun.randomUUIDv7(),
+		targetId: Bun.randomUUIDv7(),
+		groupId: a.data.id,
+		actor: { kind: "root" as const, id: "root", name: "Root" },
+		action,
+		targetType: "license",
+		global: false,
+		requestId: "legacy-detach-fixture",
+		before: { groupId: a.data.id },
+		after: { groupId: null, disabledReason: "combined outcome" },
+	});
+	for (const action of ["license.group_detached", "license.group_deleted"]) {
+		const row = legacy(action);
+		await context.database.orm.insert(audits).values(row);
+		const params = new URLSearchParams({ id: row.id });
+		expect((await activity.history(params, selected)).data).toEqual([]);
+		expect((await activity.history(params, all)).data).toHaveLength(1);
+	}
+	const record = {
+		...legacy("webhook.updated"),
+		targetType: "webhook",
+		global: true,
+		groupId: null,
+		before: { url: "https://receiver.example/private-old/path", enabled: true },
+		after: {
+			url: "https://receiver.example/new?key=fixture-private",
+			enabled: false,
+		},
+	};
+	await context.database.orm.insert(audits).values(record);
+	for (const operator of [all, context.operation()]) {
+		const exposed = await activity.history(
+			new URLSearchParams({ id: record.id }),
+			operator,
+		);
+		expect(exposed.data).toHaveLength(1);
+		const row = exposed.data[0];
+		expect(row?.before).toMatchObject({ enabled: true });
+		expect(row?.after).toMatchObject({ enabled: false });
+		expect(JSON.stringify(row)).not.toContain("private-old");
+		expect(JSON.stringify(row)).not.toContain("fixture-private");
+	}
+	const [original] = await context.database.orm
+		.select()
+		.from(audits)
+		.where(eq(audits.id, record.id));
+	expect(original?.after).toEqual(record.after);
+});
 
 test("internal historical guards are conjunctive and UUID case cannot split visibility or revisions", async () => {
 	const a = await context.groups.create(

@@ -15,7 +15,10 @@ export class RateLimiter {
 		return {count, ttl}
 	`;
 
-	constructor(private readonly redis: Redis) {}
+	constructor(
+		private readonly redis: Redis,
+		private readonly namespace = "kz:rate",
+	) {}
 
 	async check(bucket: string, limit: number, deadlineAt?: number) {
 		if (!Number.isSafeInteger(limit) || limit < 1)
@@ -24,7 +27,7 @@ export class RateLimiter {
 		try {
 			result = await this.redis.send(
 				"EVAL",
-				[this.script, "1", `kz:rate:${this.hasher.hash(bucket)}`],
+				[this.script, "1", `${this.namespace}:${this.hasher.hash(bucket)}`],
 				deadlineAt,
 			);
 		} catch {

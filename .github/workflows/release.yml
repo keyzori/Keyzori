@@ -3,6 +3,7 @@ on:
   workflow_run:
     workflows: [Server, CodeQL]
     types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       release-tag:
@@ -13,7 +14,8 @@ permissions:
   actions: read
   contents: read
 concurrency:
-  group: release-please-main
+  # A completed schedule, PR or failed run must not displace a pending publisher.
+  group: release-please-${{ ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository)) && 'main' || github.run_id }}
   cancel-in-progress: false
 jobs:
   release:
@@ -167,13 +169,15 @@ jobs:
     needs: [release, assets]
     uses: ./.github/workflows/docker.yml
     permissions:
-      contents: read
+      actions: read
+      contents: write
       packages: write
       id-token: write
       attestations: write
     with:
       ref: ${{ needs.release.outputs.sha }}
       release-tag: ${{ needs.release.outputs.tag }}
+      release-id: ${{ needs.release.outputs.release-id }}
 
   publish:
     needs: [release, assets, docker]

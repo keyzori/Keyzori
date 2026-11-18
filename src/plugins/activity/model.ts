@@ -3,6 +3,26 @@ import { httpModel } from "../../core/http/model";
 import { publishedEventSchema } from "../webhooks/events";
 
 const nullableText = t.Union([t.String(), t.Null()]);
+export const activityCursorSchema = t.String({
+	minLength: 1,
+	maxLength: 512,
+	pattern: "^[A-Za-z0-9_-]+$",
+});
+const position = t.String({ pattern: "^(0|[1-9][0-9]{0,18})$" });
+const protocol = t.Literal("invalidation-refetch");
+const consistency = t.Literal("non-atomic");
+export const activityWatermarkSchema = t.Object(
+	{
+		protocol,
+		stateConsistency: consistency,
+		epoch: httpModel.id,
+		sequence: position,
+		retainedAfter: position,
+		cursor: activityCursorSchema,
+	},
+	{ additionalProperties: false },
+);
+
 export const activitySubscribeSchema = t.Object(
 	{
 		type: t.Literal("subscribe"),
@@ -10,19 +30,53 @@ export const activitySubscribeSchema = t.Object(
 	},
 	{ additionalProperties: false },
 );
-export const activityModel = {
-	event: publishedEventSchema,
-	watermark: t.Object(
+export const activityServerFrameSchema = t.Union([
+	t.Object(
 		{
-			protocol: t.Literal("invalidation-refetch"),
-			stateConsistency: t.Literal("non-atomic"),
-			epoch: httpModel.id,
-			sequence: t.String({ pattern: "^(0|[1-9][0-9]{0,18})$" }),
-			retainedAfter: t.String({ pattern: "^(0|[1-9][0-9]{0,18})$" }),
-			cursor: t.String({ maxLength: 512 }),
+			type: t.Literal("ready"),
+			schemaVersion: t.Literal(1),
+			protocol,
+			stateConsistency: consistency,
+			resync: t.Literal("/events/watermark"),
+			sessionExpiresAt: t.String({ format: "date-time" }),
+			watermark: activityWatermarkSchema,
 		},
 		{ additionalProperties: false },
 	),
+	t.Object(
+		{
+			type: t.Literal("events"),
+			data: t.Array(publishedEventSchema, { maxItems: 100 }),
+			cursor: activityCursorSchema,
+			hasMore: t.Boolean(),
+		},
+		{ additionalProperties: false },
+	),
+	t.Object(
+		{
+			type: t.Literal("error"),
+			code: t.Literal("CURSOR_EXPIRED"),
+			resync: t.Literal("/events/watermark"),
+		},
+		{ additionalProperties: false },
+	),
+	t.Object(
+		{
+			type: t.Literal("error"),
+			code: t.UnionEnum([
+				"UNAUTHORIZED",
+				"FORBIDDEN",
+				"INVALID_REQUEST",
+				"SERVICE_UNAVAILABLE",
+				"INTERNAL_ERROR",
+			]),
+		},
+		{ additionalProperties: false },
+	),
+]);
+export const activityModel = {
+	event: publishedEventSchema,
+	watermark: activityWatermarkSchema,
 	audit: t.Object(
 		{
 			id: httpModel.id,

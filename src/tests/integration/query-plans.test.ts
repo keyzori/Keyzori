@@ -19,10 +19,14 @@ import { KeyGenerator } from "../../core/security/KeyGenerator";
 import { AuditService } from "../../plugins/audits/AuditService";
 import { LicenseDeletion } from "../../plugins/licenses/LicenseDeletion";
 import { LicenseService } from "../../plugins/licenses/LicenseService";
-import { LicenseView } from "../../plugins/licenses/LicenseView";
+import {
+	LicenseView,
+	summaryColumns,
+} from "../../plugins/licenses/LicenseView";
 import { MeterService } from "../../plugins/licenses/MeterService";
 import { SettingsService } from "../../plugins/settings/SettingsService";
 import { EventService } from "../../plugins/webhooks/EventService";
+import { Eligibility } from "../../plugins/validate/Eligibility";
 import type { $Principal } from "../../types/auth";
 import type { $Transaction } from "../../types/database";
 import type { $ResourceSort } from "../../types/query";
@@ -59,6 +63,8 @@ const selected: $Principal = {
 	name: "Query-plan reader",
 	scopes: ["licenses:read"],
 	credentialHash: "fixture-only-query-plan-digest",
+	grantGeneration: "1",
+	expiresAt: null,
 	allGroups: false,
 	groupIds: [groupId(2), groupId(7)],
 };
@@ -147,7 +153,7 @@ function selection(
 	orm: Pick<typeof database.orm, "select"> = database.orm,
 ) {
 	return orm
-		.select()
+		.select(summaryColumns)
 		.from(licenses)
 		.where(and(query.where, auth.groupFilter(principal, licenses.groupId)))
 		.orderBy(...query.order)
@@ -596,6 +602,37 @@ function observedRead(params: Record<string, string>, principal = root) {
 	);
 }
 
+test("eligibility reads only parent policy fields, independent of parent metadata size", async () => {
+	const [license] = await database.orm
+		.select()
+		.from(licenses)
+		.where(eq(licenses.id, id(3)));
+	if (!license?.groupId || !license.userId)
+		throw new Error("Expected linked eligibility fixture");
+	const checked = await observed(() =>
+		database.transaction((tx) =>
+			new Eligibility(settings, ip).check(
+				tx,
+				license,
+				{},
+				"127.0.0.1",
+				new Date(createdBase),
+			),
+		),
+	);
+	expect(checked.result.code).toBe("VALID");
+	for (const table of ["groups", "users"]) {
+		const selections = checked.statements.filter((entry) =>
+			entry.sql.includes(`from "${table}"`),
+		);
+		expect(selections).toHaveLength(1);
+		const selection = selections[0]?.sql.split(" from ")[0];
+		expect(selection).toContain("enabled");
+		expect(selection).not.toContain("metadata");
+		expect(selection).not.toContain("notes");
+	}
+});
+
 test("collection reads have page-size-independent query counts; overdue detail reads do not persist resets", async () => {
 	const before = await snapshot();
 	const observations = [];
@@ -622,6 +659,15 @@ test("collection reads have page-size-independent query counts; overdue detail r
 					entry.sql.includes('from "licenses"'),
 				),
 			).toEqual([{ sql: expected.sql, params: expected.params }]);
+			const selectedColumns = expected.sql.split(" from ")[0];
+			for (const field of [
+				"metadata",
+				"notes",
+				"key_hash",
+				"allowed_ips",
+				"key_format",
+			])
+				expect(selectedColumns).not.toContain(`"${field}"`);
 			for (const row of observation.result.data) {
 				expect(row).not.toHaveProperty("meters");
 				if (principal.kind === "api")

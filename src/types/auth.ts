@@ -7,6 +7,9 @@ export type $Principal =
 			scopes: string[];
 			/** Digest evidence used to reject requests authenticated before rotation. */
 			credentialHash: string;
+			/** Exact database generation, JSON-safe for activity cursor bindings. */
+			grantGeneration: string;
+			expiresAt: Date | null;
 			/** Includes ungrouped licences when true. */
 			allGroups: boolean;
 			/** Selected group IDs; never grants access to ungrouped licences. */

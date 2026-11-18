@@ -352,7 +352,9 @@ export class RuntimeWebhookFixture {
 					kind === "container" ? this.containerId : this.networkId;
 				if (expected) assert.equal(id, expected);
 				await this.docker(
-					kind === "container" ? ["rm", "-f", id] : ["network", "rm", id],
+					kind === "container"
+						? ["rm", "-f", "--volumes", id]
+						: ["network", "rm", id],
 					false,
 					signal,
 				);

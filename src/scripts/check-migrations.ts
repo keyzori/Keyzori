@@ -4,7 +4,7 @@ import { resolve, relative, join } from "node:path";
 import { sql } from "drizzle-orm";
 import { TestDatabase } from "../tests/fixtures/TestDatabase";
 import { command } from "./command";
-import type { Database } from "../core/database/Database";
+import { Database } from "../core/database/Database";
 
 /** Compare actual database definitions, not generator snapshot filenames. */
 async function definitions(database: Database) {
@@ -71,6 +71,8 @@ if (relativePath.startsWith("..") || !relativePath.startsWith("migrations-"))
 const actual = new TestDatabase();
 const expected = new TestDatabase();
 const failures: unknown[] = [];
+let migrator: Database | undefined;
+let runtime: Database | undefined;
 try {
 	const output = join(temporary, "generated");
 	const config = join(temporary, "drizzle.config.ts");
@@ -90,11 +92,14 @@ try {
 		],
 		{ timeoutMs: 60000 },
 	);
-	await actual.start(false);
+	const { migrationUrl, runtimeUrl } = await actual.startWithRoles();
+	migrator = new Database(migrationUrl, 1);
+	runtime = new Database(runtimeUrl, 1);
 	const authority = await roles(actual.database);
 	const { MigrationService } =
 		await import("../core/database/MigrationService");
-	await new MigrationService(actual.database).run();
+	await new MigrationService(migrator).run();
+	await new MigrationService(runtime).verifyRuntime();
 	assert.deepEqual(
 		await roles(actual.database),
 		authority,
@@ -123,6 +128,11 @@ try {
 } catch (error) {
 	failures.push(error);
 } finally {
+	for (const result of await Promise.allSettled([
+		migrator?.close(),
+		runtime?.close(),
+	]))
+		if (result.status === "rejected") failures.push(result.reason);
 	const cleanup = await Promise.allSettled([
 		actual.stop(),
 		expected.stop(),

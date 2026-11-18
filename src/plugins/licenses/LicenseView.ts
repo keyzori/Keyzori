@@ -4,9 +4,21 @@ import { users } from "../../core/database/schema/users";
 import { hardware } from "../../core/database/schema/hardware";
 import { ips } from "../../core/database/schema/ips";
 import { meters } from "../../core/database/schema/meters";
+import { licenses } from "../../core/database/schema/licenses";
 import type { $Transaction } from "../../types/database";
 import type { $License, $LicenseAdmin } from "../../types/licenses";
 import type { MeterService } from "./MeterService";
+
+export const summaryColumns = {
+	id: licenses.id,
+	enabled: licenses.enabled,
+	disabledReason: licenses.disabledReason,
+	groupId: licenses.groupId,
+	userId: licenses.userId,
+	expiresAt: licenses.expiresAt,
+	createdAt: licenses.createdAt,
+	updatedAt: licenses.updatedAt,
+};
 
 /** Full bearer-visible projection. Credential digests never leave storage. */
 export class LicenseView {
@@ -104,7 +116,7 @@ export class LicenseView {
 			: null;
 		return { ...license, group: publicGroup, user: publicUser };
 	}
-	summary(row: $License) {
+	summary(row: Pick<$License, keyof typeof summaryColumns>) {
 		return {
 			id: row.id,
 			enabled: row.enabled,

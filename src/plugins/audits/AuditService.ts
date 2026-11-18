@@ -8,6 +8,17 @@ import type { $Transaction } from "../../types/database";
 
 export class AuditService {
 	async record(tx: $Transaction, input: $AuditInput) {
+		await this.write(tx, input);
+	}
+	/** A failure gate keeps its evidence ID across an indeterminate COMMIT. */
+	recordOnce(tx: $Transaction, input: $AuditInput, evidenceId: string) {
+		return this.write(tx, input, evidenceId);
+	}
+	private async write(
+		tx: $Transaction,
+		input: $AuditInput,
+		evidenceId?: string,
+	) {
 		let groupId =
 			input.groupId ??
 			(input.targetType === "group" ? input.targetId : null) ??
@@ -23,12 +34,12 @@ export class AuditService {
 				.where(eq(licenses.id, input.targetId));
 			groupId = row?.groupId ?? null;
 		}
-		await tx.insert(audits).values({
+		const insert = tx.insert(audits).values({
 			groupId,
 			requiredGroupIds: input.requiredGroupIds ?? [],
 			requiresAllGroups: input.requiresAllGroups ?? false,
 			global: input.targetType !== "license" && input.targetType !== "group",
-			id: Bun.randomUUIDv7(),
+			id: evidenceId ?? Bun.randomUUIDv7(),
 			action: input.action,
 			actor: {
 				kind: input.actor.kind,
@@ -44,6 +55,12 @@ export class AuditService {
 			before: input.before,
 			after: input.after,
 		});
+		if (evidenceId) {
+			const rows = await insert
+				.onConflictDoNothing({ target: audits.id })
+				.returning({ id: audits.id });
+			if (!rows.length) return false;
+		} else await insert;
 		if (
 			["api-key", "settings", "webhook"].includes(input.targetType) ||
 			input.action.startsWith("license.hardware.") ||
@@ -63,6 +80,7 @@ export class AuditService {
 								: {}),
 				});
 		}
+		return true;
 	}
 	changes(before: Record<string, unknown>, after: Record<string, unknown>) {
 		const changed = Object.keys(after).filter(

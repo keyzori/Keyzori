@@ -1,4 +1,9 @@
-import { command } from "./command";
+import { command, ownedCommand, signalOwned } from "./command";
+
+const postgresImages = {
+	"17": "postgres:17.12@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f6ac",
+	"18": "postgres:18.7@sha256:2ea8630df176ad090ec92136dee850397c5af8781e4bcf2e4162593691c61bbc",
+};
 
 type FixtureState = { databaseUrl: string; redisUrl: string };
 type FixtureOptions = {
@@ -68,6 +73,9 @@ export class TestServices {
 	}
 	private async launch(signal: AbortSignal): Promise<FixtureState> {
 		signal.throwIfAborted();
+		const major = Bun.env.KZ_TEST_POSTGRES_MAJOR ?? "18";
+		if (major !== "17" && major !== "18")
+			throw new Error("KZ_TEST_POSTGRES_MAJOR must be 17 or 18");
 		await this.docker(
 			[
 				"run",
@@ -82,7 +90,7 @@ export class TestServices {
 				"POSTGRES_DB=keyzori",
 				"-p",
 				"127.0.0.1::5432",
-				"postgres:18.0@sha256:41fc5342eefba6cc2ccda736aaf034bbbb7c3df0fdb81516eba1ba33f360162c",
+				postgresImages[major],
 			],
 			signal,
 		);
@@ -97,7 +105,7 @@ export class TestServices {
 				`dev.keyzori.test-run=${this.runId}`,
 				"-p",
 				"127.0.0.1::6379",
-				"redis:8.2.1@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621",
+				"redis:8.2.11@sha256:b0b01167ff47bc3868e56a967895a26be4230891a1f42a78ab61cdd227accc8d",
 				"redis-server",
 				"--save",
 				"",
@@ -159,9 +167,28 @@ export class TestServices {
 		return this.stopping;
 	}
 	private async cleanup() {
-		// Wait for startup's Docker commands to settle before looking for owned resources.
-		await this.startup?.catch(() => {});
-		const signal = AbortSignal.timeout(this.options.cleanupTimeoutMs ?? 20000);
+		// The cleanup deadline includes startup cancellation. Reserve time to inspect
+		// owned IDs even if a Docker command never acknowledges its interruption.
+		const budget = this.options.cleanupTimeoutMs ?? 20000;
+		const signal = AbortSignal.timeout(budget);
+		let barrier: ReturnType<typeof setTimeout> | undefined;
+		let startupStuck = false;
+		try {
+			await Promise.race([
+				this.startup?.catch(() => {}),
+				new Promise<void>((resolve) => {
+					barrier = setTimeout(
+						() => {
+							startupStuck = true;
+							resolve();
+						},
+						Math.max(1, Math.min(3000, Math.floor(budget / 2))),
+					);
+				}),
+			]);
+		} finally {
+			clearTimeout(barrier);
+		}
 		const results = await Promise.allSettled([
 			...[this.postgres, this.redis].map(async (name) => {
 				if (!/^keyzori-test-(pg|redis)-[0-9a-f-]{36}$/.test(name))
@@ -188,14 +215,22 @@ export class TestServices {
 						"Refusing to remove a container owned by another run",
 					);
 				// Remove the inspected immutable ID, never a replaceable container name.
-				await this.docker(["rm", "-f", id], signal);
+				await this.docker(["rm", "-f", "--volumes", id], signal);
 			}),
 			this.cleanupRuntime(signal),
 		]);
-		const failures = results.filter((result) => result.status === "rejected");
+		const failures: unknown[] = results
+			.filter((result) => result.status === "rejected")
+			.map((result) => result.reason);
+		if (startupStuck)
+			failures.push(
+				new Error(
+					"Fixture startup did not acknowledge cancellation before cleanup",
+				),
+			);
 		if (failures.length)
 			throw new AggregateError(
-				failures.map((result) => result.reason),
+				failures,
 				`Fixture cleanup failed for run ${this.runId}`,
 			);
 	}
@@ -234,7 +269,9 @@ export class TestServices {
 						if (owner !== this.runId || !id || !/^[a-f0-9]{64}$/.test(id))
 							throw new Error("Refusing foreign runtime fixture cleanup");
 						await this.docker(
-							kind === "container" ? ["rm", "-f", id] : ["network", "rm", id],
+							kind === "container"
+								? ["rm", "-f", "--volumes", id]
+								: ["network", "rm", id],
 							signal,
 						);
 					}),
@@ -259,9 +296,11 @@ export class TestServices {
 		const interrupt = () => {
 			interrupted = true;
 			this.cancellation.abort(new Error("Fixture run interrupted"));
-			child?.kill("SIGTERM");
+			if (child) signalOwned(child, "SIGTERM");
 			if (child && !killTimer)
-				killTimer = setTimeout(() => child?.kill("SIGKILL"), 30000);
+				killTimer = setTimeout(() => {
+					if (child) signalOwned(child, "SIGKILL");
+				}, 30000);
 		};
 		process.once("SIGINT", interrupt);
 		process.once("SIGTERM", interrupt);
@@ -276,7 +315,10 @@ export class TestServices {
 		try {
 			const state = await this.start();
 			this.cancellation.signal.throwIfAborted();
-			child = Bun.spawn(args, {
+			const executable =
+				args[0] === "bun" ? [process.execPath, ...args.slice(1)] : args;
+			child = Bun.spawn(ownedCommand(executable), {
+				detached: process.platform !== "win32",
 				env: {
 					...Bun.env,
 					KZ_TEST_DATABASE_URL: state.databaseUrl,

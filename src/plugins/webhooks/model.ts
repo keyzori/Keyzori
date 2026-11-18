@@ -26,6 +26,7 @@ const resource = t.Object(
 		allGroups: t.Boolean(),
 		groupIds,
 		signingKeyId: httpModel.id,
+		stagedSigningKeyId: t.Union([httpModel.id, t.Null()]),
 		version: t.Integer(),
 		lastError: t.Union([t.String(), t.Null()]),
 		createdBy: t.String(),
@@ -52,6 +53,7 @@ const delivery = t.Object(
 		state,
 		attempts: t.Integer(),
 		attemptedAt: t.Union([t.String(), t.Null()]),
+		terminalAt: t.Union([t.String(), t.Null()]),
 		nextAttemptAt: t.String(),
 		expiresAt: t.String(),
 		status: t.Union([t.Integer(), t.Null()]),
@@ -67,7 +69,7 @@ const action = t.Object(
 const query = {
 	limit: t.Optional(t.String({ pattern: "^([1-9]|[1-9][0-9]|100)$" })),
 	direction: t.Optional(t.UnionEnum(["asc", "desc"])),
-	cursor: t.Optional(t.String({ maxLength: 4096 })),
+	cursor: t.Optional(t.String({ maxLength: 1024 })),
 	createdBefore: t.Optional(t.String({ format: "date-time" })),
 	createdAfter: t.Optional(t.String({ format: "date-time" })),
 };
@@ -104,6 +106,23 @@ export const webhookModel = {
 	enable: action,
 	disable: action,
 	rotateSecret: action,
+	activateSecret: t.Object(
+		{
+			id: httpModel.id,
+			signingKeyId: httpModel.id,
+			reason: t.Optional(httpModel.reason),
+		},
+		{ additionalProperties: false },
+	),
+	activatedResponse: t.Object(
+		{
+			data: t.Object(
+				{ id: httpModel.id, signingKeyId: httpModel.id },
+				{ additionalProperties: false },
+			),
+		},
+		{ additionalProperties: false },
+	),
 	recovery: t.Object(
 		{ ids: httpModel.ids, confirm: t.Literal(true), reason: httpModel.reason },
 		{ additionalProperties: false },

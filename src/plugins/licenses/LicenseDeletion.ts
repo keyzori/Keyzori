@@ -1,6 +1,10 @@
-import { asc, eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { licenses } from "../../core/database/schema/licenses";
-import { HttpError } from "../../core/http/HttpError";
+import {
+	deleteChildren,
+	deletionImage,
+	type DeletionChild,
+} from "./LicenseCascade";
 import type { AuditService } from "../audits/AuditService";
 import type { EventService } from "../webhooks/EventService";
 import type { $Transaction } from "../../types/database";
@@ -13,36 +17,31 @@ export class LicenseDeletion {
 	) {}
 	async remove(
 		tx: $Transaction,
-		ids: string[],
+		rows: DeletionChild[],
 		operation: $Operation,
 		reason: string,
+		now: Date,
 	) {
-		if (!ids.length) return;
-		const rows = await tx
-			.select()
-			.from(licenses)
-			.where(inArray(licenses.id, ids))
-			.orderBy(asc(licenses.id))
-			.for("update");
-		if (rows.length !== ids.length)
-			throw new HttpError("BULK_OPERATION_FAILED");
-		for (const row of rows) {
+		if (rows.length > 1)
+			return deleteChildren(tx, rows, operation, reason, now);
+		const row = rows[0];
+		if (row) {
 			await this.audit.record(tx, {
 				...operation,
 				actor: operation.principal,
 				action: "license.deleted",
 				targetType: "license",
 				targetId: row.id,
+				groupId: row.groupId,
 				reason,
-				before: {
-					id: row.id,
-					userId: row.userId,
-					groupId: row.groupId,
-					enabled: row.enabled,
-					expiresAt: row.expiresAt?.toISOString() ?? null,
-				},
+				before: deletionImage(row),
 			});
-			await this.events.emit(tx, "license.deleted", { licenseId: row.id });
+			await this.events.emit(
+				tx,
+				"license.deleted",
+				{ licenseId: row.id, groupId: row.groupId },
+				now,
+			);
 			await tx.delete(licenses).where(eq(licenses.id, row.id));
 		}
 	}

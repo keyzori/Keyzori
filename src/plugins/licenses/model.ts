@@ -4,11 +4,12 @@ import { securityModel } from "../../core/security/model";
 import { meterModel } from "./meterModel";
 import { groupModel } from "../groups/model";
 import { userModel } from "../users/model";
+import { instantModel } from "../../core/http/instant";
 
 const fields = {
 	userId: t.Optional(t.Union([httpModel.id, t.Null()])),
 	groupId: t.Optional(t.Union([httpModel.id, t.Null()])),
-	expiresAt: t.Optional(httpModel.expiresAt),
+	expiresAt: t.Optional(t.Union([instantModel, t.Null()])),
 	deviceLimit: t.Optional(
 		t.Union([t.Integer({ minimum: 0, maximum: 1000 }), t.Null()]),
 	),
@@ -104,9 +105,13 @@ export const licenseModel = {
 			expectedGroupId: t.Optional(t.Union([httpModel.id, t.Null()])),
 			hardwareId: t.Optional(t.String({ minLength: 1, maxLength: 512 })),
 			usage: t.Record(
-				t.String({ minLength: 1, maxLength: 128 }),
+				t.String({ pattern: "^[\\s\\S]*$" }),
 				t.String({ pattern: "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$" }),
-				{ minProperties: 1, maxProperties: 128 },
+				{
+					minProperties: 1,
+					maxProperties: 128,
+					propertyNames: t.String({ minLength: 1, maxLength: 128 }),
+				},
 			),
 		},
 		{ additionalProperties: false },
@@ -126,12 +131,15 @@ export const licenseModel = {
 		},
 		{ additionalProperties: false },
 	),
-	register: t.Object(
+	registerHardware: t.Object(
 		{
 			licenseId: httpModel.id,
-			hardwareId: t.Optional(t.String({ minLength: 1, maxLength: 512 })),
-			ip: t.Optional(t.String({ minLength: 1, maxLength: 64 })),
+			hardwareId: t.String({ minLength: 1, maxLength: 512 }),
 		},
+		{ additionalProperties: false },
+	),
+	registerIp: t.Object(
+		{ licenseId: httpModel.id, ip: t.String({ minLength: 1, maxLength: 64 }) },
 		{ additionalProperties: false },
 	),
 	create: t.Object(fields, { additionalProperties: false }),
@@ -162,7 +170,12 @@ export const licenseModel = {
 		{
 			ids: httpModel.ids,
 			name: t.String({ minLength: 1, maxLength: 128 }),
-			action: t.UnionEnum(["set", "increment", "decrement", "reset"]),
+			action: t.Union([
+				t.Literal("set"),
+				t.Literal("increment"),
+				t.Literal("decrement"),
+				t.Literal("reset"),
+			]),
 			value: t.Optional(
 				t.String({ pattern: "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$" }),
 			),
@@ -210,7 +223,13 @@ export const licenseModel = {
 		),
 	]),
 	issued: t.Object(
-		{ data: admin, credential: t.String() },
+		{
+			data: t.Union([
+				admin,
+				t.Object({ id: httpModel.id }, { additionalProperties: false }),
+			]),
+			credential: t.String(),
+		},
 		{ additionalProperties: false },
 	),
 	rotated: t.Object(

@@ -7,6 +7,10 @@ import { users } from "../../core/database/schema/users";
 import { Database } from "../../core/database/Database";
 import { audits } from "../../core/database/schema/audits";
 import { usageOperations } from "../../core/database/schema/usageOperations";
+import { Metrics } from "../../core/observability/Metrics";
+import { Replay } from "../../core/security/Replay";
+import { HttpError } from "../../core/http/HttpError";
+import { RestoreService } from "../../core/database/RestoreService";
 
 const fixture = new TestDatabase();
 beforeAll(() => fixture.start());
@@ -111,42 +115,32 @@ test("modified migration history is refused", async () => {
 
 test("provisioned runtime can insert evidence but cannot DDL, rewrite evidence or change history", async () => {
 	const roles = new TestDatabase();
-	await roles.start(false);
-	const password = Buffer.from(
-		crypto.getRandomValues(new Uint8Array(24)),
-	).toString("hex");
-	const runtimeUrl = new URL(roles.url);
-	runtimeUrl.username = "keyzori_server";
-	runtimeUrl.password = password;
-	const migrationUrl = new URL(roles.url);
-	migrationUrl.username = "keyzori_migrator";
-	migrationUrl.password = password;
-	const runtime = new Database(runtimeUrl.href, 2);
-	const migrator = new Database(migrationUrl.href, 2);
+	const { runtimeUrl, migrationUrl } = await roles.startWithRoles();
+	const runtime = new Database(runtimeUrl, 2);
+	const migrator = new Database(migrationUrl, 2);
 	try {
-		// Execute the checked-in provisioning SQL, with psql variables expanded only
-		// from fixture-owned identifiers and a generated hexadecimal password.
-		const script = await Bun.file(
-			new URL("../../../deploy/postgres/01-roles.sh", import.meta.url),
-		).text();
-		const provision = script
-			.split("<<'SQL'")[1]
-			?.replace(/\r\n/g, "\n")
-			.trim()
-			.replace(/\nSQL$/, "")
-			.split("\n")
-			.filter((line) => !line.startsWith("\\getenv "))
-			.join("\n")
-			.replaceAll(":'server_password'", `'${password}'`)
-			.replaceAll(":'migration_password'", `'${password}'`)
-			.replaceAll(
-				':"database_name"',
-				`"${new URL(roles.url).pathname.slice(1)}"`,
-			);
-		if (!provision) throw new Error("Missing provisioning SQL");
-		await roles.database.client.unsafe(provision).simple();
 		await new MigrationService(migrator).run();
-		await new MigrationService(runtime).verify();
+		await roles.database
+			.client`revoke delete on public.event_resources, public.settings from keyzori_server`;
+		await new MigrationService(runtime).verifyRuntime();
+		await roles.database
+			.client`revoke select on drizzle.__drizzle_migrations from keyzori_server`;
+		await expect(
+			new MigrationService(runtime).verifyRuntime(),
+		).rejects.toMatchObject({ code: "RUNTIME_ROLE_REQUIRED" });
+		await roles.database
+			.client`grant select(id,hash,created_at,name) on drizzle.__drizzle_migrations to keyzori_server`;
+		await new MigrationService(runtime).verifyRuntime();
+		await expect(
+			new MigrationService(migrator).verifyRuntime(),
+		).rejects.toMatchObject({ code: "RUNTIME_ROLE_REQUIRED" });
+		const before = await roles.database.client`select * from event_state`;
+		await expect(new RestoreService(runtime).prepare()).rejects.toMatchObject({
+			code: "MIGRATION_ROLE_REQUIRED",
+		});
+		expect(await roles.database.client`select * from event_state`).toEqual(
+			before,
+		);
 		const id = Bun.randomUUIDv7();
 		await runtime.orm.insert(users).values({
 			id,
@@ -190,7 +184,7 @@ test("provisioned runtime can insert evidence but cannot DDL, rewrite evidence o
 			"delete from drizzle.__drizzle_migrations",
 			"truncate drizzle.__drizzle_migrations",
 			"insert into drizzle.__drizzle_migrations(hash, created_at, name) values ('forged', 0, 'forged')",
-			"set role keyzori_migrator",
+			`set role "${new URL(migrationUrl).username}"`,
 		];
 		for (const statement of denied)
 			await expect(runtime.client.unsafe(statement)).rejects.toMatchObject({
@@ -208,10 +202,84 @@ test("provisioned runtime can insert evidence but cannot DDL, rewrite evidence o
 				.from(usageOperations)
 				.where(eq(usageOperations.id, id)),
 		).toHaveLength(1);
+		await new MigrationService(runtime).verifyRuntime();
+		const login = sql.identifier(new URL(runtimeUrl).username);
+		await roles.database.orm.execute(
+			sql`grant update(action) on public.audit_logs to ${login}`,
+		);
 		await new MigrationService(runtime).verify();
+		await expect(
+			new MigrationService(runtime).verifyRuntime(),
+		).rejects.toMatchObject({ code: "RUNTIME_ROLE_REQUIRED" });
+		await roles.database.orm.execute(
+			sql`revoke update(action) on public.audit_logs from ${login}`,
+		);
+		await roles.database
+			.client`grant delete on public.usage_operations to keyzori_server`;
+		await expect(new RestoreService(migrator).prepare()).rejects.toMatchObject({
+			code: "RUNTIME_ROLE_REQUIRED",
+		});
+		expect(await roles.database.client`select * from event_state`).toEqual(
+			before,
+		);
+		expect(
+			await roles.database
+				.client`select 1 from audit_logs where action='system.restore_prepared'`,
+		).toHaveLength(0);
 	} finally {
 		await runtime.close();
 		await migrator.close();
 		await roles.stop();
 	}
 }, 30000);
+
+test("only rollback-proven conflicts are retried; exhaustion is retryable and expected rollbacks are classified separately", async () => {
+	const metrics = new Metrics();
+	const database = new Database(fixture.url, 1, metrics);
+	try {
+		for (const state of ["40001", "40P01"] as const) {
+			const id = Bun.randomUUIDv7();
+			let attempts = 0;
+			await expect(
+				database.idempotentTransaction(async (tx) => {
+					attempts++;
+					await tx.insert(users).values({
+						id,
+						name: "Rollback",
+						createdBy: "test",
+						updatedBy: "test",
+					});
+					await tx.execute(
+						sql.raw(
+							`do $$ begin raise exception 'fixture conflict' using errcode='${state}'; end $$`,
+						),
+					);
+				}),
+			).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE", status: 503 });
+			expect(attempts).toBe(3);
+			expect(
+				await database.orm.select().from(users).where(eq(users.id, id)),
+			).toHaveLength(0);
+		}
+		for (const error of [new Replay({ data: [] }), new HttpError("FORBIDDEN")])
+			await expect(
+				database.transaction(async () => {
+					throw error;
+				}),
+			).rejects.toBe(error);
+		expect(metrics.text()).toContain(
+			'keyzori_transaction_rollbacks_total{kind="conflict"} 6',
+		);
+		expect(metrics.text()).toContain(
+			'keyzori_transaction_rollbacks_total{kind="replay"} 1',
+		);
+		expect(metrics.text()).toContain(
+			'keyzori_transaction_rollbacks_total{kind="expected"} 1',
+		);
+		expect(metrics.text()).not.toMatch(
+			/^keyzori_transaction_failures_total [1-9]/m,
+		);
+	} finally {
+		await database.close();
+	}
+});

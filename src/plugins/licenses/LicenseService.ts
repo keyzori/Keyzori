@@ -1,5 +1,7 @@
-import { eq, and } from "drizzle-orm";
-import { LicenseView } from "./LicenseView";
+import { eq, and, inArray } from "drizzle-orm";
+import { LicenseView, summaryColumns } from "./LicenseView";
+import { writeInstant } from "../../core/http/instant";
+import { deletionColumns } from "./LicenseCascade";
 import { LicenseContext } from "./LicenseContext";
 import { LicenseUsage } from "./LicenseUsage";
 import { LicenseRegistrations } from "./LicenseRegistrations";
@@ -77,6 +79,14 @@ export class LicenseService {
 	async create(input: $LicenseCreate, operation: $Operation) {
 		this.auth.require(operation.principal, "licenses:create");
 		this.checkInput(input);
+		const targets = this.context.targets(
+			operation,
+			"licenses:create",
+			[],
+			{ id: licenses.id },
+			input.groupId ?? null,
+			input.userId,
+		);
 		return this.idempotency.admin(
 			operation,
 			"license.create",
@@ -94,9 +104,8 @@ export class LicenseService {
 							keyFormat: format,
 							userId: input.userId,
 							groupId: input.groupId,
-							expiresAt: input.expiresAt
-								? this.input.timestamp(input.expiresAt)
-								: null,
+							expiresAt:
+								input.expiresAt == null ? null : writeInstant(input.expiresAt),
 							deviceLimit: input.deviceLimit,
 							ipLimit: input.ipLimit,
 							allowedIps: input.allowedIps ?? [],
@@ -116,11 +125,22 @@ export class LicenseService {
 							this.context.evidence(operation, row.id),
 							now,
 						);
-					const data = await this.view(tx, row, operation, now);
+					const { principal } = targets.state(tx);
+					const data =
+						principal.kind === "root" ||
+						principal.scopes.includes("licenses:read")
+							? await new LicenseView(this.meters).read(tx, row, now)
+							: { id: row.id };
 					await this.audit.record(tx, {
 						...this.context.evidence(operation, row.id),
 						action: "license.created",
-						after: data,
+						groupId: row.groupId,
+						after: {
+							id: row.id,
+							enabled: row.enabled,
+							keyFormat: row.keyFormat,
+							...this.fields(row),
+						},
 					});
 					await this.events.emit(
 						tx,
@@ -134,15 +154,7 @@ export class LicenseService {
 			},
 			{
 				secretIds: (result) => [result.data.id],
-				authorize: (tx) =>
-					this.context.authorize(
-						tx,
-						operation,
-						"licenses:create",
-						[],
-						input.groupId ?? null,
-						input.userId,
-					),
+				authorize: targets.authorize,
 			},
 		);
 	}
@@ -161,26 +173,29 @@ export class LicenseService {
 					licenses,
 					settings.defaultPageLimit,
 				);
-				const selection = tx
-					.select()
-					.from(licenses)
-					.where(
-						and(
-							query.where,
-							this.auth.groupFilter(principal, licenses.groupId),
-						),
-					)
-					.orderBy(...query.order)
-					.limit(query.id ? 1 : query.limit + 1);
+				const visible = and(
+					query.where,
+					this.auth.groupFilter(principal, licenses.groupId),
+				);
 				// A detail projection reads several child tables. All child mutations
 				// take the licence lock, so this also freezes its group authority.
-				const rows = await (query.id ? selection.for("share") : selection);
 				const view = new LicenseView(this.meters);
 				if (query.id) {
-					const row = rows[0];
+					const [row] = await tx
+						.select()
+						.from(licenses)
+						.where(visible)
+						.limit(1)
+						.for("share");
 					if (!row) throw new HttpError("NOT_FOUND");
 					return { data: await view.read(tx, row, await this.context.now(tx)) };
 				}
+				const rows = await tx
+					.select(summaryColumns)
+					.from(licenses)
+					.where(visible)
+					.orderBy(...query.order)
+					.limit(query.limit + 1);
 				const selected = rows.slice(0, query.limit);
 				const last = selected.at(-1);
 				return {
@@ -211,21 +226,55 @@ export class LicenseService {
 		};
 		this.checkInput(input.changes);
 		const ids = this.input.ids(input.ids);
+		const targets = this.context.targets(
+			operation,
+			"licenses:update",
+			ids,
+			{
+				id: licenses.id,
+				userId: licenses.userId,
+				groupId: licenses.groupId,
+				enabled: licenses.enabled,
+				expiresAt: licenses.expiresAt,
+				deviceLimit: licenses.deviceLimit,
+				ipLimit: licenses.ipLimit,
+				allowedIps: licenses.allowedIps,
+				metadata: licenses.metadata,
+				notes: licenses.notes,
+			},
+			input.changes.groupId,
+			input.changes.userId,
+		);
 		return this.idempotency.admin(
 			operation,
 			"license.update",
 			input,
 			async (tx) => {
-				const locked = await this.context.lock(tx, ids);
-				const now = await this.context.now(tx);
+				const { rows: locked, principal } = targets.state(tx);
+				const now = await this.context.now(tx, principal);
 				await this.relations(tx, input.changes);
+				await this.checkReparent(tx, locked, input.changes);
+				const {
+					meters: definitions,
+					expiresAt,
+					allowedIps,
+					...other
+				} = input.changes;
+				const changes = {
+					...other,
+					...(allowedIps !== undefined
+						? { allowedIps: await this.ip.canonicalRules(tx, allowedIps) }
+						: {}),
+				};
+				const expiry = expiresAt == null ? expiresAt : writeInstant(expiresAt);
 				for (const row of locked) {
-					const { meters: definitions, expiresAt, ...changes } = input.changes;
 					const before = this.fields(row);
 					const candidate = {
 						...before,
 						...changes,
-						...(expiresAt !== undefined ? { expiresAt } : {}),
+						...(expiry !== undefined
+							? { expiresAt: expiry?.toISOString() ?? null }
+							: {}),
 					};
 					const diff = this.audit.changes(before, candidate);
 					const moved = candidate.groupId !== row.groupId;
@@ -243,13 +292,7 @@ export class LicenseService {
 							.update(licenses)
 							.set({
 								...changes,
-								...(expiresAt !== undefined
-									? {
-											expiresAt: expiresAt
-												? this.input.timestamp(expiresAt)
-												: null,
-										}
-									: {}),
+								...(expiry !== undefined ? { expiresAt: expiry } : {}),
 								updatedBy: operation.principal.id,
 								updatedAt: now,
 							})
@@ -300,14 +343,7 @@ export class LicenseService {
 			},
 			{
 				authorize: async (tx) => {
-					const principal = await this.context.authorize(
-						tx,
-						operation,
-						"licenses:update",
-						ids,
-						input.changes.groupId,
-						input.changes.userId,
-					);
+					const principal = await targets.authorize(tx);
 					if (input.changes.meters)
 						this.auth.require(principal, "usage:adjust");
 					return principal;
@@ -329,13 +365,18 @@ export class LicenseService {
 		const action = enabled ? "enable" : "disable";
 		this.auth.require(operation.principal, `licenses:${action}`);
 		const ids = this.input.ids(input.ids);
+		const targets = this.context.targets(operation, `licenses:${action}`, ids, {
+			id: licenses.id,
+			enabled: licenses.enabled,
+			disabledReason: licenses.disabledReason,
+		});
 		return this.idempotency.admin(
 			operation,
 			`license.${action}`,
 			input,
 			async (tx) => {
-				const locked = await this.context.lock(tx, ids);
-				const now = await this.context.now(tx);
+				const { rows: locked, principal } = targets.state(tx);
+				const now = await this.context.now(tx, principal);
 				for (const row of locked) {
 					const after = {
 						enabled,
@@ -370,8 +411,7 @@ export class LicenseService {
 				return { data: { ids } };
 			},
 			{
-				authorize: (tx) =>
-					this.context.authorize(tx, operation, `licenses:${action}`, ids),
+				authorize: targets.authorize,
 			},
 		);
 	}
@@ -380,36 +420,52 @@ export class LicenseService {
 		if (input.confirm !== true || !input.reason)
 			throw new HttpError("INVALID_REQUEST");
 		const ids = this.input.ids(input.ids);
+		const targets = this.context.targets(
+			operation,
+			"licenses:delete",
+			ids,
+			deletionColumns,
+		);
 		return this.idempotency.admin(
 			operation,
 			"license.delete",
 			input,
 			async (tx) => {
-				await this.deletion.remove(tx, ids, operation, input.reason);
+				const { rows, principal } = targets.state(tx);
+				await this.deletion.remove(
+					tx,
+					rows,
+					operation,
+					input.reason,
+					await this.context.now(tx, principal),
+				);
 				return { data: { ids } };
 			},
 			{
 				scope: "licenses:delete",
 				authority: async (tx) => ({
-					groupIds: (await this.context.lock(tx, ids)).map(
-						(row) => row.groupId,
-					),
+					groupIds: targets.state(tx).rows.map((row) => row.groupId),
 				}),
-				authorize: (tx) =>
-					this.context.authorize(tx, operation, "licenses:delete", ids),
+				authorize: targets.authorize,
 			},
 		);
 	}
 	async rotate(input: $LicenseRotate, operation: $Operation) {
 		this.auth.require(operation.principal, "licenses:rotate");
 		const ids = this.input.ids(input.ids);
+		const targets = this.context.targets(operation, "licenses:rotate", ids, {
+			id: licenses.id,
+			groupId: licenses.groupId,
+			keyFormat: licenses.keyFormat,
+			keyHash: licenses.keyHash,
+		});
 		return this.idempotency.admin(
 			operation,
 			"license.rotate",
 			input,
 			async (tx) => {
-				const locked = await this.context.lock(tx, ids);
-				const now = await this.context.now(tx);
+				const { rows: locked, principal } = targets.state(tx);
+				const now = await this.context.now(tx, principal);
 				const data = [];
 				for (const row of locked) {
 					const format = await this.format(tx, row.groupId);
@@ -455,8 +511,7 @@ export class LicenseService {
 			},
 			{
 				secretIds: (result) => result.data.map((row) => row.id),
-				authorize: (tx) =>
-					this.context.authorize(tx, operation, "licenses:rotate", ids),
+				authorize: targets.authorize,
 			},
 		);
 	}
@@ -476,16 +531,19 @@ export class LicenseService {
 		return this.registrations.register(input, operation, kind);
 	}
 
-	private view(
-		tx: $Transaction,
-		row: $License,
-		_operation: $Operation,
-		now: Date,
+	private fields(
+		row: Pick<
+			$License,
+			| "userId"
+			| "groupId"
+			| "expiresAt"
+			| "deviceLimit"
+			| "ipLimit"
+			| "allowedIps"
+			| "metadata"
+			| "notes"
+		>,
 	) {
-		return new LicenseView(this.meters).read(tx, row, now);
-	}
-
-	private fields(row: $License) {
 		return {
 			userId: row.userId,
 			groupId: row.groupId,
@@ -501,6 +559,35 @@ export class LicenseService {
 		this.input.metadata(input.metadata);
 		this.input.notes(input.notes);
 		if (input.allowedIps) this.ip.validateRules(input.allowedIps);
+	}
+	private async checkReparent(
+		tx: $Transaction,
+		rows: Pick<$License, "groupId" | "userId" | "enabled">[],
+		changes: $LicenseCreate,
+	) {
+		for (const field of ["groupId", "userId"] as const) {
+			if (changes[field] === undefined) continue;
+			const ids = [
+				...new Set(
+					rows.flatMap((row) => {
+						const source = row[field];
+						return row.enabled && source && source !== changes[field]
+							? [source]
+							: [];
+					}),
+				),
+			];
+			if (!ids.length) continue;
+			const parents = field === "groupId" ? groups : users;
+			const enabled = await tx
+				.select({ id: parents.id })
+				.from(parents)
+				.where(and(inArray(parents.id, ids), eq(parents.enabled, true)));
+			if (enabled.length !== ids.length)
+				throw new HttpError("CONFLICT", {
+					[field]: "Disable the licence before moving it off a disabled parent",
+				});
+		}
 	}
 	private async relations(tx: $Transaction, input: $LicenseCreate) {
 		if (

@@ -22,6 +22,8 @@ import type { EventService } from "../webhooks/EventService";
 import type { SettingsService } from "../settings/SettingsService";
 import type { KeyGenerator } from "../../core/security/KeyGenerator";
 import type { $KeyFormat } from "../../types/security";
+import { detachChildren, detachColumns } from "../licenses/LicenseCascade";
+import { parentMutation } from "../licenses/ParentMutation";
 
 export class GroupService {
 	private readonly policy = new InputPolicy();
@@ -40,6 +42,7 @@ export class GroupService {
 		this.auth.require(operation.principal, "groups:create");
 		this.policy.metadata(input.metadata);
 		this.policy.notes(input.notes);
+		const access = this.access(operation, "groups:create");
 		return this.idem.admin(
 			operation,
 			"group.create",
@@ -70,11 +73,11 @@ export class GroupService {
 					after: this.admin(row),
 				});
 				await this.events.emit(tx, "group.created", { groupId: row.id }, now);
-				return { data: this.admin(row) };
+				return { data: access.view(this.admin(row)) };
 			},
 			{
 				topology: "write",
-				authorize: (tx) => this.authorize(tx, operation, "groups:create"),
+				authorize: access.authorize,
 			},
 		);
 	}
@@ -125,13 +128,14 @@ export class GroupService {
 		const ids = this.policy.ids(input.ids);
 		this.policy.metadata(input.changes.metadata);
 		this.policy.notes(input.changes.notes);
+		const access = this.access(operation, "groups:update", ids);
 		return this.idem.admin(
 			operation,
 			"group.update",
 			input,
 			async (tx, now) => {
 				await this.keyFormat(tx, input.changes.keyFormat);
-				const rows = await this.targets(tx, ids);
+				const rows = access.rows(tx);
 				const data = [];
 				for (const row of rows) {
 					const after = {
@@ -182,11 +186,11 @@ export class GroupService {
 					await this.events.emit(tx, "group.updated", { groupId: row.id }, now);
 					data.push(this.admin(updated));
 				}
-				return { data };
+				return { data: data.map(access.view) };
 			},
 			{
 				topology: "write",
-				authorize: (tx) => this.authorize(tx, operation, "groups:update", ids),
+				authorize: access.authorize,
 			},
 		);
 	}
@@ -207,14 +211,15 @@ export class GroupService {
 		const ids = this.policy.ids(input.ids);
 		if (input.confirm !== true || !input.reason)
 			throw new HttpError("INVALID_REQUEST");
+		const access = this.access(operation, "groups:delete", ids);
 		return this.idem.admin(
 			operation,
 			"group.delete",
 			input,
 			async (tx, now) => {
-				const rows = await this.targets(tx, ids);
+				const rows = access.rows(tx);
 				const children = await tx
-					.select()
+					.select(detachColumns)
 					.from(licenses)
 					.where(inArray(licenses.groupId, ids))
 					.orderBy(asc(licenses.id))
@@ -225,37 +230,7 @@ export class GroupService {
 						groups:
 							"Use the audited disable-and-detach operation before deleting a group with more than 1000 associated licences",
 					});
-				for (const child of children) {
-					const disabledReason =
-						child.disabledReason ?? "Associated group was deleted";
-					await tx
-						.update(licenses)
-						.set({
-							enabled: false,
-							disabledReason,
-							groupId: null,
-							updatedBy: operation.principal.id,
-							updatedAt: now,
-						})
-						.where(eq(licenses.id, child.id));
-					await this.audit.record(tx, {
-						...operation,
-						actor: operation.principal,
-						action: "license.group_deleted",
-						targetType: "license",
-						targetId: child.id,
-						groupId: child.groupId,
-						reason: input.reason,
-						before: { groupId: child.groupId, enabled: child.enabled },
-						after: { groupId: null, enabled: false, disabledReason },
-					});
-					await this.events.emit(
-						tx,
-						"license.disabled",
-						{ licenseId: child.id, groupId: child.groupId },
-						now,
-					);
-				}
+				await detachChildren(tx, children, operation, input.reason, now, false);
 				for (const row of rows) {
 					await this.audit.record(tx, {
 						...operation,
@@ -267,8 +242,8 @@ export class GroupService {
 						before: this.admin(row),
 					});
 					await this.events.emit(tx, "group.deleted", { groupId: row.id }, now);
-					await tx.delete(groups).where(eq(groups.id, row.id));
 				}
+				await tx.delete(groups).where(inArray(groups.id, ids));
 				return { data: { ids } };
 			},
 			{
@@ -278,7 +253,7 @@ export class GroupService {
 					groupIds: ids,
 					scopes: ["licenses:disable"],
 				}),
-				authorize: (tx) => this.authorize(tx, operation, "groups:delete", ids),
+				authorize: access.authorize,
 			},
 		);
 	}
@@ -289,90 +264,42 @@ export class GroupService {
 		operation: $Operation,
 	) {
 		const ids = this.policy.ids(input.ids);
-		this.policy.ids([input.groupId]);
+		const [groupId] = this.policy.ids([input.groupId]);
+		if (!groupId) throw new HttpError("INVALID_REQUEST");
 		this.policy.text(input.reason);
 		this.policy.idempotency(operation.idempotencyKey, true);
 		if (!input.reason) throw new HttpError("INVALID_REQUEST");
 		this.auth.require(operation.principal, "groups:delete");
 		this.auth.require(operation.principal, "licenses:disable");
+		const access = this.access(operation, "groups:delete", [groupId]);
 		return this.idem.admin(
 			operation,
 			"group.detach-licenses",
-			input,
+			{ ...input, groupId },
 			async (tx, now) => {
 				const children = await tx
-					.select()
+					.select(detachColumns)
 					.from(licenses)
-					.where(inArray(licenses.id, ids))
+					.where(and(eq(licenses.groupId, groupId), inArray(licenses.id, ids)))
 					.orderBy(asc(licenses.id))
 					.for("update");
-				if (
-					children.length !== ids.length ||
-					children.some((row) => row.groupId !== input.groupId)
-				)
-					throw new HttpError("BULK_OPERATION_FAILED");
-				for (const child of children) {
-					const disabledReason =
-						child.disabledReason ?? "Detached while preparing group deletion";
-					await tx
-						.update(licenses)
-						.set({
-							enabled: false,
-							groupId: null,
-							disabledReason,
-							updatedAt: now,
-							updatedBy: operation.principal.id,
-						})
-						.where(eq(licenses.id, child.id));
-					await this.audit.record(tx, {
-						...operation,
-						actor: operation.principal,
-						action: "license.group_detached",
-						targetType: "license",
-						targetId: child.id,
-						groupId: input.groupId,
-						reason: input.reason,
-						before: { groupId: input.groupId, enabled: child.enabled },
-						after: { groupId: null, enabled: false, disabledReason },
-					});
-					await this.events.emit(
-						tx,
-						"license.group_detached",
-						{ licenseId: child.id, groupId: input.groupId },
-						now,
+				if (children.length !== ids.length)
+					throw new HttpError(
+						ids.length === 1 ? "NOT_FOUND" : "BULK_OPERATION_FAILED",
 					);
-					await this.events.emit(
-						tx,
-						"license.disabled",
-						{ licenseId: child.id, groupId: input.groupId },
-						now,
-					);
-				}
+				await detachChildren(tx, children, operation, input.reason, now, true);
 				return { data: { ids } };
 			},
 			{
 				topology: "write",
 				scope: "groups:delete",
 				authority: async () => ({
-					groupIds: [input.groupId],
+					groupIds: [groupId],
 					scopes: ["licenses:disable"],
 				}),
-				authorize: (tx) =>
-					this.authorize(tx, operation, "groups:delete", [input.groupId]),
+				authorize: access.authorize,
 			},
 		);
-	}
-
-	private async targets(tx: $Transaction, ids: string[]) {
-		const rows = await tx
-			.select()
-			.from(groups)
-			.where(inArray(groups.id, ids))
-			.orderBy(asc(groups.id))
-			.for("update");
-		if (rows.length !== ids.length)
-			throw new HttpError("BULK_OPERATION_FAILED");
-		return rows;
 	}
 
 	private setEnabled(
@@ -383,12 +310,17 @@ export class GroupService {
 	) {
 		const ids = this.policy.ids(input.ids);
 		const action = enabled ? "group.enabled" : "group.disabled";
+		const access = this.access(
+			operation,
+			`groups:${enabled ? "enable" : "disable"}`,
+			ids,
+		);
 		return this.idem.admin(
 			operation,
 			action,
 			input,
 			async (tx, now) => {
-				const rows = await this.targets(tx, ids);
+				const rows = access.rows(tx);
 				const data = [];
 				for (const row of rows) {
 					const after = {
@@ -427,17 +359,11 @@ export class GroupService {
 					await this.events.emit(tx, action, { groupId: row.id }, now);
 					data.push(this.admin(updated));
 				}
-				return { data };
+				return { data: data.map(access.view) };
 			},
 			{
 				topology: "write",
-				authorize: (tx) =>
-					this.authorize(
-						tx,
-						operation,
-						`groups:${enabled ? "enable" : "disable"}`,
-						ids,
-					),
+				authorize: access.authorize,
 			},
 		);
 	}
@@ -475,19 +401,34 @@ export class GroupService {
 			});
 		}
 	}
-	private async authorize(
-		tx: $Transaction,
-		operation: $Operation,
-		scope: string,
-		ids?: string[],
-	) {
-		const principal = await this.auth.authorize(tx, operation.principal, scope);
-		if (ids) {
-			for (const row of await this.targets(tx, ids))
-				this.auth.requireGroup(principal, row.id);
-		} else this.auth.requireAllGroups(principal);
-		if (scope === "groups:delete")
-			this.auth.require(principal, "licenses:disable");
-		return principal;
+	private access(operation: $Operation, scope: string, ids?: string[]) {
+		return parentMutation("groups:read", async (tx) => {
+			const principal = await this.auth.authorize(
+				tx,
+				operation.principal,
+				scope,
+			);
+			if (!ids) this.auth.requireAllGroups(principal);
+			if (scope === "groups:delete")
+				this.auth.require(principal, "licenses:disable");
+			const rows = ids
+				? await tx
+						.select()
+						.from(groups)
+						.where(
+							and(
+								inArray(groups.id, ids),
+								this.auth.groupFilter(principal, groups.id),
+							),
+						)
+						.orderBy(asc(groups.id))
+						.for("update")
+				: [];
+			if (ids && rows.length !== ids.length)
+				throw new HttpError(
+					ids.length === 1 ? "NOT_FOUND" : "BULK_OPERATION_FAILED",
+				);
+			return { principal, rows };
+		});
 	}
 }

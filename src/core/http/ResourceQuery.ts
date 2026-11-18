@@ -15,17 +15,17 @@ export class ResourceQuery {
 		query: URLSearchParams,
 		columns: $QueryColumns,
 		defaultLimit = 50,
+		// Includes validated filters implemented by the calling service (e.g. delivery state).
+		identityParams: URLSearchParams = query,
 	) {
-		if (query.toString().length > 8192 || Array.from(query).length > 32)
+		if (identityParams.toString().length > 8192 || identityParams.size > 32)
 			throw new HttpError("INVALID_REQUEST");
+		const canonical = new URLSearchParams(identityParams);
+		canonical.delete("cursor");
+		canonical.delete("limit");
+		canonical.sort(); // UTF-16 code units; independent of locale and insertion order.
 		this.filterHash = new Bun.CryptoHasher("sha256")
-			.update(
-				JSON.stringify(
-					Array.from(query)
-						.filter(([key]) => key !== "cursor" && key !== "limit")
-						.sort(([left], [right]) => left.localeCompare(right)),
-				),
-			)
+			.update(JSON.stringify(Array.from(canonical)))
 			.digest("hex");
 		const policy = new InputPolicy();
 		for (const [key, value] of query) {
@@ -141,8 +141,9 @@ export class ResourceQuery {
 			throw new HttpError("INVALID_REQUEST");
 		}
 		const cursor = query.get("cursor");
-		if (cursor && cursor.length > 1024) throw new HttpError("INVALID_REQUEST");
-		if (cursor) {
+		if (cursor !== null) {
+			if (!cursor || cursor.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(cursor))
+				throw new HttpError("INVALID_REQUEST");
 			let decoded: unknown;
 			try {
 				decoded = JSON.parse(Buffer.from(cursor, "base64url").toString());

@@ -3,6 +3,10 @@ import { and, eq, sql } from "drizzle-orm";
 import { fileURLToPath } from "node:url";
 import { t } from "elysia";
 import { RestoreService } from "../../core/database/RestoreService";
+import { MigrationService } from "../../core/database/MigrationService";
+import { Database } from "../../core/database/Database";
+import { MaintenanceService } from "../../core/MaintenanceService";
+import { migrationFingerprint } from "../../core/database/migrationAssets";
 import { activityEvents, eventState } from "../../core/database/schema/events";
 import {
 	deliveries,
@@ -17,8 +21,54 @@ import { TestContext } from "../fixtures/TestContext";
 import { checkedJSON } from "../fixtures/Json";
 
 const context = new TestContext();
-beforeAll(() => context.start());
-afterAll(() => context.stop());
+let migrationUrl: string;
+let migrator: Database;
+beforeAll(async () => {
+	({ migrationUrl } = await context.fixture.startWithRoles());
+	migrator = new Database(migrationUrl, 1);
+	await new MigrationService(migrator).run();
+	await context.redis.connect();
+});
+afterAll(async () => {
+	await migrator?.close();
+	await context.stop();
+});
+
+test("a restore holds the verified schema fence until its audit commits", async () => {
+	const held = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const blocker = context.database.transaction(async (tx) => {
+		await tx.execute(sql`lock table public.audit_logs in share mode`);
+		held.resolve();
+		await release.promise;
+	}, "none");
+	await held.promise;
+	const restore = new RestoreService(migrator).prepare();
+	// Observe the actual restore backend waiting on its final audit insert, not
+	// a sleep or a mock that only demonstrates two standalone lock calls.
+	try {
+		const until = Date.now() + 3000;
+		let waiting = false;
+		while (Date.now() < until) {
+			const [lock] = await context.database.client`select exists(
+				select 1 from pg_locks l join pg_locks f on f.pid=l.pid
+				where l.relation='public.audit_logs'::regclass and not l.granted and f.locktype='advisory'
+				and f.classid=6284 and f.objid=0 and f.mode='ShareLock' and f.granted) as waiting`;
+			if (lock?.waiting) {
+				waiting = true;
+				break;
+			}
+			await Bun.sleep(5);
+		}
+		expect(waiting).toBe(true);
+		await expect(
+			new MigrationService(context.database).run(Date.now() + 120),
+		).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+	} finally {
+		release.resolve();
+		await Promise.all([blocker, restore]);
+	}
+});
 
 test("offline restore preparation is atomic, changes the epoch and requires delivery review without deleting licences or usage", async () => {
 	const activity = new ActivityService(
@@ -79,6 +129,7 @@ test("offline restore preparation is atomic, changes the epoch and requires deli
 	const id = Bun.randomUUIDv7();
 	const claimToken = Bun.randomUUIDv7();
 	const now = new Date();
+	const old = new Date("2020-01-01T00:00:00Z");
 	await context.database.orm.insert(deliveries).values({
 		id,
 		webhookId: endpoint.id,
@@ -95,6 +146,7 @@ test("offline restore preparation is atomic, changes the epoch and requires deli
 		claimToken,
 		leaseUntil: new Date(now.getTime() + 120000),
 		expiresAt: new Date(now.getTime() + 86400000),
+		createdAt: old,
 	});
 	await context.database.orm.insert(deliveryAttempts).values({
 		id: claimToken,
@@ -110,9 +162,7 @@ test("offline restore preparation is atomic, changes the epoch and requires deli
 		sql`create trigger reject_restore_fixture before insert on audit_logs for each row execute function reject_restore_fixture()`,
 	);
 	try {
-		await expect(
-			new RestoreService(context.database).prepare(),
-		).rejects.toThrow();
+		await expect(new RestoreService(migrator).prepare()).rejects.toThrow();
 		expect(
 			(await context.database.orm.select().from(eventState))[0]?.epoch,
 		).toBe(watermark.data.epoch);
@@ -159,7 +209,7 @@ test("offline restore preparation is atomic, changes the epoch and requires deli
 		{
 			env: {
 				PATH: Bun.env.PATH,
-				KZ_MIGRATION_DATABASE_URL: context.fixture.url,
+				KZ_MIGRATION_DATABASE_URL: migrationUrl,
 			},
 			stdout: "pipe",
 			stderr: "pipe",
@@ -186,6 +236,7 @@ test("offline restore preparation is atomic, changes the epoch and requires deli
 	expect(prepared).toMatchObject({
 		disabledWebhooks: 1,
 		cancelledDeliveries: 1,
+		schemaFingerprint: migrationFingerprint,
 	});
 	expect(prepared.epoch).not.toBe(watermark.data.epoch);
 	expect(
@@ -203,7 +254,20 @@ test("offline restore preparation is atomic, changes the epoch and requires deli
 				.from(deliveries)
 				.where(eq(deliveries.id, id))
 		)[0],
-	).toMatchObject({ state: "cancelled", claimToken: null, leaseUntil: null });
+	).toMatchObject({
+		state: "cancelled",
+		claimToken: null,
+		leaseUntil: null,
+		secretCiphertext: null,
+		terminalAt: expect.any(Date),
+		createdAt: old,
+	});
+	const maintenance = new MaintenanceService(
+		context.database,
+		context.meters,
+		context.settings,
+	);
+	await maintenance.runOnce();
 	expect(
 		(
 			await context.database.orm
@@ -235,8 +299,30 @@ test("offline restore preparation is atomic, changes the epoch and requires deli
 	expect(
 		await context.database.orm
 			.select()
+			.from(deliveries)
+			.where(eq(deliveries.id, id)),
+	).toHaveLength(1);
+	await context.database.orm
+		.update(deliveries)
+		.set({ terminalAt: old })
+		.where(eq(deliveries.id, id));
+	await maintenance.runOnce();
+	expect(
+		await context.database.orm
+			.select()
+			.from(deliveries)
+			.where(eq(deliveries.id, id)),
+	).toHaveLength(0);
+	expect(
+		await context.database.orm
+			.select()
 			.from(audits)
-			.where(eq(audits.action, "system.restore_prepared")),
+			.where(
+				and(
+					eq(audits.action, "system.restore_prepared"),
+					sql`${audits.after}->>'epoch' = ${prepared.epoch}`,
+				),
+			),
 	).toHaveLength(1);
 	activity.stop();
 });

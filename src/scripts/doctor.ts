@@ -14,7 +14,7 @@ export async function verifyInstalledDependencies(
 ) {
 	if (!record(manifest)) throw new Error("package.json must contain an object");
 	const pins = new Map<string, string>();
-	for (const field of ["dependencies", "devDependencies"]) {
+	for (const field of ["dependencies", "devDependencies", "overrides"]) {
 		const entries = manifest[field];
 		if (entries === undefined) continue;
 		if (!record(entries))
@@ -82,7 +82,7 @@ export async function doctor() {
 			"The selected Bun revision differs from the repository pin",
 		);
 	console.log(
-		`Installed direct dependency pins verified: ${await verifyInstalledDependencies(root, manifest)}`,
+		`Installed direct dependency and override pins verified: ${await verifyInstalledDependencies(root, manifest)}`,
 	);
 }
 

@@ -4,6 +4,7 @@ import { AuthService } from "../../core/auth/AuthService";
 import type { Database } from "../../core/database/Database";
 import type { $Operation } from "../../types/operation";
 import type { ActivityOptions } from "../../plugins/activity/options";
+import { fixtureWatermark } from "./activity.fixture";
 
 const database: Pick<Database, "transaction"> = {
 	transaction: async () => {
@@ -41,8 +42,10 @@ function fixture(options: ActivityOptions = {}) {
 			closed.push({ code, reason });
 		},
 	};
+	const service = new ActivityService(database, auth, redis, [], 100, options);
+	spyOn(service, "watermark").mockResolvedValue({ data: fixtureWatermark });
 	return {
-		service: new ActivityService(database, auth, redis, [], 100, options),
+		service,
 		socket,
 		admission,
 		frames,
@@ -60,6 +63,45 @@ test("a lease acquired after socket close is released without sending ready", as
 	expect(frames).toEqual([]);
 	expect(releases()).toBe(2);
 	service.stop();
+});
+
+test("drain waits for an outstanding admission and its post-close Redis release", async () => {
+	const admitting = Promise.withResolvers<number>();
+	const lateRelease = Promise.withResolvers<void>();
+	const releasing = Promise.withResolvers<number>();
+	let releases = 0;
+	const service = new ActivityService(database, auth, {
+		send: async (_command, args) => {
+			if (args[0]?.includes("ZADD")) return admitting.promise;
+			if (++releases === 1) return 1;
+			lateRelease.resolve();
+			return releasing.promise;
+		},
+	});
+	const opening = service.open(
+		{
+			id: "draining",
+			send() {
+				throw new Error("No ready after stop");
+			},
+			close() {},
+		},
+		operation,
+	);
+	service.stop();
+	let drained = false;
+	const drain = service.drain().then(() => {
+		drained = true;
+	});
+	try {
+		admitting.resolve(1);
+		await lateRelease.promise;
+		expect(drained).toBe(false);
+	} finally {
+		releasing.resolve(1);
+		await Promise.all([opening, drain]);
+	}
+	expect(drained).toBe(true);
 });
 
 test("a batch completing after stop cannot send or resurrect a session", async () => {

@@ -6,6 +6,8 @@ import type { TSchema } from "typebox";
 import { userModel } from "../../plugins/users/model";
 import { licenseModel } from "../../plugins/licenses/model";
 import { httpModel } from "../../core/http/model";
+import { ResourceQuery } from "../../core/http/ResourceQuery";
+import { users } from "../../core/database/schema/users";
 import { checkedJSON } from "../fixtures/Json";
 
 const expiringResource = t.Object({
@@ -60,15 +62,17 @@ const createLicense = (body: unknown) =>
 	create("/licenses", body, issuedLicense);
 const createExpiring = (path: string, body: unknown) =>
 	create(path, body, expiringResource);
-const cursor = (value: unknown) =>
-	Buffer.from(
-		JSON.stringify({
-			id: "019943aa-abcd-7000-8000-abcdef123456",
-			value,
-			sort: "createdAt",
-			direction: "desc",
-		}),
-	).toString("base64url");
+const validCursor = new ResourceQuery(new URLSearchParams(), users).cursor({
+	id: "019943aa-abcd-7000-8000-abcdef123456",
+	createdAt: new Date(0),
+	updatedAt: new Date(0),
+});
+const cursor = (value: string) => {
+	const fields = JSON.parse(Buffer.from(validCursor, "base64url").toString());
+	return Buffer.from(JSON.stringify({ ...fields, value })).toString(
+		"base64url",
+	);
+};
 
 test("malformed IDs, calendar dates and cursor timestamps consistently return 400", async () => {
 	const malformed: Record<string, string>[] = [
@@ -92,6 +96,9 @@ test("malformed IDs, calendar dates and cursor timestamps consistently return 40
 			await invalid(
 				await context.request(`${path}?${new URLSearchParams(params)}`),
 			);
+		expect(
+			(await context.request(`${path}?cursor=${validCursor}`)).status,
+		).toBe(200);
 		expect(
 			(
 				await context.request(

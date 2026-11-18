@@ -21,6 +21,8 @@ import type { AuditService } from "../audits/AuditService";
 import type { EventService } from "../webhooks/EventService";
 import type { SettingsService } from "../settings/SettingsService";
 import type { LicenseDeletion } from "../licenses/LicenseDeletion";
+import { deletionColumns } from "../licenses/LicenseCascade";
+import { parentMutation } from "../licenses/ParentMutation";
 
 export class UserService {
 	private readonly policy = new InputPolicy();
@@ -39,6 +41,7 @@ export class UserService {
 		this.auth.require(operation.principal, "users:create");
 		this.policy.metadata(input.metadata);
 		this.policy.notes(input.notes);
+		const access = this.access(operation, "users:create");
 		return this.idem.admin(
 			operation,
 			"user.create",
@@ -67,11 +70,11 @@ export class UserService {
 					after: this.admin(row),
 				});
 				await this.events.emit(tx, "user.created", { userId: row.id }, now);
-				return { data: this.admin(row) };
+				return { data: access.view(this.admin(row)) };
 			},
 			{
 				topology: "write",
-				authorize: (tx) => this.authorize(tx, operation, "users:create"),
+				authorize: access.authorize,
 			},
 		);
 	}
@@ -131,12 +134,13 @@ export class UserService {
 		const ids = this.policy.ids(input.ids);
 		this.policy.metadata(input.changes.metadata);
 		this.policy.notes(input.changes.notes);
+		const access = this.access(operation, "users:update", ids);
 		return this.idem.admin(
 			operation,
 			"user.update",
 			input,
 			async (tx, now) => {
-				const rows = await this.targets(tx, ids);
+				const rows = access.rows(tx);
 				const data = [];
 				for (const row of rows) {
 					const after = {
@@ -182,11 +186,11 @@ export class UserService {
 					await this.events.emit(tx, "user.updated", { userId: row.id }, now);
 					data.push(this.admin(updated));
 				}
-				return { data };
+				return { data: data.map(access.view) };
 			},
 			{
 				topology: "write",
-				authorize: (tx) => this.authorize(tx, operation, "users:update"),
+				authorize: access.authorize,
 			},
 		);
 	}
@@ -214,22 +218,18 @@ export class UserService {
 			async (tx, now) => {
 				const rows = await this.targets(tx, ids);
 				const children = await tx
-					.select({ id: licenses.id })
+					.select(deletionColumns)
 					.from(licenses)
 					.where(inArray(licenses.userId, ids))
 					.orderBy(asc(licenses.id))
-					.limit(1001);
+					.limit(1001)
+					.for("update");
 				if (children.length > 1000)
 					throw new HttpError("CONFLICT", {
 						users:
 							"Delete associated licences in batches before deleting a user with more than 1000 licences",
 					});
-				await this.deletion.remove(
-					tx,
-					children.map((row) => row.id),
-					operation,
-					input.reason,
-				);
+				await this.deletion.remove(tx, children, operation, input.reason, now);
 				for (const row of rows) {
 					await this.audit.record(tx, {
 						...operation,
@@ -241,8 +241,8 @@ export class UserService {
 						before: this.admin(row),
 					});
 					await this.events.emit(tx, "user.deleted", { userId: row.id }, now);
-					await tx.delete(users).where(eq(users.id, row.id));
 				}
+				await tx.delete(users).where(inArray(users.id, ids));
 				return { data: { ids } };
 			},
 			{
@@ -260,7 +260,9 @@ export class UserService {
 			.orderBy(asc(users.id))
 			.for("update");
 		if (rows.length !== ids.length)
-			throw new HttpError("BULK_OPERATION_FAILED");
+			throw new HttpError(
+				ids.length === 1 ? "NOT_FOUND" : "BULK_OPERATION_FAILED",
+			);
 		return rows;
 	}
 
@@ -272,12 +274,17 @@ export class UserService {
 	) {
 		const ids = this.policy.ids(input.ids);
 		const action = enabled ? "user.enabled" : "user.disabled";
+		const access = this.access(
+			operation,
+			`users:${enabled ? "enable" : "disable"}`,
+			ids,
+		);
 		return this.idem.admin(
 			operation,
 			action,
 			input,
 			async (tx, now) => {
-				const rows = await this.targets(tx, ids);
+				const rows = access.rows(tx);
 				const data = [];
 				for (const row of rows) {
 					const after = {
@@ -315,16 +322,11 @@ export class UserService {
 					await this.events.emit(tx, action, { userId: row.id }, now);
 					data.push(this.admin(updated));
 				}
-				return { data };
+				return { data: data.map(access.view) };
 			},
 			{
 				topology: "write",
-				authorize: (tx) =>
-					this.authorize(
-						tx,
-						operation,
-						`users:${enabled ? "enable" : "disable"}`,
-					),
+				authorize: access.authorize,
 			},
 		);
 	}
@@ -353,5 +355,11 @@ export class UserService {
 		if (scope === "users:delete")
 			this.auth.require(principal, "licenses:delete");
 		return principal;
+	}
+	private access(operation: $Operation, scope: string, ids?: string[]) {
+		return parentMutation("users:read", async (tx) => ({
+			principal: await this.authorize(tx, operation, scope),
+			rows: ids ? await this.targets(tx, ids) : [],
+		}));
 	}
 }

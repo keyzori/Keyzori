@@ -7,6 +7,7 @@ import { RequestTracker } from "./http/RequestTracker";
 import { RateLimiter } from "./http/RateLimiter";
 import { Metrics } from "./observability/Metrics";
 import { Logger } from "./observability/Logger";
+import { WebhookQueueObserver } from "./observability/WebhookQueueObserver";
 import { KeyGenerator } from "./security/KeyGenerator";
 import { IdempotencyService } from "./security/IdempotencyService";
 import { ApiKeyService } from "../plugins/api-keys/ApiKeyService";
@@ -50,13 +51,15 @@ export class ServerServices {
 	readonly validation;
 	readonly webhooks;
 	readonly dispatcher;
-	constructor(config: Config) {
+	readonly webhookQueue;
+	constructor(config: Config, rateLimitNamespace?: string) {
 		this.database = new Database(
 			config.databaseUrl,
 			config.poolSize,
 			this.metrics,
 		);
 		this.redis = new Redis(config.redisUrl);
+		this.webhookQueue = new WebhookQueueObserver(this.database, this.metrics);
 
 		this.tracker = new RequestTracker(this.metrics);
 		this.logger = new Logger(config.logLevel);
@@ -71,11 +74,12 @@ export class ServerServices {
 		this.requests = new RequestService(
 			this.auth,
 			this.ip,
-			new RateLimiter(this.redis),
+			new RateLimiter(this.redis, rateLimitNamespace),
 			this.settings,
 			this.tracker,
 			config.maxInFlight,
 			config.peerRequestsPerMinute,
+			this.metrics,
 		);
 		const idem = new IdempotencyService(
 			this.database,

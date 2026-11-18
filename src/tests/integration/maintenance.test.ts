@@ -316,7 +316,7 @@ test("cleanup obeys its row budget and retains immutable audit and accepted dedu
 	expect(metrics.text()).not.toContain(id);
 });
 
-test("cleanup time budget cancels blocked work and leaves its transaction uncommitted", async () => {
+test("a blocked receipt cleanup yields time for event cleanup", async () => {
 	const held = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
 	const blocker = context.database.transaction(async (tx) => {
@@ -328,17 +328,27 @@ test("cleanup time budget cancels blocked work and leaves its transaction uncomm
 	}, "none");
 	await held.promise;
 	try {
+		const metrics = new Metrics();
 		const worker = new MaintenanceService(
 			context.database,
 			context.meters,
 			context.settings,
 			undefined,
-			{ cleanupTimeMs: 100 },
+			{ cleanupTimeMs: 300 },
+			metrics,
 		);
+		let eventPasses = 0;
 		const started = performance.now();
-		await expect(worker.runOnce()).rejects.toMatchObject({
-			code: "SERVICE_UNAVAILABLE",
+		await worker.runOnce(async (limit, deadline) => {
+			expect(limit).toBeGreaterThan(0);
+			expect(deadline).toBeGreaterThan(Date.now());
+			eventPasses++;
+			return 0;
 		});
+		expect(eventPasses).toBe(1);
+		expect(metrics.text()).toContain(
+			'keyzori_maintenance_rows_total{kind="receipts",outcome="failed"} 1',
+		);
 		expect(performance.now() - started).toBeLessThan(2500);
 	} finally {
 		release.resolve();
@@ -362,6 +372,8 @@ test("history cleanup is bounded and retains old pending and claimed deliveries"
 		const id = Bun.randomUUIDv7();
 		const eventId = Bun.randomUUIDv7();
 		const licenseId = Bun.randomUUIDv7();
+		const terminal =
+			state === "succeeded" || state === "failed" || state === "cancelled";
 		return {
 			id,
 			webhookId,
@@ -370,7 +382,7 @@ test("history cleanup is bounded and retains old pending and claimed deliveries"
 			global: false,
 			endpointVersion: 1,
 			url: "https://example.invalid/webhook",
-			secretCiphertext: "unused-disposable-fixture",
+			secretCiphertext: terminal ? null : "unused-disposable-fixture",
 			signingKeyId: Bun.randomUUIDv7(),
 			payload: {
 				schemaVersion: 1,
@@ -382,6 +394,7 @@ test("history cleanup is bounded and retains old pending and claimed deliveries"
 			},
 			state,
 			createdAt,
+			terminalAt: terminal ? createdAt : null,
 			expiresAt: new Date(old.getTime() + 1000),
 			...(state === "claimed"
 				? { claimToken: Bun.randomUUIDv7(), leaseUntil: old, attempts: 1 }
@@ -440,4 +453,45 @@ test("history cleanup is bounded and retains old pending and claimed deliveries"
 	expect((await remaining()).map((row) => row.id).sort()).toEqual(
 		[pending.id, claimed.id, recent.id, unfinished.id].sort(),
 	);
+	// With all families ready and only one deletion slot per minute, rotation
+	// guarantees one slot for each family over three passes, never three per pass.
+	const extra = delivery("succeeded", old);
+	await context.database.orm.insert(deliveries).values(extra);
+	const principalId = Bun.randomUUIDv7();
+	await context.database.orm.insert(receipts).values(
+		Array.from({ length: 4 }, () => ({
+			operation: "cleanup.rotation",
+			principalId,
+			key: Bun.randomUUIDv7(),
+			fingerprint: "fixture",
+			expiresAt: old,
+		})),
+	);
+	const fair = new MaintenanceService(
+		context.database,
+		context.meters,
+		context.settings,
+		undefined,
+		{ cleanupRows: 1 },
+	);
+	let pruned = 0;
+	for (let pass = 0; pass < 3; pass++)
+		await fair.runOnce(async (limit) => {
+			expect(limit).toBe(1);
+			pruned++;
+			return 1;
+		});
+	expect(pruned).toBe(1);
+	expect(
+		await context.database.orm
+			.select()
+			.from(receipts)
+			.where(eq(receipts.principalId, principalId)),
+	).toHaveLength(3);
+	expect(
+		await context.database.orm
+			.select()
+			.from(deliveries)
+			.where(eq(deliveries.id, extra.id)),
+	).toHaveLength(0);
 });
