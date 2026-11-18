@@ -14,7 +14,9 @@ RUN HUSKY=0 keyzori-bun install --production --frozen-lockfile --ignore-scripts
 
 FROM oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS runtime
 WORKDIR /app
-COPY --from=dependencies /usr/local/bin/keyzori-bun /usr/local/bin/keyzori-bun
+# Interactive bun/bunx and the service entrypoint select the same reviewed binary.
+COPY --from=dependencies /usr/local/bin/keyzori-bun /usr/local/bin/bun
+RUN ln -s /usr/local/bin/bun /usr/local/bin/keyzori-bun
 COPY --from=dependencies --chown=65532:65532 /app/node_modules ./node_modules
 COPY --chown=65532:65532 package.json LICENSE .bun-version .bun-revision ./
 COPY --chown=65532:65532 src ./src

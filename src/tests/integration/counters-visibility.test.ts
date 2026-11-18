@@ -100,7 +100,11 @@ test("all counter event paths retain both groups' authority through a transfer",
 		requiresAllGroups: false,
 	};
 	await context.database.transaction(async (tx) => {
-		await licensing.lock(tx, [issued.data.id]);
+		await licensing
+			.targets(operation, "licenses:update", [issued.data.id], {
+				id: licenses.id,
+			})
+			.authorize(tx);
 		const now = await licensing.now(tx);
 		await tx
 			.update(licenses)
@@ -221,7 +225,11 @@ test("counter history involving ungrouped authority requires all-groups access a
 	const allCursor = (await activity.watermark(all)).data.cursor;
 	const operation = context.operation();
 	await context.database.transaction(async (tx) => {
-		await licensing.lock(tx, [issued.data.id]);
+		await licensing
+			.targets(operation, "licenses:update", [issued.data.id], {
+				id: licenses.id,
+			})
+			.authorize(tx);
 		const now = await licensing.now(tx);
 		for (const [name, groupId] of [
 			["destination", group.data.id],

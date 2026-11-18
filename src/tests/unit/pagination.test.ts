@@ -62,3 +62,32 @@ describe("default pagination boundaries", () => {
 			).toThrow();
 	});
 });
+
+test("cursor identity covers service filters and is independent of parameter order", () => {
+	const core = new URLSearchParams({ limit: "1" });
+	const identity = new URLSearchParams([
+		["state", "pending"],
+		["metadata.é", "one"],
+		["metadata.e\u0301", "two"],
+	]);
+	const first = new ResourceQuery(core, licenses, 50, identity);
+	core.set(
+		"cursor",
+		first.cursor({
+			id: "019943aa-abcd-7000-8000-abcdef123456",
+			createdAt: new Date(0),
+			updatedAt: new Date(0),
+		}),
+	);
+	expect(
+		() =>
+			new ResourceQuery(
+				core,
+				licenses,
+				50,
+				new URLSearchParams(Array.from(identity).reverse()),
+			),
+	).not.toThrow();
+	identity.set("state", "claimed");
+	expect(() => new ResourceQuery(core, licenses, 50, identity)).toThrow();
+});

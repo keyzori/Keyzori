@@ -272,6 +272,8 @@ test("create and rotate regenerate only credential collisions without replacing 
 	const first = await active();
 	const second = await active();
 	const generator = new KeyGenerator();
+	if (!("keyFormat" in first.data))
+		throw new Error("Expected master licence view");
 	const createdCredential = generator.license(first.data.keyFormat);
 	const replacement = generator.license(first.data.keyFormat);
 	const spy = spyOn(KeyGenerator.prototype, "license")

@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { TestContext } from "../fixtures/TestContext";
 import { hardware } from "../../core/database/schema/hardware";
 import { ips } from "../../core/database/schema/ips";
 import { meters } from "../../core/database/schema/meters";
+import { MeterSchedule } from "../../plugins/licenses/MeterSchedule";
+import { audits } from "../../core/database/schema/audits";
+import { activityEvents } from "../../core/database/schema/events";
 
 const context = new TestContext();
 beforeAll(() => context.start());
@@ -79,6 +82,16 @@ test("cap changes preserve observations and explicit removal frees an admission 
 		{ ids: [issued.data.id], changes: { deviceLimit: 1, ipLimit: null } },
 		context.operation(),
 	);
+	await context.licenses.enable({ ids: [issued.data.id] }, context.operation());
+	for (const hardwareId of ["oldest", "newest"])
+		expect(
+			(
+				await context.validation.validate(
+					{ license: issued.credential, hardwareId },
+					context.operation(),
+				)
+			).data.valid,
+		).toBe(true);
 	expect(
 		await context.database.orm
 			.select()
@@ -107,6 +120,67 @@ test("cap changes preserve observations and explicit removal frees an admission 
 		context.operation(),
 		"device",
 	);
+});
+
+test("materialised resets share calendar work per schedule without merging evidence or identities", async () => {
+	const { id } = (
+		await context.licenses.create(
+			{
+				meters: {
+					upsert: [
+						{ name: "one", schedule: { interval: "day", time: "00:00" } },
+						{ name: "two", schedule: { interval: "day", time: "00:00" } },
+						{ name: "three", schedule: { interval: "day", time: "12:00" } },
+					],
+				},
+			},
+			context.operation(),
+		)
+	).data;
+	await context.licenses.enable({ ids: [id] }, context.operation());
+	await context.database.orm
+		.update(meters)
+		.set({
+			value: "6",
+			periodStartedAt: new Date(-86400000),
+			nextResetAt: new Date(0),
+		})
+		.where(eq(meters.licenseId, id));
+	const calculate = spyOn(MeterSchedule.prototype, "boundaries");
+	try {
+		const result = await context.licenses.consume(
+			{ licenseId: id, usage: { one: "1", two: "1", three: "1" } },
+			context.operation(),
+		);
+		expect(calculate).toHaveBeenCalledTimes(2);
+		expect(new Set(result.data.entries.map((row) => row.counterId)).size).toBe(
+			3,
+		);
+		expect(
+			result.data.entries.every(
+				(row) => row.before === "0" && row.after === "1",
+			),
+		).toBe(true);
+	} finally {
+		calculate.mockRestore();
+	}
+	expect(
+		await context.database.orm
+			.select({ id: audits.id })
+			.from(audits)
+			.where(and(eq(audits.targetId, id), eq(audits.action, "meter.reset"))),
+	).toHaveLength(3);
+	expect(
+		await context.database.orm
+			.select({ id: activityEvents.id })
+			.from(activityEvents)
+			.where(
+				and(
+					eq(activityEvents.resourceId, id),
+					eq(activityEvents.event, "meter.reset"),
+				),
+			),
+	).toHaveLength(3);
 });
 
 test("zero caps reject enrollment and runtime policies still apply to consumption", async () => {

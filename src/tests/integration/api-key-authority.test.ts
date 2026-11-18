@@ -254,20 +254,21 @@ test("idempotent API operations reauthorize before returning stored results", as
 	const execute = () =>
 		context.idempotency.admin(
 			operation,
-			"test.authority",
+			"license.update",
 			{ id: issued.data.id },
 			async () => {
 				mutations++;
-				return { data: { accepted: true } };
+				return { data: { ids: [issued.data.id] } };
 			},
 			{
+				authority: async () => ({ groupIds: [], allGroups: true }),
 				authorize: (tx) =>
 					context.auth.authorize(tx, principal, "licenses:update"),
 			},
 		);
 	await execute();
 	await expect(execute()).rejects.toMatchObject({
-		result: { data: { accepted: true } },
+		result: { data: { ids: [issued.data.id] } },
 	});
 	await context.apiKeys.update(
 		{ ids: [issued.data.id], changes: { scopes: [] } },

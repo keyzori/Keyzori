@@ -5,6 +5,7 @@ import { join, relative, resolve } from "node:path";
 import { KeyGenerator } from "../core/security/KeyGenerator";
 import { RuntimeContract } from "../tests/fixtures/RuntimeContract";
 import { command } from "./command";
+import { smokeImage } from "./smoke-image";
 
 const project = `keyzori-compose-${Bun.randomUUIDv7()}`;
 const scratch = await mkdtemp(join(tmpdir(), "keyzori-compose-"));
@@ -18,13 +19,16 @@ const master = new KeyGenerator().master();
 const secret = () =>
 	Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
 const env = {
-	...Bun.env,
+	...Object.fromEntries(
+		Object.entries(Bun.env).filter(([key]) => !/^(KZ_|COMPOSE_)/i.test(key)),
+	),
+	COMPOSE_DISABLE_ENV_FILE: "true",
 	KZ_MASTER_KEY: master,
 	KZ_POSTGRES_PASSWORD: secret(),
 	KZ_SERVER_DATABASE_PASSWORD: secret(),
 	KZ_MIGRATION_DATABASE_PASSWORD: secret(),
 	KZ_WEBHOOK_ENCRYPTION_KEY: secret(),
-	KZ_VERSION: "smoke",
+	KZ_IMAGE: "",
 };
 const cancellation = new AbortController();
 let phaseSignal = cancellation.signal;
@@ -53,6 +57,7 @@ async function origin() {
 }
 const failures: unknown[] = [];
 try {
+	env.KZ_IMAGE = await smokeImage(cancellation.signal);
 	const config = object(
 		JSON.parse(
 			await docker([
@@ -72,14 +77,16 @@ try {
 	assert.equal(object(services.redis).ports, undefined);
 	const server = object(services.server);
 	assert.equal(server.read_only, true);
-	server.image = "keyzori-server:test";
-	delete server.build;
+	assert.equal(server.image, env.KZ_IMAGE);
+	assert.equal(server.build, undefined);
+	server.pull_policy = "never";
 	server.ports = [
 		{ target: 6284, published: "0", host_ip: "127.0.0.1", protocol: "tcp" },
 	];
 	const migrator = object(services.migrate);
-	migrator.image = "keyzori-server:test";
-	delete migrator.build;
+	assert.equal(migrator.image, env.KZ_IMAGE);
+	assert.equal(migrator.build, undefined);
+	migrator.pull_policy = "never";
 	services.server = server;
 	services.migrate = migrator;
 	config.services = services;
@@ -105,6 +112,10 @@ try {
 		"Runtime role must not own schema, migration history, or mutate append-only history",
 	);
 	const container = await compose(["ps", "-q", "server"]);
+	assert.equal(
+		await docker(["inspect", "--format", "{{.Image}}", container]),
+		env.KZ_IMAGE,
+	);
 	assert.equal(
 		await docker([
 			"inspect",

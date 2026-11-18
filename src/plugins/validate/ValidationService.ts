@@ -76,9 +76,7 @@ export class ValidationService {
 			await this.failures.record(
 				result.data.code,
 				result.data.license?.id,
-				input.license,
 				context,
-				input.hardwareId,
 				result.data.license?.groupId ?? null,
 			);
 		return result;

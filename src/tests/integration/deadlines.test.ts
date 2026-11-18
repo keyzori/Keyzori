@@ -192,7 +192,7 @@ describe("request deadline propagation", () => {
 		await expect(
 			context.idempotency.admin(
 				operation,
-				"deadline.fixture",
+				"user.create",
 				{ id },
 				async (tx) => {
 					await tx.insert(users).values({

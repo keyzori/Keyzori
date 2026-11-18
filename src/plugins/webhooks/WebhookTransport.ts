@@ -153,6 +153,7 @@ export function parseWebhookPrivateDestinations(
 
 export class WebhookTransport {
 	private readonly privateDestinations = new Map<string, BlockList>();
+	private unresolved = 0;
 	constructor(
 		private readonly allowedOrigins: readonly string[] = [],
 		private readonly resolve: (host: string) => Promise<LookupAddress[]> = (
@@ -196,6 +197,7 @@ export class WebhookTransport {
 		const host = url.hostname.replace(/^\[|\]$/g, "");
 		if (
 			value.length > 2048 ||
+			url.href.length > 2048 ||
 			/[\s\\]/u.test(value) ||
 			(url.protocol !== "https:" &&
 				!(
@@ -222,9 +224,14 @@ export class WebhookTransport {
 		headers: Record<string, string>,
 		timeoutMs: number,
 		cancellation?: AbortSignal,
+		attempt = 1,
 	): Promise<$WebhookTransportResult> {
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000)
 			throw new RangeError("Webhook timeout must be between 1 and 120000ms");
+		if (!Number.isSafeInteger(attempt) || attempt < 1 || attempt > 8)
+			throw new RangeError("Invalid webhook send attempt");
+		if (Buffer.byteLength(body) > 32768)
+			throw new RangeError("Webhook payload exceeds budget");
 		const timeout = new AbortController();
 		const timer = setTimeout(
 			() => timeout.abort(new Error("Webhook timeout")),
@@ -234,9 +241,20 @@ export class WebhookTransport {
 			? AbortSignal.any([timeout.signal, cancellation])
 			: timeout.signal;
 		try {
-			return await this.request(value, body, headers, signal);
+			return await this.request(value, body, headers, signal, attempt);
 		} finally {
 			clearTimeout(timer);
+		}
+	}
+	private async lookup(host: string) {
+		// System lookup cannot be cancelled. A timed-out caller does not release
+		// the capacity reservation until its native lookup actually finishes.
+		if (this.unresolved >= 32) throw new Error("Webhook resolver busy");
+		this.unresolved++;
+		try {
+			return await this.resolve(host);
+		} finally {
+			this.unresolved--;
 		}
 	}
 	private async request(
@@ -244,6 +262,7 @@ export class WebhookTransport {
 		body: string,
 		headers: Record<string, string>,
 		signal: AbortSignal,
+		attempt: number,
 	): Promise<$WebhookTransportResult> {
 		const url = this.url(value);
 		const host = url.hostname.replace(/^\[|\]$/g, "");
@@ -254,7 +273,7 @@ export class WebhookTransport {
 					(resolve, reject) => {
 						const aborted = () => reject(signal.reason);
 						signal.addEventListener("abort", aborted, { once: true });
-						void this.resolve(host)
+						void this.lookup(host)
 							.then(resolve, reject)
 							.finally(() => signal.removeEventListener("abort", aborted));
 					},
@@ -269,7 +288,7 @@ export class WebhookTransport {
 			)
 		)
 			throw new HttpError("FORBIDDEN");
-		const selected = addresses[0];
+		const selected = addresses[(attempt - 1) % addresses.length];
 		signal.throwIfAborted();
 		if (!selected) throw new HttpError("FORBIDDEN");
 		const target = connectionAddress(selected.address);

@@ -1,4 +1,11 @@
-import { pgTable, uuid, text, boolean, timestamp } from "drizzle-orm/pg-core";
+import {
+	pgTable,
+	uuid,
+	text,
+	boolean,
+	timestamp,
+	bigint,
+} from "drizzle-orm/pg-core";
 import { actions } from "../../auth/scopes";
 
 export const apiKeys = pgTable("api_keys", {
@@ -7,6 +14,9 @@ export const apiKeys = pgTable("api_keys", {
 	description: text(),
 	secretHash: text("secret_hash").notNull(),
 	scopes: text({ enum: actions }).array().notNull().default([]),
+	grantGeneration: bigint("grant_generation", { mode: "bigint" })
+		.notNull()
+		.default(1n),
 	allGroups: boolean("all_groups").notNull().default(false),
 	enabled: boolean().notNull().default(false),
 	expiresAt: timestamp("expires_at", { withTimezone: true, precision: 3 }),

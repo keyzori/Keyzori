@@ -31,6 +31,15 @@ test("offline OpenAPI preserves registry authority, mandatory idempotency and ex
 		expect(operation.security).toEqual(
 			contract.access === "public" ? [] : [{ bearerAuth: [] }],
 		);
+		if (["POST", "PATCH", "DELETE"].includes(contract.method)) {
+			const requestBody = object(operation.requestBody);
+			expect(requestBody.required).toBe(true);
+			const content = object(requestBody.content);
+			expect(Object.keys(content)).toEqual(["application/json"]);
+			expect(
+				Object.keys(object(object(content["application/json"]).schema)).length,
+			).toBeGreaterThan(0);
+		}
 		const parameters = Array.isArray(operation.parameters)
 			? operation.parameters.map(object)
 			: [];
@@ -54,11 +63,45 @@ test("offline OpenAPI preserves registry authority, mandatory idempotency and ex
 				false,
 			);
 	}
+	const requestSchema = (path: string) => {
+		const operation = object(object(paths[path]).post);
+		const media = object(object(operation.requestBody).content);
+		return object(object(media["application/json"]).schema);
+	};
+	expect(requestSchema("/validate").required).toEqual(["license"]);
+	const adjustment = requestSchema("/licenses/meters/adjust");
+	expect(adjustment.required).toContain("action");
+	expect(object(adjustment.properties).action).not.toHaveProperty("default");
+	expect(object(requestSchema("/licenses").properties).metadata).toMatchObject({
+		$ref: "#/components/schemas/Metadata",
+	});
+	expect(requestSchema("/licenses/hardware/register").required).toEqual(
+		expect.arrayContaining(["licenseId", "hardwareId"]),
+	);
+	expect(requestSchema("/licenses/ips/register").required).toEqual(
+		expect.arrayContaining(["licenseId", "ip"]),
+	);
+	expect(object(object(paths["/groups"]).delete)["x-required-scopes"]).toEqual([
+		"groups:delete",
+		"licenses:disable",
+	]);
+	expect(
+		object(object(paths["/webhooks/deliveries"]).get)["x-required-scopes"],
+	).toEqual(["webhooks:read", "events:read"]);
+	expect(
+		object(object(object(paths["/live"]).get).responses)["200"],
+	).toBeDefined();
+	expect(
+		object(object(specification.webhooks).integrationEvent).post,
+	).toBeDefined();
 	const events = object(object(paths["/events"]).get);
 	expect(object(paths["/events/stream"]).ws).toBeUndefined();
 	expect(
 		object(object(object(paths["/events/stream"]).get).responses)["101"],
 	).toBeDefined();
+	expect(
+		object(object(paths["/events/stream"]).get)["x-websocket-server-frame"],
+	).toEqual({ $ref: "#/components/schemas/ActivityServerFrame" });
 	expect(events.parameters).toEqual(
 		expect.arrayContaining([
 			expect.objectContaining({

@@ -4,7 +4,8 @@ import { InputPolicy } from "../../core/http/InputPolicy";
 import type { Database } from "../../core/database/Database";
 import type { SettingsService } from "../../plugins/settings/SettingsService";
 import type { $Transaction } from "../../types/database";
-import type { receipts } from "../../core/database/schema/receipts";
+import { receipts } from "../../core/database/schema/receipts";
+import { settingsDefaults } from "../../plugins/settings/defaults";
 
 const service = new IdempotencyService({} as Database, {} as SettingsService);
 const hash = (text: string) =>
@@ -16,31 +17,67 @@ function receiptTransaction(
 		"fingerprint" | "result" | "secretIssued"
 	>,
 	expired = false,
+	version = 2,
 ) {
 	let deleted = false;
+	let mutations = 0;
+	const issued = receipt.secretIssued !== null;
+	const scope = issued ? "licenses:create" : "licenses:update";
+	const now = new Date("2026-10-01T00:00:00Z");
 	const row = {
-		operation: "test",
-		principalId: "root",
-		key: "key",
-		authority: null,
-		createdAt: new Date("2026-10-01T00:00:00Z"),
-		expiresAt: new Date("2026-10-02T00:00:00Z"),
+		version,
+		authority: {
+			ownerId: "root",
+			allGroups: false,
+			groupIds: [],
+			scopes: [],
+			scope,
+		},
 		...receipt,
 	};
 	const tx = {
 		execute: async () => {},
 		select: () => ({
-			from: () => ({ where: async () => [{ receipt: row, expired }] }),
+			from: (table: unknown) =>
+				table === receipts
+					? { where: async () => [{ receipt: row, expired, now }] }
+					: Promise.resolve([{ now }]),
 		}),
 		delete: () => ({
 			where: async () => {
 				deleted = true;
 			},
 		}),
+		insert: () => ({ values: async () => {} }),
 	};
+	const transaction: Database["transaction"] = (work) =>
+		work(tx as unknown as $Transaction);
+	const commands = new IdempotencyService(
+		{ transaction, idempotentTransaction: transaction },
+		{ read: async () => settingsDefaults },
+	);
+	const id = Bun.randomUUIDv7();
+	const execute = (input: unknown) =>
+		commands.admin(
+			{
+				principal: { kind: "root", id: "root", name: "Root", scopes: [] },
+				requestId: "request",
+				clientIp: "127.0.0.1",
+				idempotencyKey: "key",
+			},
+			issued ? "license.create" : "license.update",
+			input,
+			async () => {
+				mutations++;
+				return issued
+					? { data: { id }, credential: "issued fixture" }
+					: { data: { ids: [id] } };
+			},
+			issued ? { secretIds: () => [id] } : {},
+		);
 	return {
-		tx: tx as unknown as $Transaction,
-		receipt: row,
+		execute,
+		mutations: () => mutations,
 		deleted: () => deleted,
 	};
 }
@@ -86,20 +123,14 @@ describe("idempotency fingerprints", () => {
 		const reordered = { metadata: { "e\u0301": 2, "\u00e9": 1 } };
 		const receipt = {
 			fingerprint: service.fingerprint(first),
-			result: { completed: true },
+			result: { data: { ids: [Bun.randomUUIDv7()] } },
 			secretIssued: null,
 		};
-		const { tx, receipt: expected } = receiptTransaction(receipt);
-		expect(
-			await service.existing(
-				tx,
-				"test",
-				"root",
-				"key",
-				service.fingerprint(reordered),
-				reordered,
-			),
-		).toEqual(expected);
+		const stored = receiptTransaction(receipt);
+		await expect(stored.execute(reordered)).rejects.toMatchObject({
+			result: receipt.result,
+		});
+		expect(stored.mutations()).toBe(0);
 	});
 
 	test("rejects a receipt with a different fingerprint", async () => {
@@ -112,28 +143,14 @@ describe("idempotency fingerprints", () => {
 			result: { completed: true },
 			secretIssued: null,
 		};
-		const { tx } = receiptTransaction(receipt);
-		await expect(
-			service.existing(
-				tx,
-				"test",
-				"root",
-				"key",
-				service.fingerprint(input),
-				input,
-			),
-		).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED" });
+		const stored = receiptTransaction(receipt);
+		await expect(stored.execute(input)).rejects.toMatchObject({
+			code: "IDEMPOTENCY_KEY_REUSED",
+		});
 		const changed = { ...input, metadata: { B: 3, a: 1 } };
-		await expect(
-			service.existing(
-				tx,
-				"test",
-				"root",
-				"key",
-				service.fingerprint(changed),
-				changed,
-			),
-		).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED" });
+		await expect(stored.execute(changed)).rejects.toMatchObject({
+			code: "IDEMPOTENCY_KEY_REUSED",
+		});
 	});
 
 	test("secret receipts and expiry preserve issuance boundaries", async () => {
@@ -141,33 +158,60 @@ describe("idempotency fingerprints", () => {
 		const receipt = {
 			fingerprint: service.fingerprint(input),
 			result: null,
-			secretIssued: ["issued-id"],
+			secretIssued: [Bun.randomUUIDv7()],
 		};
 		await expect(
-			service.existing(
-				receiptTransaction(receipt).tx,
-				"test",
-				"root",
-				"key",
-				service.fingerprint(input),
-				input,
-			),
+			receiptTransaction(receipt).execute(input),
 		).rejects.toMatchObject({
 			status: 409,
 			code: "SECRET_ALREADY_ISSUED",
-			resourceIds: ["issued-id"],
+			resourceIds: receipt.secretIssued,
 		});
+		for (const invalid of [
+			{ ...receipt, secretIssued: [] },
+			{ ...receipt, result: { credential: "not safe to replay" } },
+		]) {
+			const malformed = receiptTransaction(invalid);
+			await expect(malformed.execute(input)).rejects.toMatchObject({
+				code: "INTERNAL_ERROR",
+			});
+			expect(malformed.mutations()).toBe(0);
+		}
 		const expired = receiptTransaction(receipt, true);
-		expect(
-			await service.existing(
-				expired.tx,
-				"test",
-				"root",
-				"key",
-				service.fingerprint(input),
-				input,
-			),
-		).toBeUndefined();
+		await expired.execute(input);
+		expect(expired.mutations()).toBe(1);
 		expect(expired.deleted()).toBe(true);
+	});
+	test("legacy and malformed retained rows cannot re-disclose data or be mistaken for an unused key", async () => {
+		const result = { data: { ids: [Bun.randomUUIDv7()] } };
+		const fingerprint = service.fingerprint({});
+		for (const version of [1, 3]) {
+			const old = receiptTransaction(
+				{ fingerprint, result, secretIssued: null },
+				false,
+				version,
+			);
+			await expect(old.execute({})).rejects.toMatchObject({
+				code: "IDEMPOTENCY_KEY_REUSED",
+			});
+			expect(old.mutations()).toBe(0);
+			expect(old.deleted()).toBe(false);
+		}
+		for (const invalid of [
+			null,
+			{ ...result, secret: "sentinel" },
+			{ data: { ids: ["invalid"] } },
+		]) {
+			const malformed = receiptTransaction({
+				fingerprint,
+				result: invalid,
+				secretIssued: null,
+			});
+			await expect(malformed.execute({})).rejects.toMatchObject({
+				code: "INTERNAL_ERROR",
+			});
+			expect(malformed.mutations()).toBe(0);
+			expect(malformed.deleted()).toBe(false);
+		}
 	});
 });

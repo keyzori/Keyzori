@@ -9,9 +9,15 @@ import type { RequestTracker } from "./RequestTracker";
 
 export class HttpBoundary {
 	private readonly input = new InputPolicy();
+	private nextUnavailableLog = 0;
 	constructor(
 		private readonly tracker: RequestTracker,
 		private readonly logger: Logger,
+		private readonly validateResponse?: (
+			request: Request,
+			value: unknown,
+			status: number,
+		) => void,
 	) {}
 	start(request: Request) {
 		const context = this.tracker.begin(request);
@@ -95,10 +101,24 @@ export class HttpBoundary {
 			typeof error.code === "string"
 		)
 			code = error.code;
-		if (error instanceof Replay)
-			return Response.json(
-				success(error.result, this.tracker.begin(request).requestId, 50, true),
-			);
+		if (error instanceof Replay) {
+			try {
+				if (!this.validateResponse)
+					throw new Error("Missing replay response contract");
+				this.validateResponse(request, error.result, 200);
+				return Response.json(
+					success(
+						error.result,
+						this.tracker.begin(request).requestId,
+						50,
+						true,
+					),
+				);
+			} catch (invalid) {
+				error = invalid;
+				code = undefined;
+			}
+		}
 		let mapped: HttpError;
 		if (error instanceof HttpError) mapped = error;
 		else if (error instanceof ParseError && error.cause instanceof HttpError)
@@ -115,13 +135,21 @@ export class HttpBoundary {
 		else if (this.unavailable(error))
 			mapped = new HttpError("SERVICE_UNAVAILABLE");
 		else mapped = new HttpError("INTERNAL_ERROR");
-		if (mapped.status >= 500)
+		// Admission/dependency failures can affect every request in an incident.
+		// The HTTP counters record them all; bound repetitive process logs.
+		if (
+			mapped.status >= 500 &&
+			(mapped.status !== 503 || performance.now() >= this.nextUnavailableLog)
+		) {
+			if (mapped.status === 503)
+				this.nextUnavailableLog = performance.now() + 1000;
 			this.logger.write("error", "request.failed", {
 				requestId: this.tracker.begin(request).requestId,
 				code: mapped.code,
 				status: mapped.status,
 				...diagnostic(error),
 			});
+		}
 		const body: ApiResponse<never> = {
 			ok: false,
 			data: null,

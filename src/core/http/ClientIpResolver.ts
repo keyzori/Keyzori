@@ -67,17 +67,46 @@ export class ClientIpResolver {
 	async normalize(address: string, deadlineAt?: number) {
 		if (!this.isHost(address))
 			throw new HttpError("INVALID_REQUEST", { ip: "Invalid IP address" });
-		try {
-			const [row] = await this.database.transaction(
-				(tx) => this.compare(tx, [address], []),
+		const [normalized] = await this.database
+			.transaction(
+				(tx) => this.normalizeMany(tx, [address]),
 				"read",
 				deadlineAt,
-			);
-			if (!row) throw new Error("Missing IP result");
-			return row.address;
-		} catch {
-			throw new HttpError("SERVICE_UNAVAILABLE");
-		}
+			)
+			.catch(() => {
+				throw new HttpError("SERVICE_UNAVAILABLE");
+			});
+		if (!normalized) throw new HttpError("SERVICE_UNAVAILABLE");
+		return normalized;
+	}
+
+	async normalizeMany(tx: $Transaction, addresses: string[]) {
+		if (addresses.some((address) => !this.isHost(address)))
+			throw new HttpError("INVALID_REQUEST", { ip: "Invalid IP address" });
+		const rows = await this.compare(tx, [...new Set(addresses)], []).catch(
+			() => {
+				throw new HttpError("SERVICE_UNAVAILABLE");
+			},
+		);
+		const canonical = new Map(rows.map((row) => [row.input, row.address]));
+		return addresses.map((address) => {
+			const value = canonical.get(address);
+			if (!value) throw new HttpError("SERVICE_UNAVAILABLE");
+			return value;
+		});
+	}
+
+	/** Use the same inet output spelling as the stored licence rule array, retaining masks. */
+	async canonicalRules(tx: $Transaction, rules: string[]) {
+		if (!rules.length) return [];
+		this.validateRules(rules);
+		const rows = await tx
+			.select({ rule: sql<string>`r.value::inet` })
+			.from(
+				sql`jsonb_array_elements_text(${JSON.stringify(rules)}::text::jsonb) with ordinality as r(value, n)`,
+			)
+			.orderBy(sql`r.n`);
+		return rows.map((row) => row.rule);
 	}
 
 	validateRules(rules: string[]) {
@@ -101,6 +130,7 @@ export class ClientIpResolver {
 	async matches(tx: $Transaction, ip: string, rules: string[]) {
 		if (!this.isHost(ip))
 			throw new HttpError("INVALID_REQUEST", { ip: "Invalid IP address" });
+		if (!rules.length) return false;
 		this.validateRules(rules);
 		const [row] = await this.compare(tx, [ip], rules).catch(() => {
 			throw new HttpError("SERVICE_UNAVAILABLE");

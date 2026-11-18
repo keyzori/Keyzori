@@ -3,7 +3,21 @@ import { drizzle } from "drizzle-orm/bun-sql";
 import { sql } from "drizzle-orm";
 import type { $Transaction } from "../../types/database";
 import { HttpError } from "../http/HttpError";
+import { Replay } from "../security/Replay";
 import type { Metrics } from "../observability/Metrics";
+
+type Topology = "read" | "write" | "none";
+const requestBudget = {
+	total: 14000,
+	reserve: 14000,
+	statement: 12000,
+	lock: 5000,
+};
+const schemaBudgets = {
+	verify: { total: 10000, reserve: 5000, statement: 5000, lock: 5000 },
+	migrate: { total: 120000, reserve: 5000, statement: 60000, lock: 10000 },
+	restore: { total: 120000, reserve: 5000, statement: 60000, lock: 10000 },
+};
 
 export class Database {
 	readonly client;
@@ -15,6 +29,9 @@ export class Database {
 	) {
 		this.client = new SQL(url, {
 			max: poolSize,
+			// Drizzle's int8 sequence/revision columns are declared in bigint mode.
+			// Bun otherwise returns strings, including for the reserved-session path.
+			bigint: true,
 			connectionTimeout: 3,
 			idleTimeout: 30,
 			connection: {
@@ -37,15 +54,40 @@ export class Database {
 	}
 	async transaction<T>(
 		work: (tx: $Transaction) => Promise<T>,
-		topology: "read" | "write" | "none" = "read",
+		topology: Topology = "read",
+		deadlineAt?: number,
+	) {
+		try {
+			return await this.bounded(work, topology, requestBudget, deadlineAt);
+		} catch (error) {
+			throw this.failure(error);
+		}
+	}
+	/** Offline operations have their own wall-clock budget, including BEGIN and COMMIT. */
+	schemaTransaction<T>(
+		mode: keyof typeof schemaBudgets,
+		work: (tx: $Transaction) => Promise<T>,
+		deadlineAt?: number,
+	) {
+		return this.bounded(work, "none", schemaBudgets[mode], deadlineAt);
+	}
+	private async bounded<T>(
+		work: (tx: $Transaction) => Promise<T>,
+		topology: Topology,
+		budget: typeof requestBudget,
 		deadlineAt?: number,
 	) {
 		if (deadlineAt !== undefined && !Number.isSafeInteger(deadlineAt))
 			throw new Error("Invalid database deadline");
-		const deadline = Math.min(deadlineAt ?? Infinity, Date.now() + 14000);
+		const deadline = Math.min(
+			deadlineAt ?? Infinity,
+			Date.now() + budget.total,
+		);
 		try {
 			using reserved = await this.client.reserve({
-				signal: AbortSignal.timeout(this.remaining(deadline)),
+				signal: AbortSignal.timeout(
+					Math.min(budget.reserve, this.remaining(deadline)),
+				),
 			});
 			this.remaining(deadline);
 			let callbackFinished: Promise<unknown> = Promise.resolve();
@@ -59,9 +101,10 @@ export class Database {
 						const workResult = (async () => {
 							const remaining = this.remaining(deadline);
 							await tx.execute(sql`select
-					set_config('transaction_timeout', ${`${remaining}ms`}, true),
-					set_config('statement_timeout', ${`${Math.min(12000, remaining)}ms`}, true),
-					set_config('lock_timeout', ${`${Math.min(5000, remaining)}ms`}, true)`);
+					case when current_setting('server_version_num')::integer >= 170000 then
+						set_config('transaction_timeout', ${`${remaining}ms`}, true) end,
+					set_config('statement_timeout', ${`${Math.min(budget.statement, remaining)}ms`}, true),
+					set_config('lock_timeout', ${`${Math.min(budget.lock, remaining)}ms`}, true)`);
 							if (topology !== "none")
 								await tx.execute(
 									topology === "write"
@@ -84,11 +127,27 @@ export class Database {
 				await closing;
 			}
 		} catch (error) {
-			this.metrics?.transactionFailure();
 			if (Date.now() >= deadline || this.unavailable(error))
 				throw new HttpError("SERVICE_UNAVAILABLE");
+			if (error instanceof Replay) this.metrics?.transactionRollback("replay");
+			else if (error instanceof HttpError && error.status < 500)
+				this.metrics?.transactionRollback("expected");
+			else if (this.retryableConflict(error))
+				this.metrics?.transactionRollback("conflict");
 			throw error;
 		}
+	}
+	private failure(error: unknown) {
+		// Replay deliberately unwinds the transaction; rejected domain operations
+		// likewise say nothing about database health. Count final failures once.
+		if (this.retryableConflict(error))
+			return new HttpError("SERVICE_UNAVAILABLE");
+		if (!(
+			error instanceof Replay ||
+			(error instanceof HttpError && error.status < 500)
+		))
+			this.metrics?.transactionFailure();
+		return error;
 	}
 	private remaining(deadlineAt: number) {
 		const remaining = deadlineAt - Date.now();
@@ -98,19 +157,22 @@ export class Database {
 	/** Only callbacks with durable operation identity and no external effects may opt in. */
 	async idempotentTransaction<T>(
 		work: (tx: $Transaction) => Promise<T>,
-		topology: "read" | "write" | "none" = "read",
+		topology: Topology = "read",
 		deadlineAt?: number,
 	): Promise<T> {
-		const deadline = Math.min(deadlineAt ?? Infinity, Date.now() + 14000);
+		const deadline = Math.min(
+			deadlineAt ?? Infinity,
+			Date.now() + requestBudget.total,
+		);
 		for (let attempt = 0; ; attempt++) {
 			try {
-				return await this.transaction(work, topology, deadline);
+				return await this.bounded(work, topology, requestBudget, deadline);
 			} catch (error) {
 				// These errors prove rollback. Connection loss/unknown COMMIT is never retried.
-				if (attempt >= 2 || !this.retryableConflict(error)) throw error;
+				if (attempt >= 2 || !this.retryableConflict(error))
+					throw this.failure(error);
 				const delay = 10 * 2 ** attempt + Math.floor(Math.random() * 10);
-				if (Date.now() + delay >= deadline)
-					throw new HttpError("SERVICE_UNAVAILABLE");
+				if (Date.now() + delay >= deadline) throw this.failure(error);
 				await Bun.sleep(delay);
 			}
 		}

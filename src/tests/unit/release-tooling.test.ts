@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
 import { imageProvenance } from "../../scripts/image-provenance";
+import { requirePrefix } from "../../../.github/scripts/migration-prefix";
+import {
+	manifest,
+	promote,
+	readCheckpoint,
+	recordCheckpoint,
+} from "../../../.github/scripts/release-images";
 
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value))
@@ -99,6 +106,7 @@ test("image provenance binds the tested digest and explicit recovery source rath
 		IMAGE_DIGEST: digest,
 		TARGET_ARCH: "arm64",
 		GITHUB_SHA: "a".repeat(40),
+		PUBLICATION_WORKFLOW_SHA: "a".repeat(40),
 		GITHUB_REPOSITORY: "fixture/keyzori",
 		GITHUB_SERVER_URL: "https://github.com",
 		GITHUB_RUN_ID: "1",
@@ -114,7 +122,73 @@ test("image provenance binds the tested digest and explicit recovery source rath
 		digest: { gitCommit: source },
 	});
 	expect(provenance.buildDefinition.resolvedDependencies).toHaveLength(5);
+	expect(provenance.runDetails.builder.id).toEndWith(`@${"a".repeat(40)}`);
 	await expect(imageProvenance({ SOURCE_SHA: "main" })).rejects.toThrow(
 		"immutable",
 	);
+});
+
+test("the v3 migration prefix permits first-release bootstrap and appends only", () => {
+	const tree = (time: number, hash: string) =>
+		`040000 tree ${hash.repeat(40)}\t202611061050${time}_fixture`;
+	const a = tree(11, "a"),
+		b = tree(12, "b"),
+		c = tree(13, "c");
+	requirePrefix([], [a, b]);
+	requirePrefix([a, b], [a, b, c]);
+	for (const bad of [[a], [a, tree(12, "c")], [a, c, b], [tree(10, "d"), a, b]])
+		expect(() => requirePrefix([a, b], bad)).toThrow();
+});
+
+test("a recorded release recovers partial promotion without replacing either tested image", async () => {
+	const bytes = (value: unknown) => Buffer.from(JSON.stringify(value));
+	const native = (arch: string) =>
+		manifest(
+			bytes({
+				schemaVersion: 2,
+				mediaType: "application/vnd.oci.image.manifest.v1+json",
+				config: { arch },
+			}),
+		);
+	const amd = native("amd64"),
+		arm = native("arm64");
+	const source = { sha: "a".repeat(40), tag: "v3.0.0-beta.9" };
+	const recorded = { ...source, amd64: amd.digest, arm64: arm.digest };
+	const notes = recordCheckpoint("Release notes.", recorded);
+	expect(readCheckpoint(notes, source)).toEqual(recorded);
+	expect(recordCheckpoint(notes, recorded)).toBe(notes);
+	expect(() =>
+		recordCheckpoint(notes, { ...recorded, arm64: native("other").digest }),
+	).toThrow();
+	expect(() =>
+		readCheckpoint(notes, { ...source, sha: "b".repeat(40) }),
+	).toThrow();
+	const refs = new Map([
+		[amd.digest, amd],
+		[arm.digest, arm],
+	]);
+	const writes: string[] = [];
+	let interrupt = true;
+	const registry = {
+		get: async (ref: string) => refs.get(ref) ?? null,
+		put: async (tag: string, index: ReturnType<typeof manifest>) => {
+			if (interrupt && writes.length) throw new Error("interrupted");
+			expect(refs.has(tag)).toBe(false);
+			writes.push(tag);
+			refs.set(tag, index);
+		},
+	};
+	await expect(promote(registry, recorded)).rejects.toThrow("interrupted");
+	const original = refs.get(source.tag);
+	interrupt = false;
+	await promote(registry, recorded);
+	await promote(registry, recorded);
+	expect(writes).toEqual([source.tag, source.tag.slice(1)]);
+	expect(refs.get(source.tag.slice(1))?.digest).toBe(original?.digest);
+	// Both expected architecture names are present but the wrong digest is assigned.
+	refs.delete(source.tag.slice(1));
+	await expect(
+		promote(registry, { ...recorded, amd64: arm.digest, arm64: amd.digest }),
+	).rejects.toThrow("Conflicting tested digest");
+	expect(writes).toHaveLength(2);
 });

@@ -1,7 +1,7 @@
-import { asc, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { apiKeys } from "../database/schema/apiKeys";
-import { apiKeyGroups } from "../database/schema/apiKeyGroups";
+import { apiKeyGrantIds } from "./apiKeyGrants";
 import { SecretHasher } from "../security/SecretHasher";
 import { ScopeService } from "./ScopeService";
 import { HttpError } from "../http/HttpError";
@@ -9,6 +9,21 @@ import type { Database } from "../database/Database";
 import type { $Principal } from "../../types/auth";
 import type { $Transaction } from "../../types/database";
 import type { $ApiKey } from "../../types/apiKeys";
+
+type ApiPrincipal = Extract<$Principal, { kind: "api" }>;
+type CredentialEvidence =
+	| Extract<$Principal, { kind: "root" }>
+	| (Pick<ApiPrincipal, "kind" | "id" | "credentialHash"> &
+			Partial<ApiPrincipal>);
+
+export function requireUnexpired(principal: $Principal, now: Date) {
+	if (
+		principal.kind === "api" &&
+		principal.expiresAt !== null &&
+		principal.expiresAt <= now
+	)
+		throw new HttpError("UNAUTHORIZED");
+}
 
 export class AuthService {
 	private readonly hasher = new SecretHasher();
@@ -41,9 +56,13 @@ export class AuthService {
 		if (!id || !secret) throw new HttpError("UNAUTHORIZED");
 		return this.database.transaction(
 			async (tx) => {
-				const [key] = await tx.select().from(apiKeys).where(eq(apiKeys.id, id));
-				if (!key || !this.hasher.matches(secret, key.secretHash))
+				const [snapshot] = await tx
+					.select({ key: apiKeys, groupIds: apiKeyGrantIds })
+					.from(apiKeys)
+					.where(eq(apiKeys.id, id));
+				if (!snapshot || !this.hasher.matches(secret, snapshot.key.secretHash))
 					throw new HttpError("UNAUTHORIZED");
+				const { key, groupIds } = snapshot;
 				const now = await this.now(tx);
 				this.active(key, now);
 				if (
@@ -53,8 +72,17 @@ export class AuthService {
 					await tx
 						.update(apiKeys)
 						.set({ lastUsedAt: now })
-						.where(eq(apiKeys.id, key.id));
-				return this.principal(tx, key);
+						.where(
+							and(
+								eq(apiKeys.id, key.id),
+								eq(apiKeys.grantGeneration, key.grantGeneration),
+								or(
+									isNull(apiKeys.lastUsedAt),
+									lte(apiKeys.lastUsedAt, new Date(now.getTime() - 60000)),
+								),
+							),
+						);
+				return this.principal(key, groupIds);
 			},
 			"read",
 			deadlineAt,
@@ -68,19 +96,26 @@ export class AuthService {
 	 */
 	async authorize(
 		tx: $Transaction,
-		principal: $Principal,
+		principal: CredentialEvidence,
 		scope: string,
 	): Promise<$Principal> {
 		if (principal.kind === "root") return principal;
-		const [key] = await tx
+		const [snapshot] = await tx
 			.select()
 			.from(apiKeys)
 			.where(eq(apiKeys.id, principal.id))
 			.for("share");
-		if (!key || key.secretHash !== principal.credentialHash)
+		if (!snapshot || snapshot.secretHash !== principal.credentialHash)
 			throw new HttpError("UNAUTHORIZED");
-		this.active(key, await this.now(tx));
-		const current = await this.principal(tx, key);
+		this.active(snapshot, await this.now(tx));
+		// A locking SELECT may wait through a concurrent UPDATE under READ COMMITTED.
+		// Fetch grants in the *next* statement, after the lock is actually held.
+		const [grants] = await tx
+			.select({ groupIds: apiKeyGrantIds })
+			.from(apiKeys)
+			.where(eq(apiKeys.id, snapshot.id));
+		if (!grants) throw new HttpError("UNAUTHORIZED");
+		const current = this.principal(snapshot, grants.groupIds);
 		this.require(current, scope);
 		return current;
 	}
@@ -110,26 +145,28 @@ export class AuthService {
 			throw new HttpError("FORBIDDEN");
 	}
 
+	/** Call with freshly authorized (row-locked) evidence and the post-resource-lock DB clock. */
+	requireUnexpired(principal: $Principal, now: Date) {
+		requireUnexpired(principal, now);
+	}
+
 	private active(key: $ApiKey, now: Date) {
 		if (!key.enabled || (key.expiresAt && key.expiresAt <= now))
 			throw new HttpError("UNAUTHORIZED");
 		if (!this.scopes.validStored(key.scopes)) throw new HttpError("FORBIDDEN");
 	}
 
-	private async principal(tx: $Transaction, key: $ApiKey): Promise<$Principal> {
-		const grants = await tx
-			.select({ groupId: apiKeyGroups.groupId })
-			.from(apiKeyGroups)
-			.where(eq(apiKeyGroups.apiKeyId, key.id))
-			.orderBy(asc(apiKeyGroups.groupId));
+	private principal(key: $ApiKey, groupIds: string[]): $Principal {
 		return {
 			kind: "api",
 			id: key.id,
 			name: key.name,
 			scopes: key.scopes,
 			credentialHash: key.secretHash,
+			grantGeneration: String(key.grantGeneration),
+			expiresAt: key.expiresAt,
 			allGroups: key.allGroups,
-			groupIds: grants.map((grant) => grant.groupId),
+			groupIds,
 		};
 	}
 

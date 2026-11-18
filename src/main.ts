@@ -1,27 +1,24 @@
-import { Config } from "./core/config/Config";
+import { Config, ConfigError } from "./core/config/Config";
 import { KeyGenerator } from "./core/security/KeyGenerator";
 import { healthcheckUrl } from "./core/http/healthcheckUrl";
 import { version } from "./version";
+import { Logger } from "./core/observability/Logger";
+import { healthBudgets } from "./plugins/health/budgets";
 
 async function run() {
 	const command = Bun.argv[2] ?? "serve";
 	let phase = "configuration";
+	let signalled = false;
 	try {
 		if (command === "version" || command === "--version") console.log(version);
 		else if (command === "master-key") console.log(new KeyGenerator().master());
 		else if (command === "healthcheck") {
-			const port = Bun.env.KZ_API_PORT ?? "6284";
-			if (!/^[1-9][0-9]*$/.test(port)) throw new Error("Invalid port");
-			const response = await fetch(
-				healthcheckUrl({
-					host: Bun.env.KZ_API_HOST ?? "0.0.0.0",
-					port: Number(port),
-				}),
-				{
-					signal: AbortSignal.timeout(4000),
-					redirect: "error",
-				},
-			);
+			const listener = Config.listener();
+			phase = "healthcheck";
+			const response = await fetch(healthcheckUrl(listener), {
+				signal: AbortSignal.timeout(healthBudgets.cliMs),
+				redirect: "error",
+			});
 			if (!response.ok) process.exitCode = 1;
 		} else if (command === "migrate" || command === "prepare-restore") {
 			if (
@@ -31,7 +28,10 @@ async function run() {
 				throw new Error(
 					"Restore preparation requires explicit restored-database confirmation",
 				);
-			const config = Config.database(Bun.env, true);
+			const config = Config.database(
+				Bun.env,
+				command === "prepare-restore" ? "restore" : true,
+			);
 			const { Database } = await import("./core/database/Database");
 			const { MigrationService } =
 				await import("./core/database/MigrationService");
@@ -51,57 +51,53 @@ async function run() {
 						}),
 					);
 				}
-			} finally {
-				await database.close();
+			} catch (error) {
+				await database.close().catch((cleanup: unknown) => {
+					console.error(
+						JSON.stringify({
+							event: "command.cleanup.failed",
+							phase,
+							cause: Logger.cause(cleanup),
+						}),
+					);
+				});
+				throw error;
 			}
+			await database.close();
 		} else if (command === "serve") {
-			const { ServerLifecycle } = await import("./core/ServerLifecycle");
+			const { ServerLifecycle, ShutdownError } =
+				await import("./core/ServerLifecycle");
 			const lifecycle = new ServerLifecycle(new Config());
 			const shutdown = () => {
+				if (signalled) return;
+				signalled = true;
 				void lifecycle.stop().then(
 					() => process.exit(0),
-					() => {
-						console.error(
-							JSON.stringify({
-								event: "shutdown.failed",
-								code: "SHUTDOWN_FAILED",
-							}),
-						);
-						process.exit(1);
-					},
+					(error: unknown) =>
+						process.exit(
+							error instanceof ShutdownError && error.code === "FORCED_SHUTDOWN"
+								? 2
+								: 1,
+						),
 				);
 			};
-			process.once("SIGINT", shutdown);
-			process.once("SIGTERM", shutdown);
+			process.on("SIGINT", shutdown);
+			process.on("SIGTERM", shutdown);
 			phase = "startup";
-			await lifecycle.start();
+			try {
+				await lifecycle.start();
+			} catch (error) {
+				if (signalled) return; // The signal handler owns the bounded shutdown result.
+				phase = lifecycle.startupPhase;
+				throw error;
+			}
 			return lifecycle.app;
 		} else throw new Error("Unknown command");
 	} catch (error) {
-		const errorClass = error instanceof Error ? error.name : "UnknownError";
-		const setting =
-			error instanceof Error
-				? error.message.match(/^KZ_[A-Z0-9_]+\b/)?.[0]
-				: undefined;
-		const category = setting
-			? "INVALID_CONFIGURATION"
-			: error instanceof Error &&
-				  /migration history|fresh database|No database migrations/.test(
-						error.message,
-				  )
-				? "SCHEMA_INCOMPATIBLE"
-				: error instanceof Error &&
-					  error.message === "PostgreSQL 17 or later is required"
-					? "UNSUPPORTED_DATABASE_VERSION"
-					: "COMMAND_FAILED";
-		const sqlState =
-			error &&
-			typeof error === "object" &&
-			"code" in error &&
-			typeof error.code === "string" &&
-			/^[0-9A-Z]{5}$/.test(error.code)
-				? error.code
-				: undefined;
+		const cause = Logger.cause(error);
+		const setting = error instanceof ConfigError ? error.setting : undefined;
+		const category = cause === "UNEXPECTED_ERROR" ? "COMMAND_FAILED" : cause;
+		const sqlState = cause.startsWith("SQLSTATE_") ? cause.slice(9) : undefined;
 		console.error(
 			JSON.stringify({
 				event: "command.failed",
@@ -117,7 +113,6 @@ async function run() {
 					? command
 					: "unknown",
 				phase,
-				errorClass,
 				category,
 				setting,
 				sqlState,
@@ -126,6 +121,7 @@ async function run() {
 			}),
 		);
 		process.exitCode = 1;
+		if (command === "serve") process.exit(1);
 	}
 }
 

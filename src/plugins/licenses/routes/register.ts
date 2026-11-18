@@ -9,7 +9,7 @@ export const registerLicense = (service: $Licenses, requests: $Requests) =>
 			guard(requests, "devices:register").post(
 				"/licenses/hardware/register",
 				{
-					body: licenseModel.register,
+					body: licenseModel.registerHardware,
 					response: licenseModel.result,
 					detail: {
 						tags: ["License"],
@@ -25,7 +25,7 @@ export const registerLicense = (service: $Licenses, requests: $Requests) =>
 			guard(requests, "ips:register").post(
 				"/licenses/ips/register",
 				{
-					body: licenseModel.register,
+					body: licenseModel.registerIp,
 					response: licenseModel.result,
 					detail: {
 						tags: ["License"],

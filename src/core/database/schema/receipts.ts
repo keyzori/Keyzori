@@ -5,6 +5,7 @@ import {
 	timestamp,
 	primaryKey,
 	index,
+	smallint,
 } from "drizzle-orm/pg-core";
 import type { $ReceiptAuthority } from "../../../types/idempotency";
 
@@ -14,6 +15,8 @@ export const receipts = pgTable(
 		operation: text().notNull(),
 		principalId: text("principal_id").notNull(),
 		key: text().notNull(),
+		/** Existing rows use the legacy authority-bound fingerprint. */
+		version: smallint().notNull().default(1),
 		fingerprint: text().notNull(),
 		authority: jsonb().$type<$ReceiptAuthority>(),
 		secretIssued: jsonb("secret_issued").$type<string[]>(),

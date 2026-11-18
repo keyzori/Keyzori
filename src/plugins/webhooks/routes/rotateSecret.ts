@@ -12,7 +12,7 @@ export const rotateWebhookSecret = (service: $Webhooks, requests: $Requests) =>
 				tags: ["Webhooks"],
 				security: [{ bearerAuth: [] }],
 				description:
-					"Issue a signing secret once; queued deliveries keep their original signing key.",
+					"Stage a replacement signing key and disclose its secret once. Provision the receiver, then call activate-secret with this key ID. Staging alone does not affect delivery.",
 			},
 		},
 		({ body, operation }) => service.rotateSecret(body, operation),

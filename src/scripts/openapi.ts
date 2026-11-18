@@ -1,9 +1,15 @@
 import { toOpenAPISchema } from "@elysia/openapi";
+import { unwrapSchema } from "@elysia/openapi/openapi";
 import app from "./reference-app";
 import { version } from "../version";
 import { metadataDefinitions } from "../core/http/model";
 import { errors } from "../core/http/errors";
-import { operationFor } from "../core/http/operations";
+import { operationAuthority, operationFor } from "../core/http/operations";
+import { eventEnvelopeSchema } from "../plugins/webhooks/events";
+import {
+	activityServerFrameSchema,
+	activitySubscribeSchema,
+} from "../plugins/activity/model";
 
 type ObjectValue = Record<string, unknown>;
 function object(value: unknown): ObjectValue {
@@ -76,18 +82,24 @@ function payload(schema: unknown): unknown {
 	const properties = object(value.properties);
 	if (!properties.data) return value;
 	if (!properties.credential && !properties.secret) return properties.data;
-	const data = object(properties.data);
+	const fields = {
+		...(properties.credential ? { credential: properties.credential } : {}),
+		...(properties.secret ? { secret: properties.secret } : {}),
+	};
+	return addIssuedFields(properties.data, fields);
+}
+function addIssuedFields(schema: unknown, fields: ObjectValue): ObjectValue {
+	const data = object(schema);
+	if (Array.isArray(data.anyOf))
+		return { anyOf: data.anyOf.map((item) => addIssuedFields(item, fields)) };
+	if (Array.isArray(data.oneOf))
+		return { oneOf: data.oneOf.map((item) => addIssuedFields(item, fields)) };
 	return {
 		...data,
-		properties: {
-			...object(data.properties),
-			...(properties.credential ? { credential: properties.credential } : {}),
-			...(properties.secret ? { secret: properties.secret } : {}),
-		},
+		properties: { ...object(data.properties), ...fields },
 		required: [
 			...(Array.isArray(data.required) ? data.required : []),
-			...(properties.credential ? ["credential"] : []),
-			...(properties.secret ? ["secret"] : []),
+			...Object.keys(fields),
 		],
 	};
 }
@@ -123,6 +135,41 @@ const specification: ObjectValue = {
 			"Internal developer licence-key management. Licence-key-only validation exposes licence-domain data, linked group/user metadata and registered identities, excluding administrative notes at every level. Consumption requires a permissioned API key. API keys start with no permissions. Secrets are disclosed only once.",
 	},
 	paths: generated.paths,
+	webhooks: {
+		integrationEvent: {
+			post: {
+				summary: "Signed integration event",
+				description:
+					"Verify the HMAC over timestamp, delivery ID, and the exact raw body before parsing. Deduplicate the event durably before acknowledging.",
+				parameters: [
+					["X-Keyzori-Delivery-Id", { type: "string", format: "uuid" }],
+					["X-Keyzori-Event-Id", { type: "string", format: "uuid" }],
+					["X-Keyzori-Signing-Key-Id", { type: "string", format: "uuid" }],
+					["X-Keyzori-Timestamp", { type: "string", pattern: "^[0-9]+$" }],
+					[
+						"X-Keyzori-Signature",
+						{ type: "string", pattern: "^v1=[0-9a-f]{64}$" },
+					],
+				].map(([name, schema]) => ({
+					in: "header",
+					name,
+					required: true,
+					schema,
+				})),
+				requestBody: {
+					required: true,
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/WebhookEvent" },
+						},
+					},
+				},
+				responses: {
+					"2XX": { description: "Durably accepted or already processed" },
+				},
+			},
+		},
+	},
 	components: {
 		...generated.components,
 		securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
@@ -132,9 +179,19 @@ const components = object(specification.components);
 components.schemas = {
 	...(components.schemas ? object(components.schemas) : {}),
 	ApiError: errorSchema,
+	WebhookEvent: unwrapSchema(eventEnvelopeSchema, undefined, "output", "3.1.0"),
+	ActivityServerFrame: unwrapSchema(
+		activityServerFrameSchema,
+		undefined,
+		"output",
+		"3.1.0",
+	),
 };
 specification.components = components;
 const paths = object(specification.paths);
+const declared = new Map(
+	app.routes.map((route) => [`${route.method}:${route.path}`, route]),
+);
 if (!paths["/validate"] || paths["/__reference_openapi"])
 	throw new Error("Unexpected OpenAPI route graph");
 for (const [path, methods] of Object.entries(paths)) {
@@ -143,7 +200,15 @@ for (const [path, methods] of Object.entries(paths)) {
 	// frame metadata as an extension instead of publishing an invalid HTTP verb.
 	if (route.ws) {
 		const stream = object(route.ws);
-		stream["x-websocket-message"] = stream.requestBody;
+		stream["x-websocket-message"] = unwrapSchema(
+			activitySubscribeSchema,
+			undefined,
+			"input",
+			"3.1.0",
+		);
+		stream["x-websocket-server-frame"] = {
+			$ref: "#/components/schemas/ActivityServerFrame",
+		};
 		delete stream.requestBody;
 		stream.responses = {
 			101: {
@@ -170,6 +235,42 @@ for (const [path, methods] of Object.entries(paths)) {
 		operation["x-required-access"] = contract.access;
 		if (contract.access !== "public" && contract.access !== "root")
 			operation["x-required-scope"] = contract.access;
+		const authority = operationAuthority(contract);
+		if (authority.required.length)
+			operation["x-required-scopes"] = authority.required;
+		if (authority.conditional.length)
+			operation["x-conditional-scopes"] = authority.conditional;
+		if (authority.allGroups) operation["x-requires-all-groups"] = true;
+		if (
+			authority.required.length > 1 &&
+			!authority.required.every(
+				(scope) =>
+					typeof operation.description === "string" &&
+					operation.description.includes(scope),
+			)
+		)
+			operation.description =
+				`${operation.description ?? ""} Required action scopes: ${authority.required.join(" and ")}.`.trim();
+		if (path.startsWith("/webhooks"))
+			operation.description =
+				`${operation.description ?? ""} Endpoint access also checks ownership, event-read permissions and applicable group selection.`.trim();
+		if (["post", "patch", "delete"].includes(method)) {
+			// Our JSON parser is a bounded function hook. The upstream generator
+			// cannot infer its media type; retain the real mounted body schema.
+			const mounted = declared.get(`${contract.method}:${contract.path}`);
+			const schema = unwrapSchema(
+				mounted?.hooks.body,
+				undefined,
+				"input",
+				"3.1.0",
+			);
+			if (!schema || !Object.keys(schema).length)
+				throw new Error(`Missing JSON request contract: ${method} ${path}`);
+			operation.requestBody = {
+				required: true,
+				content: { "application/json": { schema } },
+			};
+		}
 		const responses = operation.responses ? object(operation.responses) : {};
 		for (const [status, responseValue] of Object.entries(responses)) {
 			const entry = object(responseValue);

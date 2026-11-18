@@ -3,7 +3,9 @@ export async function imageProvenance(
 	environment: Record<string, string | undefined>,
 ) {
 	const source = environment.SOURCE_SHA;
+	const workflow = environment.PUBLICATION_WORKFLOW_SHA;
 	const digest = environment.IMAGE_DIGEST;
+	const releaseTag = environment.RELEASE_TAG;
 	const arch = environment.TARGET_ARCH;
 	const repository = environment.GITHUB_REPOSITORY;
 	const server = environment.GITHUB_SERVER_URL;
@@ -12,8 +14,12 @@ export async function imageProvenance(
 	if (
 		!source ||
 		!/^[a-f0-9]{40}$/.test(source) ||
+		!workflow ||
+		!/^[a-f0-9]{40}$/.test(workflow) ||
 		!digest ||
 		!/^sha256:[a-f0-9]{64}$/.test(digest) ||
+		!releaseTag ||
+		!/^v3\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(releaseTag) ||
 		!arch ||
 		!["amd64", "arm64"].includes(arch) ||
 		!repository ||
@@ -36,15 +42,16 @@ export async function imageProvenance(
 	);
 	return {
 		buildDefinition: {
-			buildType: `${server}/${repository}/.github/workflows/docker.yml@v3`,
+			buildType: `${server}/${repository}/blob/${workflow}/.github/workflows/docker.yml`,
 			externalParameters: {
 				source,
 				platform: `linux/${arch}`,
 				imageDigest: digest,
-				releaseTag: environment.RELEASE_TAG,
+				releaseTag,
 			},
 			internalParameters: {
 				bunRevision: (await Bun.file(".bun-revision").text()).trim(),
+				publicationWorkflowCommit: workflow,
 			},
 			resolvedDependencies: [
 				{ uri: `git+${server}/${repository}`, digest: { gitCommit: source } },
@@ -52,7 +59,9 @@ export async function imageProvenance(
 			],
 		},
 		runDetails: {
-			builder: { id: `${server}/${repository}/.github/workflows/docker.yml` },
+			builder: {
+				id: `${server}/${repository}/.github/workflows/docker.yml@${workflow}`,
+			},
 			metadata: {
 				invocationId: `${server}/${repository}/actions/runs/${run}/attempts/${attempt}`,
 			},

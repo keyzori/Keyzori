@@ -17,6 +17,8 @@ export type $AdminOptions<T> = {
 	authorize?: (tx: $Transaction) => Promise<$Principal>;
 	/** Current action authentication precedes replay; live targets are needed only for new work. */
 	scope?: $Action | "root";
+	/** Explicit historical requirements. With no `scope`, the live target check
+	 * also runs on replay; with `scope`, replay may outlive the deleted target. */
 	authority?: (
 		tx: $Transaction,
 		principal: $Principal,

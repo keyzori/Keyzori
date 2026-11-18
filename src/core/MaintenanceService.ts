@@ -32,7 +32,7 @@ export const maintenanceDefaults: Readonly<MaintenanceBudgets> = Object.freeze({
 
 /** No runtime policy can expire immutable evidence or accepted-operation identity. */
 export const maintenanceRetention = Object.freeze({
-	events: "indefinite",
+	events: "published-checkpoint-prefix-only-when-configured",
 	audits: "immutable-indefinite",
 	acceptedUsage: "immutable-indefinite-including-deduplication",
 	administrativeReceipts: "expires-at",
@@ -42,6 +42,7 @@ export const maintenanceRetention = Object.freeze({
 /** Per-licence transactions and durable reservations isolate poison work across passes. */
 export class MaintenanceService {
 	readonly budgets: Readonly<MaintenanceBudgets>;
+	private nextFamily = 0;
 	constructor(
 		private readonly database: Database,
 		private readonly metering: MeterService,
@@ -65,7 +66,9 @@ export class MaintenanceService {
 		this.budgets = Object.freeze(options);
 	}
 
-	async runOnce() {
+	async runOnce(
+		pruneEvents?: (limit: number, deadlineAt: number) => Promise<number>,
+	) {
 		const deadline = Date.now() + this.budgets.resetTimeMs;
 		for (
 			let pass = 0;
@@ -138,7 +141,7 @@ export class MaintenanceService {
 				if (!current) break;
 			}
 		}
-		await this.cleanup();
+		await this.cleanup(pruneEvents);
 		if (this.metrics) await this.observe();
 		return true;
 	}
@@ -152,8 +155,8 @@ export class MaintenanceService {
 					.innerJoin(licenses, eq(licenses.id, meters.licenseId))
 					.where(
 						and(
-							lte(meters.nextResetAt, sql`clock_timestamp()`),
-							sql`not exists (select 1 from ${maintenanceRetries} where ${maintenanceRetries.licenseId} = ${licenses.id} and ${maintenanceRetries.nextAttemptAt} > clock_timestamp())`,
+							lte(meters.nextResetAt, sql`statement_timestamp()`),
+							sql`not exists (select 1 from ${maintenanceRetries} where ${maintenanceRetries.licenseId} = ${licenses.id} and ${maintenanceRetries.nextAttemptAt} > statement_timestamp())`,
 						),
 					)
 					.orderBy(asc(meters.nextResetAt), asc(meters.licenseId))
@@ -190,69 +193,104 @@ export class MaintenanceService {
 		);
 	}
 
-	private async cleanup() {
+	private async cleanup(
+		pruneEvents?: (limit: number, deadlineAt: number) => Promise<number>,
+	) {
 		const deadline = Date.now() + this.budgets.cleanupTimeMs;
-		// Budgets are per retention family; batches release locks between transactions.
-		for (const kind of ["receipts", "webhooks"] as const) {
-			let remaining = this.budgets.cleanupRows;
-			while (remaining > 0 && Date.now() < deadline) {
-				const limit = Math.min(100, remaining);
-				const deleted = await this.database.transaction(
-					async (tx) => {
-						if (kind === "receipts") {
-							const rows =
-								await tx.execute(sql`delete from ${receipts} where ctid in (
-							select ctid from ${receipts} where ${receipts.expiresAt} <= clock_timestamp()
+		const families: ("receipts" | "webhooks" | "events")[] = [
+			"receipts",
+			"webhooks",
+		];
+		if (pruneEvents) families.push("events");
+		const start = this.nextFamily % families.length;
+		this.nextFamily = (start + 1) % families.length;
+		const queue = [...families.slice(start), ...families.slice(0, start)];
+		let remaining = this.budgets.cleanupRows;
+		// Give every active family a share of the remaining time and rows. An
+		// empty/failed family yields its remaining budget to the others.
+		while (remaining > 0 && queue.length) {
+			const now = Date.now();
+			if (now >= deadline) break;
+			const limit = Math.min(100, Math.ceil(remaining / queue.length));
+			const slice = now + Math.ceil((deadline - now) / queue.length);
+			const kind = queue.shift();
+			if (!kind) break;
+			// A lost commit acknowledgement cannot prove how many rows were
+			// deleted. Reserve the whole batch until its result is known.
+			remaining -= limit;
+			try {
+				const deleted =
+					kind === "events"
+						? await pruneEvents!(limit, slice)
+						: await this.cleanupBatch(kind, limit, slice);
+				if (!Number.isSafeInteger(deleted) || deleted < 0 || deleted > limit)
+					throw new Error("Invalid cleanup count");
+				if (kind !== "events")
+					this.metrics?.maintenance(kind, "succeeded", deleted);
+				remaining += limit - deleted;
+				if (deleted === limit) queue.push(kind);
+			} catch (error) {
+				if (kind !== "events") this.metrics?.maintenance(kind, "failed");
+				this.logger?.write("warn", "maintenance.cleanup.failed", {
+					phase: `maintenance_${kind}`,
+					cause: Logger.cause(error),
+				});
+			}
+		}
+	}
+
+	private cleanupBatch(
+		kind: "receipts" | "webhooks",
+		limit: number,
+		deadline: number,
+	) {
+		return this.database.transaction(
+			async (tx) => {
+				if (kind === "receipts") {
+					const rows =
+						await tx.execute(sql`delete from ${receipts} where ctid in (
+							select ctid from ${receipts} where ${receipts.expiresAt} <= statement_timestamp()
 							order by ${receipts.expiresAt} limit ${limit} for update skip locked
 						) returning 1`);
-							return rows.length;
-						}
-						const settings = await this.settings.read(tx);
-						if (settings.webhookHistoryDays === null) return 0;
-						const parents = await tx
-							.select({ id: deliveries.id })
-							.from(deliveries)
-							.where(
-								and(
-									sql`${deliveries.createdAt} < clock_timestamp() - ${settings.webhookHistoryDays} * interval '1 day'`,
-									inArray(deliveries.state, [
-										"succeeded",
-										"failed",
-										"cancelled",
-									]),
-									sql`not exists (select 1 from ${deliveryAttempts} where ${deliveryAttempts.deliveryId} = ${deliveries.id} and ${deliveryAttempts.completedAt} is null)`,
-								),
-							)
-							.orderBy(asc(deliveries.createdAt), asc(deliveries.id))
-							.limit(limit)
-							.for("update", { skipLocked: true });
-						if (!parents.length) return 0;
-						const ids = parents.map((row) => row.id);
-						// Count children against the same row budget rather than invoking an
-						// unbounded FK cascade. Parent locks exclude recovery and new attempts.
-						const attempts =
-							await tx.execute(sql`delete from ${deliveryAttempts} where ctid in (
+					return rows.length;
+				}
+				const settings = await this.settings.read(tx);
+				if (settings.webhookHistoryDays === null) return 0;
+				const parents = await tx
+					.select({ id: deliveries.id })
+					.from(deliveries)
+					.where(
+						and(
+							sql`${deliveries.terminalAt} < statement_timestamp() - ${settings.webhookHistoryDays} * interval '1 day'`,
+							sql`${deliveries.state} in ('succeeded','failed','cancelled')`,
+							sql`not exists (select 1 from ${deliveryAttempts} where ${deliveryAttempts.deliveryId} = ${deliveries.id} and ${deliveryAttempts.completedAt} is null)`,
+						),
+					)
+					.orderBy(asc(deliveries.terminalAt), asc(deliveries.id))
+					.limit(limit)
+					.for("update", { skipLocked: true });
+				if (!parents.length) return 0;
+				const ids = parents.map((row) => row.id);
+				// Count children against the same row budget rather than invoking an
+				// unbounded FK cascade. Parent locks exclude recovery and new attempts.
+				const attempts =
+					await tx.execute(sql`delete from ${deliveryAttempts} where ctid in (
 							select ctid from ${deliveryAttempts} where ${inArray(deliveryAttempts.deliveryId, ids)}
 							order by ${deliveryAttempts.startedAt}, ${deliveryAttempts.id} limit ${limit} for update skip locked
 						) returning 1`);
-						const room = limit - attempts.length;
-						if (!room) return attempts.length;
-						const rows =
-							await tx.execute(sql`delete from ${deliveries} where id in (
+				const room = limit - attempts.length;
+				if (!room) return attempts.length;
+				const rows =
+					await tx.execute(sql`delete from ${deliveries} where id in (
 							select id from ${deliveries} where ${inArray(deliveries.id, ids)}
 							and not exists (select 1 from ${deliveryAttempts} where ${deliveryAttempts.deliveryId} = ${deliveries.id})
-							order by ${deliveries.createdAt}, ${deliveries.id} limit ${room}
+							order by ${deliveries.terminalAt}, ${deliveries.id} limit ${room}
 						) returning 1`);
-						return attempts.length + rows.length;
-					},
-					"none",
-					deadline,
-				);
-				this.metrics?.maintenance(kind, "succeeded", deleted);
-				remaining -= deleted;
-				if (deleted < limit) break;
-			}
-		}
+				return attempts.length + rows.length;
+			},
+			"none",
+			deadline,
+		);
 	}
 
 	private async observe() {
@@ -269,11 +307,13 @@ export class MaintenanceService {
 						age: number;
 					}>(sql`
 					select 'resets' as kind, count(*)::integer as count, coalesce(extract(epoch from clock_timestamp() - min(due)), 0)::float8 as age
-					from (select next_reset_at as due from license_meters where next_reset_at <= clock_timestamp() order by next_reset_at limit ${limit}) rows
+					from (select next_reset_at as due from license_meters where next_reset_at <= statement_timestamp() order by next_reset_at limit ${limit}) rows
 					union all select 'receipts', count(*)::integer, coalesce(extract(epoch from clock_timestamp() - min(due)), 0)::float8
-					from (select expires_at as due from idempotency_receipts where expires_at <= clock_timestamp() order by expires_at limit ${limit}) rows
+					from (select expires_at as due from idempotency_receipts where expires_at <= statement_timestamp() order by expires_at limit ${limit}) rows
 					union all select 'webhooks', count(*)::integer, coalesce(extract(epoch from clock_timestamp() - min(due)), 0)::float8
-					from (select created_at as due from webhook_deliveries where state in ('succeeded','failed','cancelled') and created_at < clock_timestamp() - ${settings.webhookHistoryDays}::integer * interval '1 day' order by created_at limit ${limit}) rows`);
+					from (select terminal_at + ${settings.webhookHistoryDays}::integer * interval '1 day' as due from webhook_deliveries
+						where state in ('succeeded','failed','cancelled') and terminal_at < statement_timestamp() - ${settings.webhookHistoryDays}::integer * interval '1 day'
+						order by terminal_at limit ${limit}) rows`);
 					const retained = await tx.execute<{
 						name: RetainedTable;
 						rows: number;

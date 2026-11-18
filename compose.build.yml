@@ -1,0 +1,11 @@
+# Explicit source build: build once, then run migration and server from that image.
+services:
+  migrate:
+    image: keyzori-server:local
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+  server:
+    image: keyzori-server:local
+    pull_policy: never

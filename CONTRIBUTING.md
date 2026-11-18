@@ -3,25 +3,28 @@
 Keyzori runs directly from TypeScript using Bun. Use the exact runtime from `.bun-version` and `.bun-revision`; dependency versions remain locked, including the Elysia 2 beta and Drizzle 1 release candidate.
 
 ```sh
-bun doctor
+test "$(bun --revision)" = "$(cat .bun-revision)"
 bun install --frozen-lockfile
+bun run doctor
 bun check --types
 bun lint
 bun run format:check
 bun run test:unit
 ```
 
-`bun doctor` checks the full revision, not just `bun --version`, and reads direct installed package manifests to compare their versions with exact dependency pins. A current lockfile alone does not prove installed directories match it. The pin is `bun@1.4.4-canary.20261022.1`, revision `1.4.4-canary.1+963452075`; Bun types are `1.4.4`. The shared CI setup action and Dockerfile install this exact package and verify its revision. Moving canary tags are not substitutes. Update runtime pins, `packageManager`, and verified revision together.
+To select the pinned executable in a separate prefix, follow [the CI bootstrap](.github/actions/setup-bun/action.yml): use a stable Bun installer, set `BUN_INSTALL`, `BUN_INSTALL_GLOBAL_DIR` and `BUN_INSTALL_BIN` to the private prefix, run `bun add --global --trust "bun@$(cat .bun-version)"`, then put its bin directory first on `PATH`. The npm package `bun@1.4.4-canary.20261118.1` reports runtime revision `1.4.5-canary.1+4ce14ba8b`. Its [upstream commit descends from patched 1.4.4](https://github.com/oven-sh/bun/compare/bun-v1.4.4...4ce14ba8b150c3c7315284f3df8480eb4158b38a). Bun types remain at `1.4.4`. After the frozen install, doctor verifies that full revision and the installed direct and override pins. Update both pin files, `packageManager`, and the engine version together.
 
 `bun check --types` is a narrow diagnostic and does not start external services. It deliberately remains available when diagnosing a runtime mismatch; report the actual revision with results. `bun check` requires the pin and runs types, native lint/format checks, schema verification and all tests.
 
-Set up the environment using the [server guide](src/README.md). Direct Bun development loads the local `.env` conventionally; the container explicitly disables environment-file loading and uses its supplied environment. Generate the environment master credential with `bun run master-key`.
+Set up the environment using the [server guide](src/README.md). Direct Bun development loads the local `.env` conventionally. In production, launch Bun with `--no-env-file` and inject distinct command environments: only `KZ_MIGRATION_DATABASE_URL` for the offline migrator, and only runtime settings/credentials for the server. Keep the migrator secret unreadable to the serving identity. The image already disables implicit environment files. Generate the environment master credential with `bun run master-key`.
 
 ## Database and testing
 
 Use Drizzle. Run `bun run db:generate` for schema changes and review the generated SQL. `bun run db:migrate` is an explicit operation using `KZ_MIGRATION_DATABASE_URL`; the runtime uses `KZ_DATABASE_URL` and verifies exact history without changing schema. The migration command needs neither Redis nor an API master key. An incompatible or unversioned nonempty database is refused without modifying data.
 
 `bun run db:check` independently generates a fresh Drizzle schema, applies it and the committed SQL to separate disposable databases, and compares columns, defaults, constraints, indexes, enums, triggers, sequences, functions and row policies. It also checks that migration execution leaves cluster-wide role authority unchanged; runtime-role privilege tests cover the separate deployment grants. It requires Docker. Database/API tests run through `bun run test <test-paths>`. Each test-service invocation owns uniquely labelled containers and removes only inspected owned container IDs. Concurrent runs do not share a state file; interrupted startup and all-settled cleanup have deadlines and focused regression coverage.
+
+CI separately compares the immutable migration directories with the PR base or previous push tip. A pre-v3 base starts the v3 history; once present, its directories must remain an exact prefix. The default fixture uses PostgreSQL 18. Set `KZ_TEST_POSTGRES_MAJOR=17` for minimum-version role and migration checks. Docker removal includes anonymous volumes attached to verified fixture IDs; no global volume pruning is used.
 
 Add regression coverage for changed behavior. Use the smallest relevant checks and follow the user's current approval/validation limits. Do not run a full suite or Docker checks when they have been held. Do not weaken checks to hide failures.
 
@@ -30,6 +33,8 @@ Add regression coverage for changed behavior. Use the smallest relevant checks a
 `bun run start` serves source; no application executable is built. The Docker image includes the pinned Bun runtime, production dependencies, source, migrations and LICENSE. It runs as UID 65532 with a read-only root filesystem under Compose. An explicit migrator job owns schema changes; the server role has no DDL or migration-history writes. Audit and accepted usage history are append-only to the runtime role.
 
 Runtime packaging changes require the source/container/Compose smoke checks before qualification. These checks use disposable data and share consumption/replay/rotation, credential secrecy and WebSocket reconnect/authorization/shutdown assertions. Linux source and exact-image checks also run the real signer/dispatcher against an isolated local TLS receiver, including certificate trust, redirects, cancellation and an in-flight shutdown barrier. They require OpenSSL and Linux Docker networking; Windows smoke output identifies this coverage limit. The Compose smoke additionally verifies restricted database privileges, persistence, disabled-key retention and the non-root read-only runtime.
+
+`compose.yml` selects published images (`KZ_VERSION`, or full `KZ_IMAGE` including a digest). For a source build, use `docker compose -f compose.yml -f compose.build.yml build migrate`, then `docker compose -f compose.yml -f compose.build.yml up --no-build -d`. Container and Compose smokes build from the current checkout by default. To qualify one build with both smokes, set `KZ_SMOKE_IMAGE_ID` to its local immutable `sha256:` image ID; mutable tags are rejected.
 
 Use Bun's built-in `bun fmt <paths>` for scoped formatting and `bun run format:check` for a read-only formatting check. Native `bun lint` fails on warnings in this project; `bun lint --fix <paths>` applies lint fixes separately. Configuration lives in `bunfig.toml`, with tabs and double quotes preserved through `.editorconfig`. Generated migration assets are excluded. The scripts use `--no-script` to select the native tools explicitly. See the official [formatter](https://bun.com/docs/format) and [linter](https://bun.com/docs/lint) documentation.
 

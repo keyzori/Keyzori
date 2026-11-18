@@ -6,6 +6,7 @@ import { InputPolicy } from "../../core/http/InputPolicy";
 import { DecimalPolicy } from "./DecimalPolicy";
 import { MeterSchedule } from "./MeterSchedule";
 import { meterModel } from "./meterModel";
+import { writeInstant } from "../../core/http/instant";
 import type { AuditService } from "../audits/AuditService";
 import type { EventService } from "../webhooks/EventService";
 import type { $Transaction } from "../../types/database";
@@ -13,13 +14,23 @@ import type {
 	$Meter,
 	$MeterChanges,
 	$MeterView,
+	$MeterSchedule,
 	$UsageEntry,
 } from "../../types/meters";
 import type { $AuditInput } from "../../types/audit";
 
+type BoundaryCache = Map<
+	string,
+	Awaited<ReturnType<MeterSchedule["boundaries"]>>
+>;
+
 export class MeterService {
 	private readonly validator = new TypeBoxValidator(meterModel.changes);
 	private readonly input = new InputPolicy();
+	private readonly writeCache = new WeakMap<
+		$Transaction,
+		{ instant: number; boundaries: BoundaryCache }
+	>();
 	constructor(
 		private readonly audit: AuditService,
 		private readonly events: EventService,
@@ -105,7 +116,7 @@ export class MeterService {
 					? (current?.startsAt ?? null)
 					: input.startsAt === null
 						? null
-						: this.input.timestamp(input.startsAt);
+						: writeInstant(input.startsAt);
 			// Changing precision must be explicit and cannot silently discard recorded usage.
 			if (current) this.decimal.value(current.value, precision);
 			const configuration = {
@@ -125,7 +136,12 @@ export class MeterService {
 				current && Bun.deepEquals(schedule, current.schedule, true);
 			const boundary =
 				schedule && !sameSchedule
-					? await this.calendar.boundaries(tx, schedule, now)
+					? await this.boundary(
+							tx,
+							schedule,
+							now,
+							this.writeBoundaries(tx, now),
+						)
 					: null;
 			const values = {
 				...configuration,
@@ -179,10 +195,7 @@ export class MeterService {
 
 	/** One read shares schedule calculations at one database instant, never across reads. */
 	async projectMany(tx: $Transaction, rows: $Meter[], now: Date) {
-		const boundaries = new Map<
-			string,
-			Awaited<ReturnType<MeterSchedule["boundaries"]>>
-		>();
+		const boundaries: BoundaryCache = new Map();
 		const projected = [];
 		for (const row of rows)
 			projected.push(await this.project(tx, row, now, boundaries));
@@ -193,20 +206,11 @@ export class MeterService {
 		tx: $Transaction,
 		row: $Meter,
 		now: Date,
-		boundaries?: Map<string, Awaited<ReturnType<MeterSchedule["boundaries"]>>>,
+		boundaries?: BoundaryCache,
 	) {
 		if (!row.schedule || (row.nextResetAt && row.nextResetAt > now))
 			return this.view(row);
-		// Include every stored field so malformed schedules cannot reuse a valid
-		// schedule's result and bypass validation. Property order is immaterial.
-		const key = JSON.stringify(
-			Object.entries(row.schedule).sort(([a], [b]) => a.localeCompare(b)),
-		);
-		let boundary = boundaries?.get(key);
-		if (!boundary) {
-			boundary = await this.calendar.boundaries(tx, row.schedule, now);
-			boundaries?.set(key, boundary);
-		}
+		const boundary = await this.boundary(tx, row.schedule, now, boundaries);
 		return this.view({
 			...row,
 			value: "0",
@@ -214,6 +218,33 @@ export class MeterService {
 			nextResetAt: boundary.next,
 			lastScheduledResetAt: boundary.previous,
 		});
+	}
+
+	private writeBoundaries(tx: $Transaction, now: Date) {
+		const prior = this.writeCache.get(tx);
+		if (prior && prior.instant === now.getTime()) return prior.boundaries;
+		const boundaries: BoundaryCache = new Map();
+		this.writeCache.set(tx, { instant: now.getTime(), boundaries });
+		return boundaries;
+	}
+
+	private async boundary(
+		tx: $Transaction,
+		schedule: $MeterSchedule,
+		now: Date,
+		boundaries?: BoundaryCache,
+	) {
+		// Include every stored field so malformed schedules cannot reuse a valid
+		// schedule's result and bypass validation. Property order is immaterial.
+		const key = JSON.stringify(
+			Object.entries(schedule).sort(([a], [b]) => a.localeCompare(b)),
+		);
+		let boundary = boundaries?.get(key);
+		if (!boundary) {
+			boundary = await this.calendar.boundaries(tx, schedule, now);
+			boundaries?.set(key, boundary);
+		}
+		return boundary;
 	}
 
 	/** Caller holds the licence row lock before applying scheduled resets. */
@@ -234,7 +265,12 @@ export class MeterService {
 				effective.push(row);
 				continue;
 			}
-			const boundary = await this.calendar.boundaries(tx, row.schedule, now);
+			const boundary = await this.boundary(
+				tx,
+				row.schedule,
+				now,
+				this.writeBoundaries(tx, now),
+			);
 			const [reset] = await tx
 				.update(meters)
 				.set({

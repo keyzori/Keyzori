@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import { TestHttp } from "../fixtures/TestHttp";
+import { Replay } from "../../core/security/Replay";
 
 const context = new TestHttp();
 beforeAll(() => context.start());
@@ -47,12 +48,35 @@ test("response bugs and SQL programming errors are redacted 500s with correlatio
 	}
 });
 
-test("metrics preserve statuses and bound attacker-controlled paths", async () => {
+test("a retained result must satisfy the same mounted response schema as a fresh result", async () => {
+	const fault = spyOn(context.services.groups, "enable").mockRejectedValue(
+		new Replay({ data: [{ unexpected: "STORED_MARKER" }] }),
+	);
+	try {
+		const response = await context.request("/groups/enable", {
+			method: "POST",
+			body: { ids: [Bun.randomUUIDv7()] },
+		});
+		expect(response.status).toBe(500);
+		const text = await response.text();
+		expect(text).toContain("INTERNAL_ERROR");
+		expect(text).not.toContain("STORED_MARKER");
+	} finally {
+		fault.mockRestore();
+	}
+});
+
+test("metrics preserve statuses and aggregate parameterized routes without identifying resources", async () => {
 	const path = `/MUST_NOT_LEAK-${Bun.randomUUIDv7()}`;
 	expect((await context.request(path)).status).toBe(404);
+	const ids = [Bun.randomUUIDv7(), Bun.randomUUIDv7()];
+	for (const id of ids)
+		expect((await context.request(`/licenses/${id}`)).status).toBe(404);
 	const response = await context.request("/metrics");
 	const text = await response.text();
 	expect(text).toContain('route="unmatched",status="404"');
+	expect(text).toContain('route="/licenses/:id",status="404"} 2');
+	for (const id of ids) expect(text).not.toContain(id);
 	expect(text).not.toContain("MUST_NOT_LEAK");
 	expect(text).not.toContain(context.master);
 });

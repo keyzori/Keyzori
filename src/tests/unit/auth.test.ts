@@ -25,6 +25,8 @@ const selected: $Principal = {
 	name: "Selected groups",
 	scopes: ["licenses:read"],
 	credentialHash: "0".repeat(64),
+	grantGeneration: "1",
+	expiresAt: null,
 	allGroups: false,
 	groupIds: [selectedGroup],
 };
@@ -109,5 +111,30 @@ describe("API-key authority", () => {
 				},
 			}),
 		).toBe(false);
+	});
+
+	test("API-key expiry input matches the database millisecond boundary", () => {
+		const create = new TypeBoxValidator(apiKeyModel.create);
+		const update = new TypeBoxValidator(apiKeyModel.update);
+		for (const [expiresAt, accepted] of [
+			["2030-01-01T00:00:00.123Z", true],
+			["2030-01-01T00:00:00.1234Z", false],
+			[null, true],
+		] as const) {
+			expect(create.Check({ name: "Expiry", expiresAt })).toBe(accepted);
+			expect(update.Check({ ids: [selected.id], changes: { expiresAt } })).toBe(
+				accepted,
+			);
+		}
+		const expiresAt = new Date("2030-01-01T00:00:00.123Z");
+		expect(() =>
+			auth.requireUnexpired(
+				{ ...selected, expiresAt },
+				new Date(expiresAt.getTime() - 1),
+			),
+		).not.toThrow();
+		expect(() =>
+			auth.requireUnexpired({ ...selected, expiresAt }, expiresAt),
+		).toThrow();
 	});
 });

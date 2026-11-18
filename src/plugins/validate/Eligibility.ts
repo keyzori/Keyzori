@@ -17,7 +17,18 @@ export class Eligibility {
 	) {}
 	async check(
 		tx: $Transaction,
-		license: $License,
+		license: Pick<
+			$License,
+			| "id"
+			| "enabled"
+			| "disabledReason"
+			| "expiresAt"
+			| "groupId"
+			| "userId"
+			| "allowedIps"
+			| "deviceLimit"
+			| "ipLimit"
+		>,
 		input: {
 			expectedGroupId?: string | null;
 			userId?: string;
@@ -42,7 +53,10 @@ export class Eligibility {
 			return new Decision("USER_NOT_ALLOWED");
 		if (license.groupId) {
 			const [group] = await tx
-				.select()
+				.select({
+					enabled: groups.enabled,
+					disabledReason: groups.disabledReason,
+				})
 				.from(groups)
 				.where(eq(groups.id, license.groupId));
 			if (!group?.enabled)
@@ -50,7 +64,10 @@ export class Eligibility {
 		}
 		if (license.userId) {
 			const [user] = await tx
-				.select()
+				.select({
+					enabled: users.enabled,
+					disabledReason: users.disabledReason,
+				})
 				.from(users)
 				.where(eq(users.id, license.userId));
 			if (!user?.enabled)

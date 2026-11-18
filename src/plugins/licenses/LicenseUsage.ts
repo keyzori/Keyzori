@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { usageOperations } from "../../core/database/schema/usageOperations";
+import { licenses } from "../../core/database/schema/licenses";
 import { HttpError } from "../../core/http/HttpError";
 import { InputPolicy } from "../../core/http/InputPolicy";
 import type { AuthService } from "../../core/auth/AuthService";
@@ -33,17 +34,29 @@ export class LicenseUsage {
 		const key = this.input.idempotency(operation.idempotencyKey, true);
 		if (!key) throw new HttpError("INVALID_REQUEST");
 		const fingerprint = this.idempotency.fingerprint(input);
+		const targets = this.context.targets(
+			operation,
+			"usage:consume",
+			[input.licenseId],
+			{
+				id: licenses.id,
+				enabled: licenses.enabled,
+				disabledReason: licenses.disabledReason,
+				groupId: licenses.groupId,
+				userId: licenses.userId,
+				expiresAt: licenses.expiresAt,
+				deviceLimit: licenses.deviceLimit,
+				ipLimit: licenses.ipLimit,
+				allowedIps: licenses.allowedIps,
+			},
+		);
 		return this.database.idempotentTransaction(
 			async (tx) => {
-				const { principal, rows } = await this.context.authorizeLocked(
-					tx,
-					operation,
-					"usage:consume",
-					[input.licenseId],
-				);
+				await targets.authorize(tx);
+				const { principal, rows } = targets.state(tx);
 				const license = rows[0];
 				if (!license) throw new HttpError("NOT_FOUND");
-				const now = await this.context.now(tx);
+				const now = await this.context.now(tx, principal);
 				const decision = await this.eligibility.check(
 					tx,
 					license,
@@ -80,7 +93,10 @@ export class LicenseUsage {
 						},
 					};
 				}
-				const evidence = this.context.evidence(operation, license.id);
+				const evidence = {
+					...this.context.evidence(operation, license.id),
+					groupId: license.groupId,
+				};
 				const counters = await this.meters.effective(
 					tx,
 					license.id,
@@ -135,13 +151,17 @@ export class LicenseUsage {
 	async adjust(input: $MeterAdjustment, operation: $Operation) {
 		this.auth.require(operation.principal, "usage:adjust");
 		const ids = this.input.ids(input.ids);
+		const targets = this.context.targets(operation, "usage:adjust", ids, {
+			id: licenses.id,
+			groupId: licenses.groupId,
+		});
 		return this.idempotency.admin(
 			operation,
 			"license.meter.adjust",
 			input,
 			async (tx) => {
-				const locked = await this.context.lock(tx, ids);
-				const now = await this.context.now(tx);
+				const { rows: locked, principal } = targets.state(tx);
+				const now = await this.context.now(tx, principal);
 				for (const row of locked)
 					await this.meters.adjust(
 						tx,
@@ -149,14 +169,16 @@ export class LicenseUsage {
 						input.name,
 						input.action,
 						input.value,
-						this.context.evidence(operation, row.id, input.reason),
+						{
+							...this.context.evidence(operation, row.id, input.reason),
+							groupId: row.groupId,
+						},
 						now,
 					);
 				return { data: { ids } };
 			},
 			{
-				authorize: (tx) =>
-					this.context.authorize(tx, operation, "usage:adjust", ids),
+				authorize: targets.authorize,
 			},
 		);
 	}

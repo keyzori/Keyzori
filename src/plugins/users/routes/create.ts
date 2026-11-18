@@ -7,7 +7,7 @@ export const createUser = (service: $Users, requests: $Requests) =>
 		"/users",
 		{
 			body: userModel.create,
-			response: userModel.singleResponse,
+			response: userModel.created,
 			detail: {
 				tags: ["Users"],
 				security: [{ bearerAuth: [] }],

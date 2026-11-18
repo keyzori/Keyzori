@@ -4,7 +4,10 @@ import { t } from "elysia";
 import { Check } from "typebox/value";
 import { TestHttp } from "../fixtures/TestHttp";
 import { ActivityService } from "../../plugins/activity/ActivityService";
-import { activityModel } from "../../plugins/activity/model";
+import {
+	activityModel,
+	activityServerFrameSchema,
+} from "../../plugins/activity/model";
 import type { ActivityOptions } from "../../plugins/activity/options";
 import { EventService } from "../../plugins/webhooks/EventService";
 import { createApp } from "../../app";
@@ -141,6 +144,7 @@ async function custom(options: ActivityOptions = {}, origins: string[] = []) {
 		url: app.server?.url,
 		async stop() {
 			service.stop();
+			await service.drain();
 			await app.stop(true);
 		},
 	};
@@ -202,6 +206,67 @@ test("real subscribed sockets with no domain-read permission receive no domain p
 		connection.subscribe();
 		await until(() => connection.batches().length > 0);
 		expect(connection.batches()[0]?.data).toEqual([]);
+	} finally {
+		connection.socket.terminate();
+	}
+});
+
+test("ready supplies a validated recovery cursor to a subscribe-only credential", async () => {
+	const issued = await key({
+		scopes: ["events:subscribe", "licenses:read"],
+		allGroups: true,
+	});
+	expect(
+		(
+			await context.request("/events/watermark", {
+				credential: issued.credential,
+			})
+		).status,
+	).toBe(403);
+	const connection = client(issued.credential);
+	try {
+		await connection.ready();
+		const frame = connection.frames[0];
+		if (!Check(activityServerFrameSchema, frame) || frame.type !== "ready")
+			throw new Error("Missing subscription-authorized watermark");
+		const visible = await context.services.database.transaction((tx) =>
+			events.emit(tx, "license.created", {
+				licenseId: Bun.randomUUIDv7(),
+				groupId: null,
+			}),
+		);
+		await context.services.activity.publish(1000);
+		connection.subscribe(frame.watermark.cursor);
+		await until(() =>
+			connection
+				.batches()
+				.some((batch) => batch.data.some((event) => event.id === visible.id)),
+		);
+	} finally {
+		connection.socket.terminate();
+	}
+});
+
+test("cursorless subscribe also fences grant changes between ready and the first batch", async () => {
+	const issued = await key({
+		scopes: ["events:subscribe", "licenses:read"],
+		allGroups: true,
+	});
+	const connection = client(issued.credential);
+	try {
+		await connection.ready();
+		await context.services.apiKeys.update(
+			{ ids: [issued.data.id], changes: { scopes: ["events:subscribe"] } },
+			root(),
+		);
+		connection.subscribe();
+		expect((await connection.closed).code).toBe(1008);
+		expect(connection.frames).toContainEqual({
+			type: "error",
+			code: "CURSOR_EXPIRED",
+			resync: "/events/watermark",
+		});
+		expect(connection.batches()).toEqual([]);
 	} finally {
 		connection.socket.terminate();
 	}
@@ -662,6 +727,9 @@ test("a paused real TCP WebSocket is closed on native backpressure with bounded 
 			"keyzori_stream_queue_messages 0\n",
 		);
 		expect(server.metrics.text()).toContain("keyzori_stream_queue_bytes 0\n");
+		expect(server.metrics.text()).toContain(
+			"keyzori_stream_backpressure_closes_total 1\n",
+		);
 	} finally {
 		raw.destroy();
 		read.mockRestore();

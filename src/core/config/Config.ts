@@ -9,11 +9,35 @@ import {
 	type $WebhookPrivateDestination,
 } from "../../plugins/webhooks/WebhookTransport";
 
+export class ConfigError extends Error {
+	readonly code = "INVALID_CONFIGURATION";
+	constructor(
+		readonly setting: string,
+		problem: string,
+	) {
+		super(`${setting} ${problem}`);
+		this.name = "ConfigError";
+	}
+}
+
 export class Config {
+	static listener(environment: $Environment = Bun.env) {
+		const host = environment.KZ_API_HOST ?? "0.0.0.0";
+		if (!isIP(host) || host.includes("%"))
+			throw new ConfigError("KZ_API_HOST", "must be an IP address");
+		return {
+			host,
+			port: Config.integer(environment, "KZ_API_PORT", 6284, 65535),
+		};
+	}
 	/** Reads only database settings, so migration jobs need no API or Redis secrets. */
-	static database(environment: $Environment = Bun.env, migration = false) {
+	static database(
+		environment: $Environment = Bun.env,
+		migration: boolean | "restore" = false,
+	) {
 		const name =
-			migration && environment.KZ_MIGRATION_DATABASE_URL
+			migration === "restore" ||
+			(migration && environment.KZ_MIGRATION_DATABASE_URL)
 				? "KZ_MIGRATION_DATABASE_URL"
 				: "KZ_DATABASE_URL";
 		return {
@@ -41,46 +65,48 @@ export class Config {
 	readonly eventRetentionDays: number | null;
 
 	constructor(environment: $Environment = Bun.env) {
-		this.databaseUrl = Config.database(environment).databaseUrl;
+		const database = Config.database(environment);
+		this.databaseUrl = database.databaseUrl;
+		this.poolSize = database.poolSize;
 		this.redisUrl = Config.url(environment, "KZ_REDIS_URL", [
 			"redis:",
 			"rediss:",
 		]);
 		this.masterKey = Config.required(environment, "KZ_MASTER_KEY");
 		if (!/^kz_key_[a-fA-F0-9]{64}$/.test(this.masterKey)) {
-			throw new Error(
-				"KZ_MASTER_KEY must use kz_key_ followed by 64 hexadecimal characters",
+			throw new ConfigError(
+				"KZ_MASTER_KEY",
+				"must use kz_key_ followed by 64 hexadecimal characters",
 			);
 		}
-		this.host = environment.KZ_API_HOST ?? "0.0.0.0";
-		if (!isIP(this.host) || this.host.includes("%"))
-			throw new Error("KZ_API_HOST must be an IP address");
-		this.port = Config.integer(environment, "KZ_API_PORT", 6284, 65535);
-		this.poolSize = Config.integer(
-			environment,
-			"KZ_DATABASE_POOL_SIZE",
-			10,
-			1000,
+		const listener = Config.listener(environment);
+		this.host = listener.host;
+		this.port = listener.port;
+		this.trustedProxies = this.list(
+			environment.KZ_TRUSTED_PROXIES,
+			"KZ_TRUSTED_PROXIES",
 		);
-		this.trustedProxies = this.list(environment.KZ_TRUSTED_PROXIES);
 		for (const address of this.trustedProxies) {
 			const [host, mask, extra] = address.split("/");
 			const family = host ? isIP(host) : 0;
 			if (
 				!family ||
+				host?.includes("%") ||
 				extra !== undefined ||
 				(mask !== undefined &&
 					(!/^(0|[1-9][0-9]*)$/.test(mask) ||
 						Number(mask) > (family === 4 ? 32 : 128)))
 			) {
-				throw new Error(
-					"KZ_TRUSTED_PROXIES must contain IP addresses or CIDRs",
+				throw new ConfigError(
+					"KZ_TRUSTED_PROXIES",
+					"must contain IP addresses or CIDRs",
 				);
 			}
 		}
-		const clientIpHeaders = this.list(environment.KZ_CLIENT_IP_HEADERS).map(
-			(header) => header.toLowerCase(),
-		);
+		const clientIpHeaders = this.list(
+			environment.KZ_CLIENT_IP_HEADERS,
+			"KZ_CLIENT_IP_HEADERS",
+		).map((header) => header.toLowerCase());
 		if (
 			clientIpHeaders.some(
 				(header) =>
@@ -89,7 +115,10 @@ export class Config {
 					),
 			)
 		) {
-			throw new Error("KZ_CLIENT_IP_HEADERS contains an unsupported header");
+			throw new ConfigError(
+				"KZ_CLIENT_IP_HEADERS",
+				"contains an unsupported header",
+			);
 		}
 		this.clientIpHeaders = clientIpHeaders;
 		const level = environment.KZ_LOG_LEVEL ?? "info";
@@ -99,7 +128,7 @@ export class Config {
 			level !== "warn" &&
 			level !== "error"
 		) {
-			throw new Error("KZ_LOG_LEVEL is invalid");
+			throw new ConfigError("KZ_LOG_LEVEL", "is invalid");
 		}
 		this.logLevel = level;
 		this.webhookEncryptionKey =
@@ -108,8 +137,9 @@ export class Config {
 			this.webhookEncryptionKey &&
 			!/^[a-fA-F0-9]{64}$/.test(this.webhookEncryptionKey)
 		)
-			throw new Error(
-				"KZ_WEBHOOK_ENCRYPTION_KEY must contain 64 hexadecimal characters",
+			throw new ConfigError(
+				"KZ_WEBHOOK_ENCRYPTION_KEY",
+				"must contain 64 hexadecimal characters",
 			);
 		try {
 			const value = environment.KZ_WEBHOOK_PRIVATE_DESTINATIONS;
@@ -119,8 +149,9 @@ export class Config {
 				value ? JSON.parse(value) : undefined,
 			);
 		} catch {
-			throw new Error(
-				"KZ_WEBHOOK_PRIVATE_DESTINATIONS must be bounded JSON origin/CIDR rules",
+			throw new ConfigError(
+				"KZ_WEBHOOK_PRIVATE_DESTINATIONS",
+				"must be bounded JSON origin/CIDR rules",
 			);
 		}
 		this.webhookAllowedOrigins = this.origins(
@@ -137,8 +168,9 @@ export class Config {
 					),
 			)
 		)
-			throw new Error(
-				"KZ_WEBHOOK_ALLOWED_ORIGINS HTTP origins require an explicit private-destination rule",
+			throw new ConfigError(
+				"KZ_WEBHOOK_ALLOWED_ORIGINS",
+				"HTTP origins require an explicit private-destination rule",
 			);
 		this.streamOrigins = this.origins(
 			environment.KZ_STREAM_ORIGINS,
@@ -203,8 +235,9 @@ export class Config {
 			),
 		};
 		if (this.maintenance.retryMaxMs < this.maintenance.retryBaseMs)
-			throw new Error(
-				"KZ_MAINTENANCE_RETRY_MAX_MS must be at least KZ_MAINTENANCE_RETRY_BASE_MS",
+			throw new ConfigError(
+				"KZ_MAINTENANCE_RETRY_MAX_MS",
+				"must be at least KZ_MAINTENANCE_RETRY_BASE_MS",
 			);
 		this.eventRetentionDays = environment.KZ_EVENT_RETENTION_DAYS
 			? Config.integer(environment, "KZ_EVENT_RETENTION_DAYS", 7, 3650)
@@ -215,7 +248,7 @@ export class Config {
 		name: string,
 		protocols: string[],
 	) {
-		const origins = this.list(value);
+		const origins = this.list(value, name);
 		for (const origin of origins) {
 			try {
 				const parsed = new URL(origin);
@@ -227,8 +260,9 @@ export class Config {
 				)
 					throw new Error("Invalid origin");
 			} catch {
-				throw new Error(
-					`${name} must contain exact allowed origins without paths or credentials`,
+				throw new ConfigError(
+					name,
+					"must contain exact allowed origins without paths or credentials",
 				);
 			}
 		}
@@ -237,7 +271,7 @@ export class Config {
 
 	private static required(environment: $Environment, name: string) {
 		const value = environment[name];
-		if (!value) throw new Error(`${name} is required`);
+		if (!value) throw new ConfigError(name, "is required");
 		return value;
 	}
 
@@ -258,7 +292,7 @@ export class Config {
 				throw new Error("Invalid URL");
 			}
 		} catch {
-			throw new Error(`${name} must be a supported connection URL`);
+			throw new ConfigError(name, "must be a supported connection URL");
 		}
 		return value;
 	}
@@ -276,16 +310,16 @@ export class Config {
 			!Number.isSafeInteger(Number(value)) ||
 			Number(value) > maximum
 		) {
-			throw new Error(`${name} must be an integer from 1 to ${maximum}`);
+			throw new ConfigError(name, `must be an integer from 1 to ${maximum}`);
 		}
 		return Number(value);
 	}
 
-	private list(value: string | undefined) {
+	private list(value: string | undefined, name: string) {
 		if (value === undefined || value === "") return [];
 		const values = value.split(",").map((item) => item.trim());
 		if (values.some((item) => !item))
-			throw new Error("Configuration list contains an empty entry");
+			throw new ConfigError(name, "contains an empty list entry");
 		return values;
 	}
 }

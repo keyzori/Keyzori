@@ -426,12 +426,21 @@ test("retention is bounded, protects unpublished and un-enqueued work, expires c
 			),
 		).rejects.toMatchObject({ code: "CURSOR_EXPIRED" });
 		const fresh = (await activity.watermark(context.operation())).data;
+		expect(fresh.retainedAfter).toBe(fresh.sequence);
 		await activity.publish();
 		const replay = await activity.read(
 			new URLSearchParams({ cursor: fresh.cursor }),
 			context.operation(),
 		);
 		expect(replay.data.map((event) => event.resource.revision)).toEqual(["2"]);
+		for (const subscription of [false, true]) {
+			const retained = await activity.read(
+				new URLSearchParams(),
+				context.operation(),
+				subscription,
+			);
+			expect(retained).toEqual(replay);
+		}
 		const next = await context.database.transaction((tx) =>
 			context.events.emit(tx, "license.deleted", { licenseId, groupId: null }),
 		);
@@ -445,6 +454,98 @@ test("retention is bounded, protects unpublished and un-enqueued work, expires c
 		await context.database.orm
 			.delete(webhooks)
 			.where(eq(webhooks.id, endpoint));
+	}
+});
+
+test("publication preserves 64-bit sequence positions and refuses to reconstruct a lost singleton", async () => {
+	const isolated = new TestContext();
+	const reader = new ActivityService(
+		isolated.database,
+		isolated.auth,
+		isolated.redis,
+	);
+	try {
+		await isolated.start();
+		// Model a fully pruned prefix beyond JavaScript's safe integer range.
+		const floor = 2n ** 53n;
+		await isolated.database.orm
+			.update(eventState)
+			.set({ sequence: floor, retainedAfter: floor })
+			.where(eq(eventState.id, 1));
+		const before = await reader.watermark(isolated.operation());
+		const event = await isolated.database.transaction((tx) =>
+			isolated.events.emit(tx, "license.created", {
+				licenseId: Bun.randomUUIDv7(),
+				groupId: null,
+			}),
+		);
+		await reader.publish();
+		const retained = await isolated.database.orm
+			.select()
+			.from(activityEvents)
+			.where(eq(activityEvents.id, event.id));
+		expect(retained[0]?.sequence).toBe(floor + 1n);
+		const page = await reader.read(
+			new URLSearchParams({ cursor: before.data.cursor }),
+			isolated.operation(),
+		);
+		expect(page.data.map((entry) => entry.sequence)).toEqual([
+			String(floor + 1n),
+		]);
+		await isolated.database.orm.delete(eventState).where(eq(eventState.id, 1));
+		await expect(reader.publish()).rejects.toThrow("Event state unavailable");
+		await expect(reader.resetEpoch()).rejects.toThrow(
+			"Event state unavailable",
+		);
+		expect(await isolated.database.orm.select().from(eventState)).toEqual([]);
+		expect(
+			await isolated.database.orm
+				.select()
+				.from(activityEvents)
+				.where(eq(activityEvents.id, event.id)),
+		).toEqual(retained);
+	} finally {
+		reader.stop();
+		await reader.drain();
+		await isolated.stop();
+	}
+});
+
+test("a malformed stored subject fails the entire replay page without echoing its payload", async () => {
+	const before = (await activity.watermark(context.operation())).data.cursor;
+	const known = await context.database.transaction((tx) =>
+		context.events.emit(tx, "license.created", {
+			licenseId: Bun.randomUUIDv7(),
+			groupId: null,
+		}),
+	);
+	await activity.publish(1000);
+	// Both persisted resource columns agree with the envelope, but the
+	// envelope's subject does not agree with its event-specific data.
+	const wrongId = Bun.randomUUIDv7();
+	try {
+		await context.database.orm
+			.update(activityEvents)
+			.set({
+				resourceId: wrongId,
+				payload: { ...known, resource: { ...known.resource, id: wrongId } },
+			})
+			.where(eq(activityEvents.id, known.id));
+		const read = activity.read(
+			new URLSearchParams({ cursor: before }),
+			context.operation(),
+		);
+		await expect(read).rejects.toMatchObject({
+			message: "Inconsistent persisted event",
+		});
+	} finally {
+		await context.database.orm
+			.update(activityEvents)
+			.set({
+				resourceId: known.resource.id,
+				payload: known,
+			})
+			.where(eq(activityEvents.id, known.id));
 	}
 });
 

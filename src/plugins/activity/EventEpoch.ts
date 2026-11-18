@@ -4,10 +4,6 @@ import type { $Transaction } from "../../types/database";
 
 /** The caller quiesces serving and combines this with restore audit/delivery fencing. */
 export async function resetEventEpoch(tx: $Transaction) {
-	await tx
-		.insert(eventState)
-		.values({ id: 1, epoch: Bun.randomUUIDv7() })
-		.onConflictDoNothing();
 	const [current] = await tx
 		.select()
 		.from(eventState)

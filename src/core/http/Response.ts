@@ -98,7 +98,8 @@ export function responseValidator(
 	}
 	return (value: unknown, status: number) => {
 		const validator = validators.get(status);
-		if (validator && !validator.Check(value))
+		if (!validator) throw new Error("Missing declared JSON response schema");
+		if (!validator.Check(value))
 			throw new ValidationError("response", value, () =>
 				validator.Errors(value),
 			);

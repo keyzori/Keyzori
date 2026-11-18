@@ -24,12 +24,19 @@ export const webhooks = pgTable(
 		ownerCredentialHash: text("owner_credential_hash"),
 		secretCiphertext: text("secret_ciphertext").notNull(),
 		signingKeyId: uuid("signing_key_id").notNull(),
+		stagedSecretCiphertext: text("staged_secret_ciphertext"),
+		stagedSigningKeyId: uuid("staged_signing_key_id"),
 		version: integer().notNull().default(1),
 		lastSequence: bigint("last_sequence", { mode: "bigint" })
 			.notNull()
 			.default(0n),
 		enabled: boolean().notNull().default(false),
 		lastError: text("last_error"),
+		dispatchFailures: integer("dispatch_failures").notNull().default(0),
+		dispatchRetryAt: timestamp("dispatch_retry_at", {
+			withTimezone: true,
+			precision: 3,
+		}),
 		lastDispatchAt: timestamp("last_dispatch_at", {
 			withTimezone: true,
 			precision: 3,
@@ -44,6 +51,14 @@ export const webhooks = pgTable(
 			.defaultNow(),
 	},
 	(table) => [
+		check(
+			"webhooks_staged_key_check",
+			sql`(${table.stagedSigningKeyId} is null) = (${table.stagedSecretCiphertext} is null) and ${table.stagedSigningKeyId} is distinct from ${table.signingKeyId}`,
+		),
+		check(
+			"webhooks_dispatch_retry_check",
+			sql`${table.dispatchFailures} between 0 and 6 and ((${table.dispatchFailures} = 0) = (${table.dispatchRetryAt} is null))`,
+		),
 		check(
 			"webhooks_owner_check",
 			sql`(${table.ownerApiKeyId} is null) = (${table.ownerCredentialHash} is null)`,

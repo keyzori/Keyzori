@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Elysia, TypeBoxValidator, ValidationError, t } from "elysia";
 import { HttpBoundary } from "../../core/http/HttpBoundary";
 import { HttpError } from "../../core/http/HttpError";
@@ -13,6 +13,26 @@ import { checkedJSON } from "../fixtures/Json";
 
 const boundary = new HttpBoundary(new RequestTracker(), new Logger("error"));
 const request = () => new Request("http://localhost/test");
+
+test("unavailable responses keep their status while repeated outage logs are sampled", () => {
+	const logger = new Logger("error");
+	const write = spyOn(logger, "write").mockImplementation(() => {});
+	const incident = new HttpBoundary(new RequestTracker(), logger);
+	try {
+		for (let i = 0; i < 8; i++) {
+			expect(
+				incident.error(new HttpError("SERVICE_UNAVAILABLE"), request()).status,
+			).toBe(503);
+		}
+		expect(write).toHaveBeenCalledTimes(1);
+		expect(
+			incident.error(new Error("independent fault"), request()).status,
+		).toBe(500);
+		expect(write).toHaveBeenCalledTimes(2);
+	} finally {
+		write.mockRestore();
+	}
+});
 
 test("full licence schemas compile and accept empty validation/list responses", () => {
 	responseValidator(validationModel.response)(
@@ -102,8 +122,23 @@ test("secret replay errors retain only safe resource IDs, and successful replays
 			)
 		).error.resourceIds,
 	).toEqual([id]);
+	const checkPage = responseValidator(
+		t.Object(
+			{
+				data: t.Array(t.String()),
+				nextCursor: t.Null(),
+				pageLimit: t.Integer(),
+			},
+			{ additionalProperties: false },
+		),
+	);
+	const replayBoundary = new HttpBoundary(
+		new RequestTracker(),
+		new Logger("error"),
+		(_request, value, status) => checkPage(value, status),
+	);
 	const replay = await checkedJSON(
-		boundary.error(
+		replayBoundary.error(
 			new Replay({ data: [], nextCursor: null, pageLimit: 12 }),
 			request(),
 		),
@@ -118,6 +153,12 @@ test("secret replay errors retain only safe resource IDs, and successful replays
 		operation: { replayed: true },
 		page: { limit: 12, hasMore: false },
 	});
+	const malformed = replayBoundary.error(
+		new Replay({ data: "UNEXPECTED_MARKER" }),
+		request(),
+	);
+	expect(malformed.status).toBe(500);
+	expect(await malformed.text()).not.toContain("UNEXPECTED_MARKER");
 });
 
 test("validation errors expose schema fields without values, dynamic keys or unsafe diagnostics", async () => {

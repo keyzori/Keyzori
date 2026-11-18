@@ -37,9 +37,10 @@ export class WebhookSecrets {
 			encrypted.toString("base64url"),
 		].join(".");
 	}
-	decrypt(value: string) {
+	decrypt(value: string | null) {
 		const key = this.key();
 		try {
+			if (value === null) throw new Error("format");
 			const [version, nonce, tag, encrypted, extra] = value.split(".");
 			if (
 				version !== "v1" ||

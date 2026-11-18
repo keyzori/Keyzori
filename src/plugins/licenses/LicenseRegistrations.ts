@@ -1,4 +1,5 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { licenses } from "../../core/database/schema/licenses";
 import { hardware } from "../../core/database/schema/hardware";
 import { ips } from "../../core/database/schema/ips";
 import { HttpError } from "../../core/http/HttpError";
@@ -39,24 +40,34 @@ export class LicenseRegistrations {
 				: !input.ip || input.hardwareId !== undefined
 		)
 			throw new HttpError("INVALID_REQUEST");
-		const address = input.ip
-			? await this.ip.normalize(input.ip, operation.deadlineAt)
-			: undefined;
+		const targets = this.context.targets(operation, scope, [input.licenseId], {
+			id: licenses.id,
+			groupId: licenses.groupId,
+			deviceLimit: licenses.deviceLimit,
+			ipLimit: licenses.ipLimit,
+		});
 		return this.idempotency.admin(
 			operation,
 			`license.${kind}.register`,
 			input,
 			async (tx) => {
-				const [license] = await this.context.lock(tx, [input.licenseId]);
+				const [license] = targets.state(tx).rows;
 				if (!license) throw new HttpError("NOT_FOUND");
-				const evidence = this.context.evidence(operation, license.id);
+				const evidence = {
+					...this.context.evidence(operation, license.id),
+					groupId: license.groupId,
+				};
 				if (kind === "device" && input.hardwareId) {
-					const existing = await tx
-						.select({ hardwareId: hardware.hardwareId })
+					const [existing] = await tx
+						.select({
+							count: sql<number>`count(*)::int`,
+							known: sql<boolean>`coalesce(bool_or(${hardware.hardwareId} = ${input.hardwareId}), false)`,
+						})
 						.from(hardware)
 						.where(eq(hardware.licenseId, license.id));
-					if (!existing.some((row) => row.hardwareId === input.hardwareId)) {
-						if (existing.length >= Math.min(license.deviceLimit ?? 1000, 1000))
+					if (!existing) throw new Error("Missing device capacity");
+					if (!existing.known) {
+						if (existing.count >= (license.deviceLimit ?? 1000))
 							throw new HttpError("CONFLICT", {
 								hardwareId: "Device registration limit reached",
 							});
@@ -71,13 +82,19 @@ export class LicenseRegistrations {
 							after: { hardwareId: input.hardwareId },
 						});
 					}
-				} else if (address) {
-					const existing = await tx
-						.select({ ip: ips.ip })
+				} else if (input.ip) {
+					const [address] = await this.ip.normalizeMany(tx, [input.ip]);
+					if (!address) throw new Error("Missing normalized address");
+					const [existing] = await tx
+						.select({
+							count: sql<number>`count(*)::int`,
+							known: sql<boolean>`coalesce(bool_or(${ips.ip} = ${address}::inet), false)`,
+						})
 						.from(ips)
 						.where(eq(ips.licenseId, license.id));
-					if (!existing.some((row) => row.ip === address)) {
-						if (existing.length >= Math.min(license.ipLimit ?? 1000, 1000))
+					if (!existing) throw new Error("Missing IP capacity");
+					if (!existing.known) {
+						if (existing.count >= (license.ipLimit ?? 1000))
 							throw new HttpError("CONFLICT", {
 								ip: "IP registration limit reached",
 							});
@@ -96,8 +113,7 @@ export class LicenseRegistrations {
 				return { data: { ids: [license.id] } };
 			},
 			{
-				authorize: (tx) =>
-					this.context.authorize(tx, operation, scope, [input.licenseId]),
+				authorize: targets.authorize,
 			},
 		);
 	}
@@ -105,12 +121,16 @@ export class LicenseRegistrations {
 	async removeHardware(input: $HardwareRemoval, operation: $Operation) {
 		this.auth.require(operation.principal, "devices:remove");
 		const ids = this.input.ids(input.ids);
+		const targets = this.context.targets(operation, "devices:remove", ids, {
+			id: licenses.id,
+			groupId: licenses.groupId,
+		});
 		return this.idempotency.admin(
 			operation,
 			"license.hardware.remove",
 			input,
 			async (tx) => {
-				for (const row of await this.context.lock(tx, ids)) {
+				for (const row of targets.state(tx).rows) {
 					const removed = await tx
 						.delete(hardware)
 						.where(
@@ -119,10 +139,11 @@ export class LicenseRegistrations {
 								inArray(hardware.hardwareId, input.hardwareIds),
 							),
 						)
-						.returning();
+						.returning({ hardwareId: hardware.hardwareId });
 					if (removed.length)
 						await this.audit.record(tx, {
 							...this.context.evidence(operation, row.id, input.reason),
+							groupId: row.groupId,
 							action: "license.hardware.removed",
 							before: { hardwareIds: removed.map((entry) => entry.hardwareId) },
 						});
@@ -130,8 +151,7 @@ export class LicenseRegistrations {
 				return { data: { ids } };
 			},
 			{
-				authorize: (tx) =>
-					this.context.authorize(tx, operation, "devices:remove", ids),
+				authorize: targets.authorize,
 			},
 		);
 	}
@@ -139,22 +159,27 @@ export class LicenseRegistrations {
 	async removeIps(input: $IpRemoval, operation: $Operation) {
 		this.auth.require(operation.principal, "ips:remove");
 		const ids = this.input.ids(input.ids);
-		const addresses: string[] = [];
-		for (const address of input.ips)
-			addresses.push(await this.ip.normalize(address, operation.deadlineAt));
+		const targets = this.context.targets(operation, "ips:remove", ids, {
+			id: licenses.id,
+			groupId: licenses.groupId,
+		});
 		return this.idempotency.admin(
 			operation,
 			"license.ips.remove",
 			input,
 			async (tx) => {
-				for (const row of await this.context.lock(tx, ids)) {
+				const addresses = [
+					...new Set(await this.ip.normalizeMany(tx, input.ips)),
+				];
+				for (const row of targets.state(tx).rows) {
 					const removed = await tx
 						.delete(ips)
 						.where(and(eq(ips.licenseId, row.id), inArray(ips.ip, addresses)))
-						.returning();
+						.returning({ ip: ips.ip });
 					if (removed.length)
 						await this.audit.record(tx, {
 							...this.context.evidence(operation, row.id, input.reason),
+							groupId: row.groupId,
 							action: "license.ips.removed",
 							before: { ips: removed.map((entry) => entry.ip) },
 						});
@@ -162,8 +187,7 @@ export class LicenseRegistrations {
 				return { data: { ids } };
 			},
 			{
-				authorize: (tx) =>
-					this.context.authorize(tx, operation, "ips:remove", ids),
+				authorize: targets.authorize,
 			},
 		);
 	}

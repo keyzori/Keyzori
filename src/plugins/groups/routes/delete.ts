@@ -11,7 +11,7 @@ export const deleteGroup = (service: $Groups, requests: $Requests) =>
 			detail: {
 				tags: ["Groups"],
 				security: [{ bearerAuth: [] }],
-				description: "Requires groups:delete and licenses:delete.",
+				description: "Requires groups:delete and licenses:disable.",
 			},
 		},
 		({ body, operation }) => service.remove(body, operation),

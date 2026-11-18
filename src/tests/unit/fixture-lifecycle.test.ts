@@ -67,6 +67,7 @@ test("interrupted startup cancels an in-flight command, never starts Redis, and 
 	await services.stop();
 	expect(docker.calls.filter((args) => args[1] === "run")).toHaveLength(1);
 	expect(docker.removed).toEqual(["1".padStart(64, "0")]);
+	expect(docker.calls.find((args) => args[1] === "rm")).toContain("--volumes");
 });
 
 test("concurrent fixture runs use separate labels, names and passwords", async () => {
@@ -87,6 +88,30 @@ test("concurrent fixture runs use separate labels, names and passwords", async (
 	}
 	expect(first.removed).toHaveLength(2);
 	expect(second.removed).toHaveLength(2);
+});
+
+test("cleanup bounds an unacknowledged startup and removes its already-created owned ID", async () => {
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const docker = fixtureDocker(async (args) => {
+		if (args[1] === "run") {
+			entered.resolve();
+			await release.promise;
+		}
+	});
+	const services = new TestServices({
+		execute: docker.execute,
+		cleanupTimeoutMs: 120,
+	});
+	const startup = services.start();
+	try {
+		await entered.promise;
+		await expect(services.stop()).rejects.toThrow("Fixture cleanup failed");
+		expect(docker.removed).toEqual(["1".padStart(64, "0")]);
+	} finally {
+		release.resolve();
+		await expect(startup).rejects.toThrow();
+	}
 });
 
 test("cleanup preserves foreign ownership and still removes the other owned container", async () => {

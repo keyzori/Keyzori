@@ -1,9 +1,6 @@
 services:
   migrate:
-    image: ghcr.io/keyzori/server:${KZ_VERSION:-3.0.0-beta.1} # x-release-please-version
-    build:
-      context: .
-      dockerfile: src/Dockerfile
+    image: ${KZ_IMAGE:-ghcr.io/keyzori/server:${KZ_VERSION:-3.0.0-beta.1}} # x-release-please-version
     command: ["migrate"]
     restart: "no"
     environment:
@@ -17,10 +14,7 @@ services:
     healthcheck:
       disable: true
   server:
-    image: ghcr.io/keyzori/server:${KZ_VERSION:-3.0.0-beta.1} # x-release-please-version
-    build:
-      context: .
-      dockerfile: src/Dockerfile
+    image: ${KZ_IMAGE:-ghcr.io/keyzori/server:${KZ_VERSION:-3.0.0-beta.1}} # x-release-please-version
     restart: unless-stopped
     ports:
       - "127.0.0.1:6284:6284"
@@ -59,7 +53,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
   postgres:
-    image: postgres:18.0@sha256:41fc5342eefba6cc2ccda736aaf034bbbb7c3df0fdb81516eba1ba33f360162c
+    image: postgres:18.7@sha256:2ea8630df176ad090ec92136dee850397c5af8781e4bcf2e4162593691c61bbc
     restart: unless-stopped
     environment:
       POSTGRES_DB: keyzori
@@ -71,14 +65,28 @@ services:
       - postgres:/var/lib/postgresql
       - ./deploy/postgres/01-roles.sh:/docker-entrypoint-initdb.d/01-roles.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U keyzori -d keyzori"]
+      test:
+        [
+          "CMD",
+          "pg_isready",
+          "-h",
+          "127.0.0.1",
+          "-p",
+          "5432",
+          "-U",
+          "keyzori",
+          "-d",
+          "keyzori",
+        ]
       interval: 5s
       timeout: 3s
       retries: 12
   redis:
-    image: redis:8.2.1@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621
+    image: redis:8.2.11@sha256:b0b01167ff47bc3868e56a967895a26be4230891a1f42a78ab61cdd227accc8d
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    tmpfs:
+      - /data
     healthcheck:
       test: ["CMD", "redis-cli", "PING"]
       interval: 5s

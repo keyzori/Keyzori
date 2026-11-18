@@ -25,6 +25,7 @@ import type { $Principal } from "../../types/auth";
 import type {
 	$Webhook,
 	$WebhookAction,
+	$WebhookActivation,
 	$WebhookCreate,
 	$WebhookDelete,
 	$WebhookDelivery,
@@ -82,9 +83,10 @@ export class WebhookService {
 					});
 				const issued = this.secrets.issue();
 				const [state] = await tx
-					.select()
+					.select({ sequence: eventState.sequence })
 					.from(eventState)
 					.where(eq(eventState.id, 1));
+				if (!state) throw new HttpError("SERVICE_UNAVAILABLE");
 				const [row] = await tx
 					.insert(webhooks)
 					.values({
@@ -98,7 +100,7 @@ export class WebhookService {
 							principal.kind === "api" ? principal.credentialHash : null,
 						secretCiphertext: issued.secretCiphertext,
 						signingKeyId: issued.signingKeyId,
-						lastSequence: state?.sequence ?? 0n,
+						lastSequence: state.sequence,
 						createdBy: principal.id,
 						updatedBy: principal.id,
 						createdAt: now,
@@ -212,7 +214,11 @@ export class WebhookService {
 						events:
 							input.changes.events === undefined
 								? row.events
-								: this.authority.subscriptions(principal, input.changes.events),
+								: this.authority.subscriptions(
+										principal,
+										input.changes.events,
+										owner,
+									),
 						allGroups: input.changes.allGroups ?? row.allGroups,
 						groupIds: groupIds ?? row.groupIds,
 					};
@@ -249,10 +255,12 @@ export class WebhookService {
 							enabled: false,
 							version: row.version + 1,
 							lastError: null,
+							dispatchFailures: 0,
+							dispatchRetryAt: null,
+							stagedSecretCiphertext: null,
+							stagedSigningKeyId: null,
 							updatedAt: now,
 							updatedBy: principal.id,
-							ownerCredentialHash:
-								owner.kind === "api" ? owner.credentialHash : null,
 						})
 						.where(eq(webhooks.id, row.id))
 						.returning();
@@ -308,10 +316,14 @@ export class WebhookService {
 			`webhook.${enabled ? "enable" : "disable"}`,
 			input,
 			async (tx, now) => {
-				const [state] = await tx
-					.select()
-					.from(eventState)
-					.where(eq(eventState.id, 1));
+				const [state] = enabled
+					? await tx
+							.select({ sequence: eventState.sequence })
+							.from(eventState)
+							.where(eq(eventState.id, 1))
+							.for("share")
+					: [];
+				if (enabled && !state) throw new HttpError("SERVICE_UNAVAILABLE");
 				const data = [];
 				for (const row of await this.targets(tx, ids, principal)) {
 					const owner = enabled
@@ -325,25 +337,37 @@ export class WebhookService {
 							row.groupIds,
 						);
 						this.secrets.decrypt(row.secretCiphertext);
+						this.transport.url(row.url);
+						this.authority.deliverable(row);
 					}
-					if (
-						row.enabled === enabled &&
-						(owner?.kind !== "api" ||
-							owner.credentialHash === row.ownerCredentialHash)
-					) {
+					const rebound =
+						owner?.kind === "api" &&
+						owner.credentialHash !== row.ownerCredentialHash;
+					if (row.enabled === enabled && !rebound) {
 						data.push(this.public(row));
 						continue;
 					}
 					if (!enabled) await this.cancel(tx, row.id);
+					if (rebound && row.enabled)
+						await this.authority.disableRevoked(tx, row, this.audit);
+					else if (rebound)
+						await this.authority.cancel(tx, row.id, "owner_authority_revoked");
 					const [updated] = await tx
 						.update(webhooks)
 						.set({
 							enabled,
+							...(rebound
+								? {
+										version: row.version + 1,
+										stagedSigningKeyId: null,
+										stagedSecretCiphertext: null,
+									}
+								: {}),
+							dispatchFailures: 0,
+							dispatchRetryAt: null,
 							updatedAt: now,
 							updatedBy: principal.id,
-							lastSequence: enabled
-								? (state?.sequence ?? 0n)
-								: row.lastSequence,
+							lastSequence: state?.sequence ?? row.lastSequence,
 							ownerCredentialHash:
 								owner?.kind === "api"
 									? owner.credentialHash
@@ -358,8 +382,8 @@ export class WebhookService {
 						operation,
 						`webhook.${enabled ? "enabled" : "disabled"}`,
 						row,
-						{ enabled: row.enabled },
-						{ enabled },
+						{ enabled: rebound ? false : row.enabled },
+						{ enabled, version: updated.version },
 						input.reason,
 					);
 					data.push(this.public(updated));
@@ -454,7 +478,7 @@ export class WebhookService {
 			async (tx, now) => {
 				const data = [];
 				for (const row of await this.targets(tx, ids, principal)) {
-					const owner = await this.authority.owner(tx, row, true);
+					const owner = await this.authority.owner(tx, row);
 					this.authority.selection(
 						owner,
 						row.events,
@@ -465,8 +489,8 @@ export class WebhookService {
 					await tx
 						.update(webhooks)
 						.set({
-							secretCiphertext: issued.secretCiphertext,
-							signingKeyId: issued.signingKeyId,
+							stagedSecretCiphertext: issued.secretCiphertext,
+							stagedSigningKeyId: issued.signingKeyId,
 							updatedAt: now,
 							updatedBy: principal.id,
 						})
@@ -476,8 +500,8 @@ export class WebhookService {
 						operation,
 						"webhook.updated",
 						row,
-						{ signingKeyId: row.signingKeyId },
-						{ signingKeyId: issued.signingKeyId },
+						{ stagedSigningKeyId: row.stagedSigningKeyId },
+						{ stagedSigningKeyId: issued.signingKeyId },
 						input.reason,
 					);
 					data.push({
@@ -503,6 +527,77 @@ export class WebhookService {
 							row.allGroups,
 							row.groupIds,
 						);
+					return principal;
+				},
+			},
+		);
+	}
+
+	async activateSecret(input: $WebhookActivation, operation: $Operation) {
+		this.policy.idempotency(operation.idempotencyKey, true);
+		const ids = this.policy.ids([input.id]);
+		const signingKeyId = this.policy.ids([input.signingKeyId])[0];
+		return this.idem.admin(
+			operation,
+			"webhook.activate-secret",
+			input,
+			async (tx, now) => {
+				const [row] = await this.targets(tx, ids, operation.principal);
+				if (
+					!row ||
+					!row.stagedSecretCiphertext ||
+					row.stagedSigningKeyId !== signingKeyId
+				)
+					throw new HttpError("CONFLICT", {
+						signingKeyId: "The requested signing key is not staged",
+					});
+				this.secrets.decrypt(row.stagedSecretCiphertext);
+				await tx
+					.update(webhooks)
+					.set({
+						secretCiphertext: row.stagedSecretCiphertext,
+						signingKeyId: row.stagedSigningKeyId,
+						stagedSecretCiphertext: null,
+						stagedSigningKeyId: null,
+						dispatchFailures: 0,
+						dispatchRetryAt: null,
+						lastError: null,
+						updatedAt: now,
+						updatedBy: operation.principal.id,
+					})
+					.where(eq(webhooks.id, row.id));
+				await this.record(
+					tx,
+					operation,
+					"webhook.updated",
+					row,
+					{ signingKeyId: row.signingKeyId },
+					{ signingKeyId: row.stagedSigningKeyId, stagedSigningKeyId: null },
+					input.reason,
+				);
+				return { data: { id: row.id, signingKeyId: row.stagedSigningKeyId } };
+			},
+			{
+				authorize: async (tx) => {
+					const principal = await this.auth.authorize(
+						tx,
+						operation.principal,
+						"webhooks:rotate-secret",
+					);
+					for (const row of await this.targets(tx, ids, principal)) {
+						this.authority.selection(
+							principal,
+							row.events,
+							row.allGroups,
+							row.groupIds,
+						);
+						this.authority.selection(
+							await this.authority.owner(tx, row),
+							row.events,
+							row.allGroups,
+							row.groupIds,
+						);
+					}
 					return principal;
 				},
 			},
@@ -549,7 +644,8 @@ export class WebhookService {
 						createdAt: deliveries.createdAt,
 						updatedAt: deliveries.createdAt,
 					},
-					50,
+					(await this.settings.read(tx)).defaultPageLimit,
+					params,
 				);
 				const rows = await tx
 					.select({ delivery: deliveries })
@@ -561,6 +657,9 @@ export class WebhookService {
 							...filters,
 							this.auth.groupFilter(principal, deliveries.groupId),
 							this.authority.historyFilter(principal),
+							principal.kind === "api"
+								? this.authority.receiverHistoryFilter()
+								: undefined,
 							principal.kind === "api"
 								? eq(webhooks.ownerApiKeyId, principal.id)
 								: undefined,
@@ -612,38 +711,15 @@ export class WebhookService {
 		if (!input.confirm || !input.reason) throw new HttpError("INVALID_REQUEST");
 		this.policy.idempotency(operation.idempotencyKey, true);
 		const ids = this.policy.ids(input.ids);
-		let principal = operation.principal;
+		let rows: Awaited<ReturnType<WebhookAuthority["deliveryTargets"]>>;
 		const action = replay ? "replay" : "recover";
 		return this.idem.admin(
 			operation,
 			`webhook.${action}`,
 			input,
 			async (tx, now) => {
-				const rows = await this.deliveryTargets(tx, ids, principal);
 				const data = [];
 				for (const { delivery, endpoint } of rows) {
-					const owner = await this.authority.owner(tx, endpoint);
-					this.authority.selection(
-						owner,
-						endpoint.events,
-						endpoint.allGroups,
-						endpoint.groupIds,
-					);
-					if (
-						!this.authority.allowsEvent(
-							owner,
-							endpoint,
-							delivery.payload.event,
-							delivery.groupId,
-							delivery.global,
-							delivery,
-						)
-					)
-						throw new HttpError("FORBIDDEN");
-					if (!endpoint.enabled)
-						throw new HttpError("CONFLICT", {
-							webhook: "Enable the endpoint before recovery or replay",
-						});
 					const terminal = ["succeeded", "failed", "cancelled"].includes(
 						delivery.state,
 					);
@@ -695,6 +771,7 @@ export class WebhookService {
 					} else {
 						if (
 							delivery.endpointVersion !== endpoint.version ||
+							delivery.url !== endpoint.url ||
 							delivery.expiresAt <= now ||
 							delivery.attempts >= 8 ||
 							(delivery.state === "claimed" &&
@@ -752,12 +829,12 @@ export class WebhookService {
 			},
 			{
 				authorize: async (tx) => {
-					principal = await this.auth.authorize(
+					const principal = await this.auth.authorize(
 						tx,
 						operation.principal,
 						`webhooks:${action}`,
 					);
-					await this.deliveryTargets(tx, ids, principal);
+					rows = await this.deliveryTargets(tx, ids, principal);
 					return principal;
 				},
 			},
@@ -768,7 +845,38 @@ export class WebhookService {
 		ids: string[],
 		principal: $Principal,
 	) {
-		return this.authority.deliveryTargets(tx, ids, principal);
+		const rows = await this.authority.deliveryTargets(tx, ids, principal);
+		const owners = new Map<string, $Principal>();
+		for (const { endpoint, delivery } of rows) {
+			let owner = owners.get(endpoint.id);
+			if (!owner) {
+				owner = await this.authority.owner(tx, endpoint);
+				this.authority.selection(
+					owner,
+					endpoint.events,
+					endpoint.allGroups,
+					endpoint.groupIds,
+				);
+				if (!endpoint.enabled)
+					throw new HttpError("CONFLICT", {
+						webhook: "Enable the endpoint before recovery or replay",
+					});
+				this.transport.url(endpoint.url);
+				owners.set(endpoint.id, owner);
+			}
+			if (
+				!this.authority.allowsEvent(
+					owner,
+					endpoint,
+					delivery.payload.event,
+					delivery.groupId,
+					delivery.global,
+					delivery,
+				)
+			)
+				throw new HttpError("FORBIDDEN");
+		}
+		return rows;
 	}
 
 	private async targets(
@@ -811,10 +919,36 @@ export class WebhookService {
 			action,
 			targetType: "webhook",
 			targetId: row.id,
-			before,
-			after,
+			before: this.auditView(before),
+			after: this.auditView(after),
 			reason,
 		});
+	}
+	/** Audit evidence has a narrower audience contract than the endpoint management DTO. */
+	private auditView(value?: Record<string, unknown>) {
+		if (!value) return;
+		const safe: Record<string, unknown> = {};
+		for (const key of [
+			"id",
+			"events",
+			"enabled",
+			"allGroups",
+			"groupIds",
+			"signingKeyId",
+			"stagedSigningKeyId",
+			"version",
+			"deliveryId",
+			"eventId",
+			"state",
+		])
+			if (Object.hasOwn(value, key)) safe[key] = value[key];
+		if (typeof value.url === "string") {
+			safe.destinationOrigin = URL.canParse(value.url)
+				? new URL(value.url).origin
+				: null;
+			safe.destinationChanged = true;
+		}
+		return safe;
 	}
 	private public(row: $Webhook) {
 		return {
@@ -825,6 +959,7 @@ export class WebhookService {
 			allGroups: row.allGroups,
 			groupIds: row.groupIds,
 			signingKeyId: row.signingKeyId,
+			stagedSigningKeyId: row.stagedSigningKeyId,
 			version: row.version,
 			lastError: row.lastError,
 			createdBy: row.createdBy,
@@ -843,6 +978,7 @@ export class WebhookService {
 			state: row.state,
 			attempts: row.attempts,
 			attemptedAt: row.attemptedAt?.toISOString() ?? null,
+			terminalAt: row.terminalAt?.toISOString() ?? null,
 			nextAttemptAt: row.nextAttemptAt.toISOString(),
 			expiresAt: row.expiresAt.toISOString(),
 			status: row.status,

@@ -3,6 +3,7 @@ import { TestDatabase } from "../tests/fixtures/TestDatabase";
 import { RuntimeContract } from "../tests/fixtures/RuntimeContract";
 import { KeyGenerator } from "../core/security/KeyGenerator";
 import { command } from "./command";
+import { smokeImage } from "./smoke-image";
 import { RuntimeWebhookFixture } from "../tests/fixtures/RuntimeWebhookFixture";
 import { verifyRuntimeMaintenance } from "../tests/fixtures/RuntimeMaintenanceFixture";
 
@@ -16,11 +17,12 @@ const tls =
 	process.platform === "linux"
 		? new RuntimeWebhookFixture(cancellation.signal)
 		: undefined;
-const databaseUrl = new URL(fixture.url);
-const redisUrl = new URL(Bun.env.KZ_TEST_REDIS_URL ?? "");
-databaseUrl.hostname =
-	process.platform === "linux" ? "127.0.0.1" : "host.docker.internal";
-redisUrl.hostname = databaseUrl.hostname;
+function fromContainer(value: string) {
+	const url = new URL(value);
+	url.hostname =
+		process.platform === "linux" ? "127.0.0.1" : "host.docker.internal";
+	return url.href;
+}
 const probe = Bun.serve({
 	hostname: "127.0.0.1",
 	port: 0,
@@ -28,17 +30,15 @@ const probe = Bun.serve({
 });
 const port = probe.port;
 await probe.stop(true);
-const env = {
+const env: Record<string, string | undefined> = {
 	...Bun.env,
-	KZ_DATABASE_URL: databaseUrl.href,
-	KZ_MIGRATION_DATABASE_URL: databaseUrl.href,
-	KZ_REDIS_URL: redisUrl.href,
+	KZ_REDIS_URL: fromContainer(Bun.env.KZ_TEST_REDIS_URL ?? ""),
 	KZ_MASTER_KEY: master,
 	KZ_WEBHOOK_ENCRYPTION_KEY: new Bun.CryptoHasher("sha256")
 		.update(Bun.randomUUIDv7())
 		.digest("hex"),
 	NODE_EXTRA_CA_CERTS: tls ? "/runtime-trust.pem" : undefined,
-	KZ_API_HOST: "0.0.0.0",
+	KZ_API_HOST: process.platform === "linux" ? "127.0.0.1" : "0.0.0.0",
 	KZ_API_PORT: process.platform === "linux" ? String(port) : "6284",
 	KZ_LOG_LEVEL: "error",
 };
@@ -69,30 +69,28 @@ const interrupt = () =>
 process.once("SIGINT", interrupt);
 process.once("SIGTERM", interrupt);
 try {
+	const image = await smokeImage(cancellation.signal);
 	await tls?.prepare();
-	await fixture.start(false);
+	const { runtimeUrl, migrationUrl } = await fixture.startWithRoles();
+	env.KZ_DATABASE_URL = fromContainer(runtimeUrl);
+	env.KZ_MIGRATION_DATABASE_URL = fromContainer(migrationUrl);
 	await docker([
 		"run",
+		"--pull=never",
 		"--rm",
 		"--name",
 		migrator,
 		"--label",
 		`dev.keyzori.test-run=${Bun.env.KZ_TEST_RUN_ID ?? ""}`,
 		...network,
-		...environments,
 		"-e",
 		"KZ_MIGRATION_DATABASE_URL",
-		...(tls
-			? [
-					"--mount",
-					`type=bind,source=${tls.certificate},target=/runtime-trust.pem,readonly`,
-				]
-			: []),
-		"keyzori-server:test",
+		image,
 		"migrate",
 	]);
 	await docker([
 		"run",
+		"--pull=never",
 		"-d",
 		"--name",
 		name,
@@ -114,7 +112,7 @@ try {
 					`type=bind,source=${tls.certificate},target=/runtime-trust.pem,readonly`,
 				]
 			: []),
-		"keyzori-server:test",
+		image,
 	]);
 	const boundPort =
 		process.platform === "linux"
@@ -144,11 +142,13 @@ try {
 		(await docker(["inspect", "--format", "{{.Config.User}}", name])).output,
 		"65532:65532",
 	);
-	assert.equal(
-		(await docker(["exec", name, "keyzori-bun", "--revision"])).output,
-		(await Bun.file(".bun-revision").text()).trim(),
-		"Image runtime does not match the reviewed Bun revision",
-	);
+	const revision = (await Bun.file(".bun-revision").text()).trim();
+	for (const executable of ["keyzori-bun", "bun"])
+		assert.equal(
+			(await docker(["exec", name, executable, "--revision"])).output,
+			revision,
+			`${executable} does not match the reviewed Bun revision`,
+		);
 	const contract = new RuntimeContract(origin, master);
 	await contract.run();
 	await verifyRuntimeMaintenance(contract, fixture.database);
@@ -210,7 +210,7 @@ try {
 			const [id, owner] = inspected.split(" ");
 			assert.equal(owner, name, "Refusing to remove a foreign smoke container");
 			assert.ok(id && /^[a-f0-9]{64}$/.test(id));
-			await docker(["rm", "-f", id]);
+			await docker(["rm", "-f", "--volumes", id]);
 		}
 	} catch (error) {
 		failures.push(error);

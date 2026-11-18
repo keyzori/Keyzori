@@ -7,7 +7,7 @@ export const createGroup = (service: $Groups, requests: $Requests) =>
 		"/groups",
 		{
 			body: groupModel.create,
-			response: groupModel.singleResponse,
+			response: groupModel.created,
 			detail: {
 				tags: ["Groups"],
 				security: [{ bearerAuth: [] }],

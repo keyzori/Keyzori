@@ -8,20 +8,35 @@ Use the exact [Bun pin](../CONTRIBUTING.md), PostgreSQL 17+ and Redis. From the 
 
 For Compose, set `KZ_MASTER_KEY`, `KZ_POSTGRES_PASSWORD`, `KZ_SERVER_DATABASE_PASSWORD`, and `KZ_MIGRATION_DATABASE_PASSWORD`. Use independent random 32-byte values encoded as 64 hexadecimal characters for each database password; Compose inserts them into connection URLs.
 
+For a released V3 image, set `KZ_IMAGE` to its registry digest or `KZ_VERSION` to its published tag:
+
 ```sh
-docker compose up --build -d
+docker compose up --pull always -d
+```
+
+For a source checkout, including an unreleased beta, build locally:
+
+```sh
+docker compose -f compose.yml -f compose.build.yml build migrate
+docker compose -f compose.yml -f compose.build.yml up --no-build -d
 ```
 
 The `migrate` job applies SQL using `keyzori_migrator` before the `server` starts as `keyzori_server`. The runtime role cannot change schema or migration history, or update/delete audit and accepted-usage history. PostgreSQL uses a named persistent volume. Only `127.0.0.1:6284` is published; database and Redis ports stay inside the Compose network. The source container runs as UID 65532 with a read-only root filesystem.
 
-For an externally managed database, provision separate migrator/runtime roles equivalent to [the role setup](../deploy/postgres/01-roles.sh), set the connection URLs, and explicitly run:
+For an externally managed database, provision separate migrator/runtime roles using [the role setup](../deploy/postgres/01-roles.sh) as the privilege contract. For production source execution, supply the environments separately through your process supervisor or secret store:
 
 ```sh
-bun run db:migrate
-bun run start
+# Migration job: KZ_MIGRATION_DATABASE_URL for this database.
+bun --no-env-file src/main.ts migrate
+
+# Server: KZ_DATABASE_URL (restricted role), KZ_REDIS_URL, KZ_MASTER_KEY
+# and applicable runtime settings. Do not give it migrator or bootstrap secrets.
+bun --no-env-file src/main.ts serve
 ```
 
-The migration command needs only database configuration. `KZ_MIGRATION_DATABASE_URL` selects its credential; if absent, it uses `KZ_DATABASE_URL`. The server never migrates, resets or repairs data during startup. It verifies exact migration history and refuses missing, modified or incompatible history. `bun run dev` runs source with automatic restarts. V3 is beta; changing database formats does not authorise deleting existing data.
+The migration command needs only database configuration. `KZ_MIGRATION_DATABASE_URL` selects its credential; for `migrate` only, `KZ_DATABASE_URL` is a fallback. `prepare-restore` requires the explicit migrator URL and checks authority before writing. Serving verifies history, effective runtime privileges and the publication checkpoint. It refuses incompatible state without migrating, resetting or repairing it. `bun run dev` runs source with automatic restarts.
+
+`keyzori_server` is the canonical runtime privilege role. An external deployment can make it a `NOLOGIN` grantee and let its separately named runtime login inherit those privileges. The login used for serving must not own the schema or be able to assume a role that can rewrite the audit, usage ledger or migration journal. Restore database ownership and grants along with the data.
 
 ## Environment
 
@@ -43,15 +58,16 @@ The migration command needs only database configuration. `KZ_MIGRATION_DATABASE_
 | `KZ_MAX_IN_FLIGHT`                   | Per-process request admission cap, default 128, range 1–4096.                                                                                                                                         |
 | `KZ_PEER_REQUESTS_PER_MINUTE`        | Pre-authentication peer rate cap, default 600, range 1–100000.                                                                                                                                        |
 | `KZ_MAX_STREAMS`                     | Per-process WebSocket cap, default 100, range 1–10000; shared principal/IP caps also apply.                                                                                                           |
-| `KZ_MAINTENANCE_RESET_ROWS`          | Counter-reset work per pass, default 100, range 1–10000.                                                                                                                                              |
+| `KZ_MAINTENANCE_RESET_ROWS`          | Licences claimed per reset pass, default 100, range 1–10000. All due counters on a claimed licence are reset together.                                                                                |
 | `KZ_MAINTENANCE_RESET_TIME_MS`       | Reset pass time budget, default 5000 ms, range 1–60000.                                                                                                                                               |
-| `KZ_MAINTENANCE_CLEANUP_ROWS`        | History/receipt cleanup work per pass, default 1000, range 1–10000.                                                                                                                                   |
+| `KZ_MAINTENANCE_CLEANUP_ROWS`        | Shared row budget across expired receipts, terminal webhook history (including attempts) and optional event pruning per pass. Default 1000, range 1–10000.                                            |
 | `KZ_MAINTENANCE_CLEANUP_TIME_MS`     | Cleanup pass time budget, default 5000 ms, range 1–60000.                                                                                                                                             |
 | `KZ_MAINTENANCE_OBSERVATION_TIME_MS` | Backlog observation budget, default 1000 ms, range 1–60000.                                                                                                                                           |
 | `KZ_MAINTENANCE_RETRY_BASE_MS`       | Failed-record retry base, default 60000 ms, range 1–86400000.                                                                                                                                         |
 | `KZ_MAINTENANCE_RETRY_MAX_MS`        | Failed-record retry cap, default 3600000 ms, range 1–86400000 and at least the base.                                                                                                                  |
 | `KZ_EVENT_RETENTION_DAYS`            | Optional event retention, 1–3650 days; unset/empty retains events indefinitely. Audit and accepted-usage identity have separate indefinite retention.                                                 |
-| `KZ_VERSION`                         | Compose image version, default `3.0.0-beta.1`.                                                                                                                                                        |
+| `KZ_VERSION`                         | Published image version; the release-specific default is recorded in [compose.yml](../compose.yml).                                                                                                   |
+| `KZ_IMAGE`                           | Optional full registry image reference, including a digest. Overrides `KZ_VERSION` for both migrator and server.                                                                                      |
 
 Compose has three separate bootstrap password inputs described above. Source runs load `.env` conventionally; the container uses supplied environment only. Never commit credentials or put master/API keys in URLs. A trusted proxy must replace forwarded headers, not append untrusted client claims. Only configured headers from a trusted immediate peer influence the client IP; right-to-left forwarded-chain parsing stops at the first untrusted hop.
 
@@ -76,9 +92,9 @@ Lists always return an array in `data` with `meta.page:{limit,nextCursor,hasMore
 
 `/metrics` is a master-only Prometheus response. WebSocket frames use the protocol below, rather than the HTTP envelope. `/live` reports process liveness without probing dependencies. `/health` returns 200 when ready or 503 with a successful diagnostic envelope when dependencies are unhealthy; admission failure can instead return the normal error envelope. It includes `checkedAt` and `ageMs` for its shared probe, cached for up to roughly one second.
 
-`GET /health/diagnostics` is master-only and supplies redacted dependency causes and operational diagnostics. Backlog age, publication lag, webhook backlog and stream queue observations support troubleshooting without exposing credentials or raw database errors.
+`GET /health/diagnostics` is master-only and supplies redacted dependency causes. Use `/metrics` for publication lag, webhook backlog and stream pressure; check the observation timestamp before interpreting a zero backlog. Both operator endpoints require normal admission. A failed scrape during dependency loss does not mean the queue is empty.
 
-Run `bun run openapi` to generate `dist/server/openapi.json` from the current routes. The reference is an offline artifact, not a hosted administration interface.
+Run `bun run openapi` to generate `dist/server/openapi.json` from the mounted routes. It describes JSON request bodies, response envelopes, required and conditional scopes, and the signed outbound webhook. It is an offline artifact.
 
 ## Permissions
 
@@ -99,6 +115,8 @@ Permissions are explicit actions such as `licenses:read`, `licenses:create`, `us
 
 Selected-group grants exclude ungrouped keys. `allGroups:true` includes all groups and ungrouped keys but does not grant actions. There is no individual-licence scoping. Group creation and user mutations require all-group authority because they create or affect shared resources. Deleting a group additionally requires `licenses:disable`; deleting a user additionally requires `licenses:delete`. Group-scoped user reads are limited to users linked to visible keys.
 
+Group/user writes disclose full administrative records only with the corresponding read grant; write-only responses identify the affected records. Licence issuance always discloses the new credential once, but a create grant alone does not disclose the administrative detail of the licence or its parents. Existing grants to a deleted group may be retained or removed when editing a key's grants; new grants require a live group.
+
 Event access also needs the corresponding resource-read permission: for example, `usage:read` for usage events, and `licenses:read` for licence/validation events. Global events and audit records are excluded from selected-group principals. API-key, settings and webhook lifecycle events are master-only; reading one's own webhook does not grant another owner's activity. Combined transfer history requires access to both historical groups, or all-group authority when ungrouped data is involved. Webhook ownership and current action/group authority are checked at administration, enqueue, claim and immediately before send. Transactions recheck current grants; an already-authorised transaction or network send cannot be recalled after revocation.
 
 `licenses:read` explicitly authorises the composite administrative licence detail, including counter state and registered hardware/IP identifiers; it does not require separate `usage:read`, `devices:read` or `ips:read` grants. Historical usage lookup and usage events use `usage:read`. Registration permissions authorise their specific writes. Editing counter definitions through `PATCH /licenses` additionally requires `usage:adjust` as well as `licenses:update` and the applicable group authority.
@@ -110,6 +128,7 @@ Both `groupId` and `userId` are optional and may be null. New licences, groups, 
 - Disabling a group makes its keys ineligible. Re-enabling it restores only keys otherwise enabled, unexpired and eligible.
 - Deleting a group retains its keys, clears their group association and disables them. A pre-existing disabled reason is retained; otherwise the reason says the associated group was deleted. Explicit authorised enabling is required afterwards.
 - Disabling a user makes linked keys ineligible. Deleting a user deletes linked keys. Audit, event and accepted-usage evidence remains retained.
+- To move an enabled licence away from a disabled parent, explicitly disable the licence first. Reassign it, then use the enable operation if it should become eligible again.
 - `POST /licenses/disable` accepts `{"ids":["<id>"],"reason":"Access suspended"}`. Validation returns that custom reason for the disabled key. Enabling clears its disabled reason but does not extend expiry or bypass parent state.
 
 Deletes require `confirm:true` and a reason. Bulk requests accept at most 100 explicit IDs. Parent deletion affecting more than 1000 keys returns a conflict without partial deletion. For a large group, disable it first, then call `POST /groups/detach-licenses` with `{groupId,ids,reason}` and an `Idempotency-Key` in batches of at most 100. This operation requires group-deletion and licence-disable authority, atomically disables and detaches each selected key, preserves existing custom reasons and writes audit/event evidence. Delete the group after the remaining cascade fits the bound. For a large user, disable it first and deliberately delete linked licences in authorised, audited batches before deleting the user. Do not detach enabled keys to bypass the parent policy.
@@ -142,7 +161,7 @@ Use the expected group when a credential should serve one purpose. Optional `use
 
 An exhausted counter does not change `valid`. Your integration decides how to use returned usage data. Keyzori cannot stop an integration from ignoring a decision, sharing a key or storing it insecurely; protect the credential at the integration boundary.
 
-Device/IP caps are unlimited when null, and zero permits no registered capacity. For capped keys, register through `POST /licenses/hardware/register` or `POST /licenses/ips/register` before validation. These require API authority and the relevant registration permission. They accept `licenseId` plus `hardwareId` or `ip`; client-supplied hardware IDs are identifiers, not proof of a physical device.
+With a null device/IP cap, validation does not require that kind of registration. A zero cap admits no registrations. Storage is bounded to 1,000 registered devices and 1,000 registered IPs per licence even when eligibility is uncapped. Lowering a positive cap preserves existing registrations and prevents new ones until there is capacity. Register through `POST /licenses/hardware/register` with `licenseId` and `hardwareId`, or `POST /licenses/ips/register` with `licenseId` and `ip`. Each route requires the relevant registration permission. A hardware ID is an identifier, not proof of a physical device.
 
 ## Usage counters and retries
 
@@ -183,7 +202,7 @@ Reuse the same idempotency key and identical body when retrying. Consumption ded
 
 Other administrative operations use expiring idempotency receipts: **24 hours by default**, configurable with `idempotencyRetentionSeconds`. After expiry, a repeated key may execute again. Issuance and rotation require an idempotency key; retries never re-disclose secrets and return `SECRET_ALREADY_ISSUED` with recovery resource IDs. Replay of administrative operations also checks current authority and request fingerprint. Licence rotation changes the credential, not the licence ID or counters.
 
-`POST /licenses/meters/adjust` requires `usage:adjust` and supports explicit `set`, `increment`, `decrement` and `reset` adjustments. This is a privileged administrative correction, recorded in audit history; ordinary integrations should consume through `/licenses/consume`.
+`POST /licenses/meters/adjust` requires `usage:adjust` and an explicit action: `set`, `increment`, `decrement` or `reset`. Only `reset` omits the value. A schedule requires its interval; an existing counter retains its numeric mode and precision when a partial definition edit omits them. Licence/API-key expiry and counter start instants are stored to millisecond precision; supply at most three fractional digits on writes. Query cutoffs may be more precise.
 
 ## Reset boundaries
 
@@ -201,17 +220,19 @@ Validation projects overdue counters as zero without writing resets. Consumption
 
 `GET /events` requires `events:read`; it returns authorised, published integration events in increasing durable `sequence` order. Sequences are strings. Use `meta.page.nextCursor` with `cursor` and a `limit` of 1–100. No cursor starts at the beginning of available history. An empty page still advances the cursor over events the principal cannot see.
 
-Events use versioned, event-specific schemas with a stable event ID, epoch, resource identity/revision and required data for that event type. Treat them as invalidations: re-read the authorised subject and keep the highest resource revision instead of applying a historical payload as a current resource snapshot. For initial synchronization or cursor expiry, first obtain `GET /events/watermark`, then collect authorised resource state, then replay from the returned cursor. This watermark-before-state order closes the snapshot/replay race; deduplicate replayed events by event ID.
+Events use versioned, event-specific schemas with a stable event ID, epoch, resource identity/revision and required data for that event type. Treat each event as an invalidation of its subject: re-read authorised state and serialize updates per subject. For initial synchronization or cursor expiry, obtain `GET /events/watermark` or the stream's ready watermark, stage the authorised resource pages, then replay from that watermark. Promote the staged state only after validating its cursor under current authority. Discard a staged snapshot on `CURSOR_EXPIRED`. On epoch change replace the previous snapshot **and its resource-revision high-waters**; keep separate event-ID deduplication for irreversible side effects.
+
+The feed covers the event families a principal can read. For example, `licenses:read` returns composite detail but does not subscribe the caller to counter or registration events. Linked user changes are global events and are not delivered to selected-group readers. Periodically refetch these projections, and use live validation or consumption for access and accounting decisions. A successful empty replay is not proof that every field of a composite resource is unchanged.
 
 Connect to `/events/stream` with `Authorization: Bearer <credential>` and `events:subscribe`. Server-side WebSocket clients can send this header; the standard browser WebSocket constructor cannot. Use your own authenticated backend relay for browser integrations. Keys/tickets in URLs are unsupported and any stream query string is rejected. Origin-bearing connections must match `KZ_STREAM_ORIGINS`; absent Origin is permitted for backend clients.
 
-Wait for `{"type":"ready","schemaVersion":1,"sessionExpiresAt":"..."}`, then send exactly one `{"type":"subscribe","cursor":"<last processed cursor>"}` message; omit `cursor` for initial history. Subscribe within 10 seconds of opening. Batches have `{type:"events",data:[...],pageLimit,cursor,hasMore}`. A batch may be empty. Errors may send `{type:"error",code}` before closure.
+Wait for a version-1 `ready` frame. Its `watermark.cursor` is scoped to the authenticated subscriber; obtaining it does not grant `GET /events` access. Send exactly one `{"type":"subscribe","cursor":"<last processed cursor>"}` within the subscription window; omit `cursor` to start at the beginning of **retained** history. To capture a large snapshot, save the ready watermark, disconnect, collect state, then reconnect and subscribe from that cursor. Batches have `{type:"events",data:[...],cursor,hasMore}`. A batch may be empty. Errors may send `{type:"error",code}` before closure.
 
 Persist a cursor only after durably processing the entire batch. Reconnect with bounded exponential backoff and jitter, reauthenticate, and subscribe using that processed cursor. Delivery is at least once when replayed; deduplicate by event ID. There is no per-event acknowledgement or exactly-once processing guarantee. Publication sequence determines stream order, not wall-clock creation time. Webhook delivery order is independent.
 
 Limits are 5 active streams per principal and 20 per resolved client IP across the shared Redis service, plus `KZ_MAX_STREAMS` per process (default 100). Sessions expire after 15 minutes. Client frames are limited to 1 KiB; outgoing batch/backpressure bounds are 256 KiB. Slow consumers close with 1013; restart uses 1012; policy/session failures use 1008. Reconnect from the last processed cursor after closures. Redis leases fail closed when admission/renewal is unavailable.
 
-Cursors bind to the principal's grants and event-history epoch. Permission changes, retention boundaries or an incompatible history epoch cause `CURSOR_EXPIRED` (HTTP 410 or stream error); restart the snapshot-then-replay procedure. Every batch rechecks current authority, but revocation cannot retract a batch already authorised or sent. Restore operations must change the stream epoch before clients resume; published sequences and webhook enqueue positions are not rebased.
+Cursors bind to the principal, its grant generation, and the event-history epoch. An effective grant change invalidates older cursors even if the same grants are later restored. Explicit cursors below the retention floor or from another epoch expire (HTTP 410 or stream error); restart the snapshot procedure. Every batch rechecks current authority. A restore changes the epoch before clients resume; published sequences and webhook enqueue positions are not rebased.
 
 See the [backend stream example](examples/stream-events.ts).
 
@@ -219,11 +240,13 @@ See the [backend stream example](examples/stream-events.ts).
 
 `GET /audits` requires `audits:read` and applies current group restrictions. Records contain actor, action, target, request ID, reason, timestamp and meaningful changed fields. Audit history is separate from integration events and JSON operational logs. Failed-validation evidence is rate-gated rather than a promise to retain every rejected request. Secret values and hashes are excluded from audit changes.
 
-Audit records and accepted-usage operations are retained indefinitely, including after associated entities are deleted; their stable identity and historical authority context survive deletion. The runtime role cannot update or delete that evidence. Event retention is indefinite unless `KZ_EVENT_RETENTION_DAYS` is configured; maintenance can prune only a contiguous published prefix already passed by every enabled webhook. Pending events and unprocessed webhook work are preserved. Expired event cursors require resynchronization. Terminal webhook delivery history defaults to 30 days through `webhookHistoryDays`; null disables that pruning. Pending deliveries are not pruned by the history job. Administrative idempotency receipts expire independently and never replace accepted-operation deduplication.
+Audit records and accepted-usage operations are retained indefinitely, including after associated entities are deleted; their stable identity and historical authority context survive deletion. The runtime role cannot update or delete that evidence. Webhook lifecycle audit views show the destination origin rather than its callback path or query. The operational endpoint configuration still contains the full URL. Event retention is indefinite unless `KZ_EVENT_RETENTION_DAYS` is configured; maintenance prunes only a contiguous published prefix already passed by every enabled webhook. Webhook history defaults to 30 days **from the terminal transition** through `webhookHistoryDays`; null disables that pruning. Pending deliveries are not pruned. Administrative receipts expire independently and never replace accepted-operation deduplication.
 
 ## Webhooks
 
 Create a disabled endpoint with `POST /webhooks`, a unique `Idempotency-Key`, and `{"url":"https://example.net/keyzori","events":["usage.consumed"],"allGroups":false,"groupIds":["<group-id>"]}`. Save its one-time `data.secret` and `signingKeyId`, then explicitly enable it. The owner needs webhook actions and read authority for every selected event/group. A wildcard event subscription expands at creation/update. Master-only events cannot be delegated through a webhook.
+
+The receiver's group selection is an upper bound even when the owner is root. Combined transfer history reaches an endpoint only when both the owner and the endpoint selection cover all historical groups. Combined history involving an ungrouped side requires all-group authority and an all-group endpoint.
 
 Destinations default to public HTTPS without embedded credentials or fragments. Public IP literals are permitted when vetted. DNS results are rechecked and the connection is pinned to a vetted address with TLS hostname verification; loopback, private, link-local and other non-public ranges are denied by default. Redirects are not followed.
 
@@ -237,7 +260,9 @@ Receivers should return 2xx after durable acceptance. Transport failures, 408, 4
 
 Delivery is at least once: a timeout or crash can occur after the receiver processed the body. Delivery IDs stay stable across retries; timestamps/signatures can change. Event IDs permit deduplication across subscriptions. Do not assume exactly-once delivery or globally ordered webhook arrivals.
 
-Ownership and permissions are rechecked before delivery; revocation cancels/disables work when observed but cannot recall an in-flight send. Changing URL/event/group filters disables the endpoint and cancels queued work; review and explicitly enable again. Enabling starts from the current publication position rather than replaying disabled-time history. Rotating the signing secret retains the old secret snapshot for already queued deliveries; retain old verification keys by signing-key ID until those deliveries expire. Disabled/deleted endpoints cancel pending work.
+Ownership and permissions are rechecked before delivery; revocation cancels/disables work when observed but cannot recall an in-flight send. Changing URL/event/group filters disables the endpoint and cancels queued work; review and explicitly enable again. Enabling starts from the current publication position rather than replaying disabled-time history.
+
+For signing-key cutover, call `POST /webhooks/rotate-secret` and install the returned secret and signing-key ID at the receiver. Activate it with `POST /webhooks/activate-secret`, supplying `{id,signingKeyId}` and a distinct `Idempotency-Key`. The active key stays in use while a replacement is staged. If the staging response is lost, stage a new secret instead of activating a key the receiver does not have. Activation checks the expected ID. Deliveries already queued retain their signing snapshots; keep previous receiver verification keys until those deliveries expire. Both operations require `webhooks:rotate-secret` and current endpoint authority.
 
 The service admits at most 100 endpoints and 1000 pending/claimed deliveries per endpoint. A full backlog pauses enqueue progress and exposes `lastError:backlog_full`; durable integration events remain available. Read authorised status and bounded delivery history through `/webhooks` and `/webhooks/deliveries`.
 
@@ -247,17 +272,17 @@ The service admits at most 100 endpoints and 1000 pending/claimed deliveries per
 
 Terminate remote traffic with HTTPS. Keep master/API credentials on trusted backends. Use separate database roles, back up persistent data and webhook encryption material, and monitor database growth, failed deliveries, expired cursors and dependency health. Do not remove persistent volumes as a recovery shortcut.
 
-After restoring PostgreSQL from backup, keep all server replicas stopped and restore the matching webhook encryption material. Using the migration database credential, explicitly prepare that restored database before starting any replica:
+After restoring PostgreSQL from backup, keep all server replicas stopped and restore the matching webhook encryption material and database role grants. In a separate operator environment, set `KZ_MIGRATION_DATABASE_URL` explicitly to the restored database and prepare it before starting a replica:
 
 ```sh
-bun src/main.ts prepare-restore --confirm-restored-database
+bun --no-env-file src/main.ts prepare-restore --confirm-restored-database
 ```
 
 The offline command verifies exact schema history, atomically changes the event epoch, disables webhook endpoints, cancels unfinished delivery/attempt state with unknown-outcome evidence, and records an audit entry. It does not run during ordinary startup. After starting the service, re-synchronize clients through `/events/watermark`, review current endpoint authority and receiver deduplication, and deliberately enable/recover/replay the appropriate webhook work. Enabling an endpoint does not automatically replay the interval while it was disabled. Restoring an old backup cannot undo side effects already processed by receivers.
 
 Admission caps apply before expensive authenticated work. HTTP bodies are limited to 1 MiB, URLs to 8192 characters, and aggregate header text to 16384 characters. Validation defaults to 120 requests per resolved client IP per minute; administration defaults to 300 per principal/client-IP pair per minute, configurable in settings. The pre-authentication peer cap remains independent and is shared by clients behind the same immediate proxy. Bound batch sizes and timeouts protect service capacity; they do not establish a throughput promise.
 
-Shutdown stops admission and new background work, closes streams with a reconnect signal, cancels in-flight webhook transport and drains active HTTP/publication/delivery-settlement/maintenance work for up to 25 seconds. A cancelled network send has an unknown receiver outcome and remains retryable within its existing delivery budget; it is not reported as a successful delivery. A forced deadline is logged explicitly. Publication and delivery failures use independent bounded backoff and safe operational diagnostics. Dependency failure is not reported as current successful state.
+Shutdown stops admission and new work, closes streams with a reconnect signal, cancels in-flight webhook transport and allows up to 25 seconds for active work to drain, with 29 seconds total including final cleanup. On a handled shutdown signal the process exits `0` for a clean drain, `2` for forced termination at the deadline, and `1` for failure. A cancelled send has an unknown receiver outcome; it remains retryable within its existing delivery budget. Endpoint-local failures back off separately from shared dependency failures.
 
 Use `bun doctor`, `bun check --types`, native `bun lint`, native `bun fmt <paths>` and focused `bun run test <paths>`. `bun run format:check` checks formatting without writing; lint fixes are a separate `bun lint --fix <paths>` operation. Configure both native tools in `bunfig.toml`, with indentation supplied by `.editorconfig`. `bun check` includes lint and formatting checks and needs Docker; `bun run db:check` compares fresh generated SQL with committed migrations in isolated databases. Runtime checks are `bun run smoke:source`, `bun run smoke:container` and `bun run smoke:compose`. Follow active approval/validation limits. These commands describe coverage to run, not an assertion that the current checkout passed.
 

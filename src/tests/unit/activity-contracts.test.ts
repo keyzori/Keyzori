@@ -126,6 +126,8 @@ test("historical group checks require every provenance group and respect ungroup
 		name: "Scoped",
 		scopes: [],
 		credentialHash: "fixture",
+		grantGeneration: "1",
+		expiresAt: null,
 		groupIds: [b],
 		allGroups: false,
 	};

@@ -55,6 +55,90 @@ describe("webhook security boundaries", () => {
 			expect(() => transport.url(url)).toThrow();
 	});
 
+	test("admission bounds the canonical outbound URL as well as the supplied text", () => {
+		const transport = new WebhookTransport();
+		const small = transport.url(
+			`https://receiver.example/${"雪".repeat(200)}`,
+		).href;
+		expect(transport.url(small).href).toBe(small);
+		expect(() =>
+			transport.url(`https://receiver.example/${"雪".repeat(300)}`),
+		).toThrow();
+	});
+
+	test("distinct budgeted attempts rotate across vetted answers without multiple connections per attempt", async () => {
+		const targets: (string | null | undefined)[] = [];
+		const answers = [
+			{ address: "93.184.216.34", family: 4 },
+			{ address: "93.184.216.35", family: 4 },
+		];
+		const transport = new WebhookTransport(
+			[],
+			async () => answers,
+			(options) => {
+				targets.push(options.hostname);
+				throw new Error("Fixture captured one connection");
+			},
+		);
+		for (const attempt of [1, 2, 3])
+			await expect(
+				transport.send(
+					"https://receiver.example/",
+					"{}",
+					{},
+					1000,
+					undefined,
+					attempt,
+				),
+			).rejects.toThrow("captured");
+		expect(targets).toEqual([
+			answers[0]?.address,
+			answers[1]?.address,
+			answers[0]?.address,
+		]);
+	});
+
+	test("cancelled native lookup reservations remain bounded until their resolver finishes", async () => {
+		const dns = Promise.withResolvers<{ address: string; family: number }[]>();
+		let lookups = 0;
+		const transport = new WebhookTransport(
+			[],
+			async () => {
+				lookups++;
+				return dns.promise;
+			},
+			() => {
+				throw new Error("Unexpected connection");
+			},
+		);
+		const cancel = new AbortController();
+		const pending = Array.from({ length: 32 }, () =>
+			transport.send(
+				"https://receiver.example/",
+				"{}",
+				{},
+				2000,
+				cancel.signal,
+			),
+		);
+		cancel.abort();
+		await Promise.allSettled(pending);
+		try {
+			await expect(
+				transport.send("https://receiver.example/", "{}", {}, 1000),
+			).rejects.toThrow("resolver busy");
+			expect(lookups).toBe(32);
+		} finally {
+			dns.resolve([]);
+		}
+		await dns.promise;
+		await Bun.sleep(0);
+		await expect(
+			transport.send("https://receiver.example/", "{}", {}, 1000),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(lookups).toBe(33);
+	});
+
 	test("DNS rebinding and mixed public/private answers cannot reach the sender", async () => {
 		let sent = 0;
 		for (const addresses of [

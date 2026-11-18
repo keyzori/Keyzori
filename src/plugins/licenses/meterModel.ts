@@ -1,5 +1,6 @@
 import { t } from "elysia";
 import { httpModel } from "../../core/http/model";
+import { instantModel } from "../../core/http/instant";
 
 const decimal = t.String({
 	pattern: "^(0|[1-9][0-9]{0,14})(\\.[0-9]{1,6})?$",
@@ -7,7 +8,12 @@ const decimal = t.String({
 
 const schedule = t.Object(
 	{
-		interval: t.UnionEnum(["day", "week", "month", "year"]),
+		interval: t.Union([
+			t.Literal("day"),
+			t.Literal("week"),
+			t.Literal("month"),
+			t.Literal("year"),
+		]),
 		time: t.Optional(t.String({ pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$" })),
 		timezone: t.Optional(
 			t.String({ minLength: 1, maxLength: 128, default: "UTC" }),
@@ -35,20 +41,12 @@ const definition = t.Object(
 	{
 		name: t.String({ minLength: 1, maxLength: 128 }),
 		limit: t.Optional(t.Union([decimal, t.Null()])),
-		numericMode: t.Optional(t.UnionEnum(["integer", "decimal"])),
+		numericMode: t.Optional(
+			t.Union([t.Literal("integer"), t.Literal("decimal")]),
+		),
 		precision: t.Optional(t.Integer({ minimum: 0, maximum: 6 })),
 		schedule: t.Optional(t.Union([schedule, t.Null()])),
-		startsAt: t.Optional(
-			t.Union([
-				t.String({
-					format: "date-time",
-					maxLength: 40,
-					description:
-						"Consumption is rejected before this instant and allowed at it. Independent of calendar resets and licence eligibility. Null means no consumption-start restriction.",
-				}),
-				t.Null(),
-			]),
-		),
+		startsAt: t.Optional(t.Union([instantModel, t.Null()])),
 	},
 	{ additionalProperties: false },
 );

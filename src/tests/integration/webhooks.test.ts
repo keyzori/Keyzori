@@ -7,6 +7,7 @@ import {
 	deliveryAttempts,
 } from "../../core/database/schema/deliveries";
 import { webhooks } from "../../core/database/schema/webhooks";
+import { audits } from "../../core/database/schema/audits";
 import { groups } from "../../core/database/schema/groups";
 import { ActivityService } from "../../plugins/activity/ActivityService";
 import { WebhookService } from "../../plugins/webhooks/WebhookService";
@@ -40,6 +41,9 @@ const dispatcher = () =>
 		undefined,
 		context.auth,
 		encryptionKey,
+		[],
+		[],
+		context.audit,
 	);
 beforeAll(() => context.start());
 afterAll(() => context.stop());
@@ -253,6 +257,16 @@ test("revoked owners cannot deliver, retarget other endpoints or subscribe beyon
 	);
 	await service.enable({ ids: [own.data.id] }, operation());
 	const other = await endpoint();
+	const [foreignStage] = (
+		await service.rotateSecret({ ids: [other.data.id] }, context.operation())
+	).data;
+	if (!foreignStage) throw new Error("Missing staged fixture key");
+	await expect(
+		service.activateSecret(
+			{ id: other.data.id, signingKeyId: foreignStage.signingKeyId },
+			operation(),
+		),
+	).rejects.toMatchObject({ code: "NOT_FOUND" });
 	await expect(
 		service.update(
 			{ ids: [other.data.id], changes: { url: "https://attacker.example/" } },
@@ -344,7 +358,7 @@ test("expired claims recover uncertain outcomes without exceeding the attempt li
 	}
 });
 
-test("signing rotation preserves queued secret versions and never stores plaintext", async () => {
+test("staged rotation keeps live deliveries verifiable through provisioning and exact-key activation", async () => {
 	const hook = await endpoint();
 	await event();
 	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
@@ -353,19 +367,90 @@ test("signing rotation preserves queued secret versions and never stores plainte
 	});
 	try {
 		await dispatcher().runOnce();
+		const stageOperation = context.operation();
 		const rotated = await service.rotateSecret(
 			{ ids: [hook.data.id] },
-			context.operation(),
+			stageOperation,
 		);
+		await expect(
+			service.rotateSecret({ ids: [hook.data.id] }, stageOperation),
+		).rejects.toMatchObject({
+			code: "SECRET_ALREADY_ISSUED",
+			resourceIds: [hook.data.id],
+		});
 		const [queued] = await context.database.orm.select().from(deliveries);
 		const [stored] = await context.database.orm.select().from(webhooks);
 		expect(queued?.signingKeyId).toBe(hook.data.signingKeyId);
-		expect(stored?.signingKeyId).toBe(rotated.data[0]?.signingKeyId);
+		const staged = rotated.data[0];
+		if (!staged || !queued) throw new Error("Missing staged key or delivery");
+		expect(stored?.signingKeyId).toBe(hook.data.signingKeyId);
+		expect(stored?.stagedSigningKeyId).toBe(staged.signingKeyId);
 		expect(
 			JSON.stringify([queued, stored], (_key, value) =>
 				typeof value === "bigint" ? String(value) : value,
 			),
 		).not.toContain(hook.secret);
+		await event();
+		await dispatcher().runOnce();
+		const replaced = await service.rotateSecret(
+			{ ids: [hook.data.id] },
+			context.operation(),
+		);
+		const next = replaced.data[0];
+		if (!next) throw new Error("Missing replacement stage");
+		await expect(
+			service.activateSecret(
+				{ id: hook.data.id, signingKeyId: staged.signingKeyId },
+				context.operation(),
+			),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+		const activation = { id: hook.data.id, signingKeyId: next.signingKeyId };
+		await expect(
+			service.activateSecret(activation, {
+				...context.operation(),
+				idempotencyKey: undefined,
+			}),
+		).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+		const op = context.operation();
+		expect((await service.activateSecret(activation, op)).data).toEqual(
+			activation,
+		);
+		await expect(service.activateSecret(activation, op)).rejects.toBeInstanceOf(
+			Replay,
+		);
+		await event();
+		await context.database.orm
+			.update(deliveries)
+			.set({ nextAttemptAt: new Date(0) })
+			.where(eq(deliveries.state, "pending"));
+		sent.mockResolvedValue({ status: 204, retryAfter: null });
+		await dispatcher().runOnce();
+		const keys = new Map([
+			[hook.data.signingKeyId, hook.secret],
+			[next.signingKeyId, next.secret],
+		]);
+		for (const [, body, headers] of sent.mock.calls) {
+			const key = keys.get(headers["X-Keyzori-Signing-Key-Id"] ?? "");
+			if (!key) throw new Error("Delivered with an unprovisioned key");
+			expect(headers["X-Keyzori-Signature"]).toBe(
+				`v1=${createHmac("sha256", Buffer.from(key, "hex")).update(`${headers["X-Keyzori-Timestamp"]}.${headers["X-Keyzori-Delivery-Id"]}.${body}`).digest("hex")}`,
+			);
+		}
+		expect(
+			sent.mock.calls.map((call) => call[2]["X-Keyzori-Signing-Key-Id"]),
+		).toEqual([
+			hook.data.signingKeyId,
+			hook.data.signingKeyId,
+			hook.data.signingKeyId,
+			hook.data.signingKeyId,
+			next.signingKeyId,
+		]);
+		for (const delivery of await context.database.orm
+			.select()
+			.from(deliveries)) {
+			expect(delivery.terminalAt).toBeInstanceOf(Date);
+			expect(delivery.secretCiphertext).toBeNull();
+		}
 	} finally {
 		sent.mockRestore();
 	}
@@ -569,9 +654,7 @@ test("send/settle crash recovery permits duplicates with stable delivery and eve
 		retryAfter: null,
 	});
 	try {
-		await expect(worker.runOnce()).rejects.toThrow(
-			"webhook endpoint operations failed",
-		);
+		await worker.runOnce();
 		const [uncertain] = await context.database.orm.select().from(deliveries);
 		if (!uncertain) throw new Error("Missing uncertain delivery");
 		expect(uncertain).toMatchObject({
@@ -580,6 +663,10 @@ test("send/settle crash recovery permits duplicates with stable delivery and eve
 			webhookId: hook.data.id,
 		});
 		persist.mockRestore();
+		await context.database.orm
+			.update(webhooks)
+			.set({ dispatchRetryAt: new Date(0) })
+			.where(eq(webhooks.id, hook.data.id));
 		await context.database.orm
 			.update(deliveries)
 			.set({ leaseUntil: new Date(0) })
@@ -622,9 +709,10 @@ test("a send-marker persistence failure rolls back the budget and never reaches 
 		retryAfter: null,
 	});
 	try {
-		await expect(dispatcher().runOnce()).rejects.toThrow(
-			"webhook endpoint operations failed",
-		);
+		await dispatcher().runOnce();
+		expect(
+			(await context.database.orm.select().from(webhooks))[0]?.lastError,
+		).toBe("dispatch_unavailable");
 		expect(sent).not.toHaveBeenCalled();
 		const [unsent] = await context.database.orm.select().from(deliveries);
 		const [attempt] = await context.database.orm
@@ -727,14 +815,24 @@ test("bad secrets and slow endpoints do not block healthy endpoint progress", as
 		]);
 		expect(sent).toHaveBeenCalledTimes(2);
 		release.resolve();
-		expect(await outcome).toMatchObject({
-			message: expect.stringContaining("webhook endpoint operations failed"),
+		expect(await outcome).toBeUndefined();
+		const [paused] = await context.database.orm
+			.select()
+			.from(webhooks)
+			.where(eq(webhooks.id, corrupt.data.id));
+		expect(paused).toMatchObject({
+			lastError: "enqueue_unavailable",
+			dispatchFailures: 1,
 		});
+		expect(paused?.dispatchRetryAt).toBeInstanceOf(Date);
 		const successful = await context.database.orm
 			.select()
 			.from(deliveries)
 			.where(eq(deliveries.state, "succeeded"));
 		expect(successful).toHaveLength(2);
+		await event();
+		await dispatcher().runOnce();
+		expect(sent).toHaveBeenCalledTimes(4);
 	} finally {
 		release.resolve();
 		await outcome;
@@ -783,6 +881,440 @@ test("a full endpoint backlog stays bounded and does not consume its event curso
 	expect(
 		await context.database.orm.select({ id: deliveries.id }).from(deliveries),
 	).toHaveLength(1000);
+	await context.database.orm
+		.delete(deliveries)
+		.where(eq(deliveries.id, claim.id));
+	await event();
+	await probe(dispatcher()).enqueue(hook.data.id);
+	const [partial] = await context.database.orm
+		.select()
+		.from(webhooks)
+		.where(eq(webhooks.id, hook.data.id));
+	const [last] = await context.database.orm
+		.select({ sequence: activityEvents.sequence })
+		.from(activityEvents)
+		.where(eq(activityEvents.event, "license.created"))
+		.orderBy(sql`${activityEvents.sequence} desc`)
+		.limit(1);
+	if (!last?.sequence) throw new Error("Missing eligible event");
+	expect(partial?.lastSequence).toBe(last.sequence - 1n);
+	expect(
+		await context.database.orm.select({ id: deliveries.id }).from(deliveries),
+	).toHaveLength(1000);
+});
+
+test("audit snapshots retain the receiver origin but exclude callback path, query and secret", async () => {
+	const origin = "https://receiver.example";
+	const hook = await service.create(
+		{
+			url: `${origin}/private-path-marker?token=query-marker`,
+			events: ["license.created"],
+			allGroups: true,
+		},
+		context.operation(),
+	);
+	await service.update(
+		{
+			ids: [hook.data.id],
+			changes: { url: `${origin}/changed-private-path?next=another-marker` },
+		},
+		context.operation(),
+	);
+	await service.delete(
+		{ ids: [hook.data.id], confirm: true, reason: "Retire fixture" },
+		context.operation(),
+	);
+	const evidence = await context.database.orm
+		.select({ before: audits.before, after: audits.after })
+		.from(audits)
+		.where(eq(audits.targetId, hook.data.id));
+	expect(evidence).toHaveLength(3);
+	for (const entry of evidence) {
+		const text = JSON.stringify(entry);
+		expect(text).toContain(origin);
+		for (const excluded of [
+			"private-path",
+			"query-marker",
+			"another-marker",
+			hook.secret,
+		])
+			expect(text).not.toContain(excluded);
+	}
+});
+
+test("delivery cursors bind receiver and state, and caught-up root endpoints are not rewritten", async () => {
+	const hook = await endpoint();
+	const version = async () =>
+		(
+			await context.database.orm
+				.select({ xmin: sql<string>`xmin::text` })
+				.from(webhooks)
+				.where(eq(webhooks.id, hook.data.id))
+		)[0]?.xmin;
+	const before = await version();
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
+	});
+	try {
+		await dispatcher().runOnce();
+		expect(sent).not.toHaveBeenCalled();
+	} finally {
+		sent.mockRestore();
+	}
+	expect(await version()).toBe(before);
+	await event();
+	await event();
+	await probe(dispatcher()).enqueue(hook.data.id);
+	const filters = { webhookId: hook.data.id, state: "pending", limit: "1" };
+	const first = await service.deliveryHistory(
+		new URLSearchParams(filters),
+		context.operation(),
+	);
+	const cursor = first.nextCursor;
+	if (!cursor) throw new Error("Missing history cursor");
+	const next = await service.deliveryHistory(
+		new URLSearchParams({ ...filters, cursor }),
+		context.operation(),
+	);
+	expect(next.data).not.toEqual(first.data);
+	for (const changed of [
+		{ state: "failed" },
+		{ webhookId: Bun.randomUUIDv7() },
+	])
+		await expect(
+			service.deliveryHistory(
+				new URLSearchParams({ ...filters, ...changed, cursor }),
+				context.operation(),
+			),
+		).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+});
+
+test("empty-group and global-only selected-group drafts cannot be enabled", async () => {
+	for (const input of [
+		{ events: ["license.created" as const], groupIds: [] },
+		{ events: ["settings.updated" as const], groupIds: [Bun.randomUUIDv7()] },
+	]) {
+		const hook = await service.create(
+			{ url: "https://receiver.example/", ...input },
+			context.operation(),
+		);
+		await expect(
+			service.enable({ ids: [hook.data.id] }, context.operation()),
+		).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+	}
+});
+
+test("a busy unchanged endpoint does not abort an in-flight send or abandon its claim", async () => {
+	const { worker, claim } = await queuedClaim();
+	const entered = Promise.withResolvers<void>();
+	const releaseSend = Promise.withResolvers<void>();
+	const releaseLock = Promise.withResolvers<void>();
+	const locked = Promise.withResolvers<void>();
+	let aborted = false;
+	const sent = spyOn(WebhookTransport.prototype, "send").mockImplementation(
+		async (_url, _body, _headers, _timeout, signal) => {
+			signal?.addEventListener(
+				"abort",
+				() => {
+					aborted = true;
+					releaseSend.resolve();
+				},
+				{ once: true },
+			);
+			entered.resolve();
+			await releaseSend.promise;
+			return { status: 204, retryAfter: null };
+		},
+	);
+	const running = probe(worker).send(claim);
+	const holder = entered.promise.then(() =>
+		context.database.transaction(async (tx) => {
+			await tx
+				.select({ id: webhooks.id })
+				.from(webhooks)
+				.where(eq(webhooks.id, claim.webhookId))
+				.for("update");
+			locked.resolve();
+			await releaseLock.promise;
+		}),
+	);
+	try {
+		await locked.promise;
+		const deadline = Date.now() + 900;
+		let waiting = false;
+		while (!waiting && Date.now() < deadline) {
+			const [observed] = await context.database.orm.execute<{
+				waiting: boolean;
+			}>(
+				sql`select exists(select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query like '%webhooks%for share%') as waiting`,
+			);
+			waiting = observed?.waiting === true;
+			if (!waiting) await Bun.sleep(5);
+		}
+		expect(waiting).toBe(true);
+		releaseLock.resolve();
+		await holder;
+		releaseSend.resolve();
+		await running;
+		expect(aborted).toBe(false);
+		expect(
+			(
+				await context.database.orm
+					.select()
+					.from(deliveries)
+					.where(eq(deliveries.id, claim.id))
+			)[0],
+		).toMatchObject({ state: "succeeded", attempts: 1, claimToken: null });
+	} finally {
+		releaseLock.resolve();
+		releaseSend.resolve();
+		await Promise.allSettled([running, holder]);
+		sent.mockRestore();
+	}
+});
+
+test("inconsistent snapshots fail closed without passing the cursor or blocking older valid deliveries", async () => {
+	const { worker, claim, hook } = await queuedClaim();
+	await context.database.orm
+		.update(deliveries)
+		.set({ payload: { ...claim.payload, id: Bun.randomUUIDv7() } })
+		.where(eq(deliveries.id, claim.id));
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
+	});
+	try {
+		await probe(worker).send(claim);
+		const [invalid] = await context.database.orm
+			.select()
+			.from(deliveries)
+			.where(eq(deliveries.id, claim.id));
+		expect(invalid).toMatchObject({
+			state: "failed",
+			error: "invalid_payload",
+			attempts: 0,
+			secretCiphertext: null,
+		});
+		await expect(
+			service.replay(
+				{ ids: [claim.id], confirm: true, reason: "Review fixture" },
+				context.operation(),
+			),
+		).rejects.toThrow();
+		expect(sent).not.toHaveBeenCalled();
+		await event();
+		await probe(worker).enqueue(hook.data.id);
+		const [good] = await context.database.orm
+			.select()
+			.from(deliveries)
+			.where(eq(deliveries.state, "pending"));
+		if (!good) throw new Error("Missing valid earlier delivery");
+		await event();
+		await event();
+		const [latest] = await context.database.orm
+			.select()
+			.from(activityEvents)
+			.where(eq(activityEvents.event, "license.created"))
+			.orderBy(sql`${activityEvents.sequence} desc`)
+			.limit(1);
+		if (!latest) throw new Error("Missing source event");
+		await context.database.orm
+			.update(activityEvents)
+			.set({ resourceRevision: latest.resourceRevision + 1n })
+			.where(eq(activityEvents.id, latest.id));
+		const [before] = await context.database.orm
+			.select()
+			.from(webhooks)
+			.where(eq(webhooks.id, hook.data.id));
+		await worker.runOnce();
+		const [after] = await context.database.orm
+			.select()
+			.from(webhooks)
+			.where(eq(webhooks.id, hook.data.id));
+		expect(after).toMatchObject({
+			lastSequence: before?.lastSequence,
+			lastError: "stored_event_inconsistent",
+		});
+		expect(sent).toHaveBeenCalledTimes(1);
+		expect(sent.mock.calls[0]?.[2]["X-Keyzori-Delivery-Id"]).toBe(good.id);
+		expect(
+			await context.database.orm.select({ id: deliveries.id }).from(deliveries),
+		).toHaveLength(2);
+	} finally {
+		sent.mockRestore();
+	}
+});
+
+test("a receiver cannot receive or replay history outside its selection even when the owner is root", async () => {
+	const group = Bun.randomUUIDv7();
+	const other = Bun.randomUUIDv7();
+	const narrow = await service.create(
+		{
+			url: "https://receiver.example/narrow",
+			groupIds: [group],
+			events: ["license.created"],
+		},
+		context.operation(),
+	);
+	await service.enable({ ids: [narrow.data.id] }, context.operation());
+	const wide = await endpoint();
+	await event(group, { requiredGroupIds: [group, other] });
+	await event(group, { requiresAllGroups: true });
+	await event(group, { requiredGroupIds: [group] });
+	const sent = spyOn(WebhookTransport.prototype, "send").mockResolvedValue({
+		status: 204,
+		retryAfter: null,
+	});
+	try {
+		await dispatcher().runOnce();
+		const rows = await context.database.orm.select().from(deliveries);
+		expect(
+			rows
+				.filter((row) => row.webhookId === narrow.data.id)
+				.map((row) => row.requiredGroupIds),
+		).toEqual([[group]]);
+		expect(rows.filter((row) => row.webhookId === wide.data.id)).toHaveLength(
+			3,
+		);
+		await service.update(
+			{ ids: [wide.data.id], changes: { allGroups: false, groupIds: [group] } },
+			context.operation(),
+		);
+		await service.enable({ ids: [wide.data.id] }, context.operation());
+		const protectedRows = rows.filter(
+			(row) =>
+				row.webhookId === wide.data.id &&
+				(row.requiresAllGroups || row.requiredGroupIds.includes(other)),
+		);
+		for (const row of protectedRows)
+			await expect(
+				service.replay(
+					{ ids: [row.id], confirm: true, reason: "Retained history" },
+					context.operation(),
+				),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(sent).toHaveBeenCalledTimes(4);
+	} finally {
+		sent.mockRestore();
+	}
+});
+
+test("rebinding after API key rotation fences the previous generation in either observation order", async () => {
+	for (const observeFirst of [false, true]) {
+		const owned = await ownedEndpoint();
+		await event(owned.groupId);
+		const worker = probe(dispatcher());
+		await worker.enqueue(owned.hook.data.id);
+		const [queued] = await context.database.orm
+			.select()
+			.from(deliveries)
+			.where(eq(deliveries.webhookId, owned.hook.data.id));
+		if (!queued) throw new Error("Missing old-generation delivery");
+		const rotated = await context.apiKeys.rotate(
+			{ ids: [owned.key.data.id] },
+			context.operation(),
+		);
+		const credential = rotated.data[0]?.credential;
+		if (!credential) throw new Error("Missing fixture credential");
+		if (observeFirst) await worker.enqueue(owned.hook.data.id);
+		const principal = await context.auth.authenticate(`Bearer ${credential}`);
+		await service.enable(
+			{ ids: [owned.hook.data.id] },
+			{ ...context.operation(), principal },
+		);
+		const [bound] = await context.database.orm
+			.select()
+			.from(webhooks)
+			.where(eq(webhooks.id, owned.hook.data.id));
+		expect(bound).toMatchObject({ enabled: true, version: 2, lastError: null });
+		expect(
+			(
+				await context.database.orm
+					.select()
+					.from(deliveries)
+					.where(eq(deliveries.id, queued.id))
+			)[0],
+		).toMatchObject({
+			state: "cancelled",
+			error: "owner_authority_revoked",
+			secretCiphertext: null,
+		});
+		const evidence = await context.database.orm
+			.select()
+			.from(audits)
+			.where(
+				and(
+					eq(audits.targetId, owned.hook.data.id),
+					eq(audits.action, "webhook.disabled"),
+				),
+			);
+		expect(evidence).toHaveLength(1);
+		expect(evidence[0]?.actor.kind).toBe("system");
+		expect(
+			await context.database.orm
+				.select({ id: activityEvents.id })
+				.from(activityEvents)
+				.where(
+					and(
+						eq(activityEvents.event, "webhook.disabled"),
+						eq(activityEvents.resourceId, owned.hook.data.id),
+					),
+				),
+		).toHaveLength(1);
+		const wildcard = await service.update(
+			{ ids: [owned.hook.data.id], changes: { events: ["*"] } },
+			context.operation(),
+		);
+		expect(wildcard.data[0]?.events).toContain("license.created");
+		expect(wildcard.data[0]?.events).not.toContain("webhook.created");
+	}
+});
+
+test("automatic revocation cannot commit disablement or cancel work without its audit record", async () => {
+	const owned = await ownedEndpoint();
+	const worker = probe(dispatcher());
+	await event(owned.groupId);
+	await worker.enqueue(owned.hook.data.id);
+	await context.apiKeys.disable(
+		{ ids: [owned.key.data.id] },
+		context.operation(),
+	);
+	const brokenAudit = spyOn(context.audit, "record").mockRejectedValueOnce(
+		new Error("Fixture audit unavailable"),
+	);
+	try {
+		await expect(worker.enqueue(owned.hook.data.id)).rejects.toThrow(
+			"Fixture audit unavailable",
+		);
+		expect(
+			(
+				await context.database.orm
+					.select()
+					.from(webhooks)
+					.where(eq(webhooks.id, owned.hook.data.id))
+			)[0]?.enabled,
+		).toBe(true);
+		expect(
+			(
+				await context.database.orm
+					.select()
+					.from(deliveries)
+					.where(eq(deliveries.webhookId, owned.hook.data.id))
+			)[0],
+		).toMatchObject({ state: "pending", terminalAt: null });
+	} finally {
+		brokenAudit.mockRestore();
+	}
+	await worker.enqueue(owned.hook.data.id);
+	expect(
+		(
+			await context.database.orm
+				.select()
+				.from(webhooks)
+				.where(eq(webhooks.id, owned.hook.data.id))
+		)[0]?.enabled,
+	).toBe(false);
 });
 
 test("manual replay uses new delivery identity while recovery preserves budget and rejects active claims", async () => {
@@ -1055,6 +1587,14 @@ test("claim/send, history and replay retain historical authorization after sourc
 		},
 		context.operation(),
 	);
+	await service.update(
+		{
+			ids: [owned.hook.data.id],
+			changes: { groupIds: [owned.groupId, sourceGroupId] },
+		},
+		owned.operation(),
+	);
+	await service.enable({ ids: [owned.hook.data.id] }, owned.operation());
 	await event(owned.groupId, { requiredGroupIds: [sourceGroupId] });
 	await event(owned.groupId, { requiredGroupIds: [sourceGroupId] });
 	const worker = dispatcher();
@@ -1259,22 +1799,44 @@ test("operator private-origin policy reaches management and real dispatch withou
 		privateDestinations,
 	);
 	try {
+		const issued = await context.apiKeys.create(
+			{ name: "Private receiver owner" },
+			context.operation(),
+		);
+		await context.apiKeys.update(
+			{
+				ids: [issued.data.id],
+				changes: {
+					scopes: ["webhooks:*", "events:read", "licenses:read"],
+					allGroups: true,
+				},
+			},
+			context.operation(),
+		);
+		await context.apiKeys.enable(
+			{ ids: [issued.data.id] },
+			context.operation(),
+		);
+		const principal = await context.auth.authenticate(
+			`Bearer ${issued.credential}`,
+		);
+		const operation = () => ({ ...context.operation(), principal });
 		const hook = await management.create(
 			{
 				url: `${receiver.url.origin}/events`,
 				events: ["license.created"],
 				allGroups: true,
 			},
-			context.operation(),
+			operation(),
 		);
-		await management.enable({ ids: [hook.data.id] }, context.operation());
+		await management.enable({ ids: [hook.data.id] }, operation());
 		await expect(
 			management.update(
 				{
 					ids: [hook.data.id],
 					changes: { url: `http://127.0.0.2:${receiver.port}/events` },
 				},
-				context.operation(),
+				operation(),
 			),
 		).rejects.toMatchObject({ code: "INVALID_REQUEST" });
 		await expect(
@@ -1284,7 +1846,7 @@ test("operator private-origin policy reaches management and real dispatch withou
 					events: ["license.created"],
 					allGroups: true,
 				},
-				context.operation(),
+				operation(),
 			),
 		).rejects.toMatchObject({ code: "INVALID_REQUEST" });
 		await event();

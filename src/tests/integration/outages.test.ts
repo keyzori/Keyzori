@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
 import { Database } from "../../core/database/Database";
+import { MigrationService } from "../../core/database/MigrationService";
+import { RestoreService } from "../../core/database/RestoreService";
 import { RateLimiter } from "../../core/http/RateLimiter";
 import { Redis } from "../../core/redis/Redis";
 import { Metrics } from "../../core/observability/Metrics";
@@ -120,6 +122,42 @@ describe("Redis interruption and recovery", () => {
 });
 
 describe("PostgreSQL interruption and recovery", () => {
+	test.each(["verify", "migrate", "restore"] as const)(
+		"%s bounds an already-connected unresponsive schema session and recovers its single pool slot",
+		async (mode) => {
+			const proxy = new TcpProxy(new URL(fixture.url));
+			const database = new Database(await proxy.start(), 1);
+			let watchdog: ReturnType<typeof setTimeout> | undefined;
+			let forced = false;
+			try {
+				await new MigrationService(database).verify();
+				proxy.dropResponses = true;
+				watchdog = setTimeout(() => {
+					forced = true;
+					proxy.closeConnections();
+				}, 1200);
+				const deadline = Date.now() + 120;
+				const schema = new MigrationService(database);
+				const job =
+					mode === "verify"
+						? schema.verify(deadline)
+						: mode === "migrate"
+							? schema.run(deadline)
+							: new RestoreService(database).prepare(deadline);
+				await expect(job).rejects.toMatchObject({
+					code: "SERVICE_UNAVAILABLE",
+				});
+				expect(forced).toBe(false);
+				clearTimeout(watchdog);
+				proxy.dropResponses = false;
+				await schema.verify();
+			} finally {
+				clearTimeout(watchdog);
+				await proxy.stop();
+				await database.close();
+			}
+		},
+	);
 	test("a stalled established connection expires, settles its callback, and preserves the pool", async () => {
 		const proxy = new TcpProxy(new URL(fixture.url));
 		const database = new Database(await proxy.start(), 2);

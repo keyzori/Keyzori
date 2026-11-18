@@ -35,6 +35,19 @@ export const readDiagnostics = (
 					draining: t.Boolean(),
 					activeRequests: t.Integer({ minimum: 0 }),
 					cause: t.Nullable(t.String()),
+					webhookQueue: t.Nullable(
+						t.Object(
+							{
+								pending: t.Integer({ minimum: 0 }),
+								claimed: t.Integer({ minimum: 0 }),
+								oldestSeconds: t.Number({ minimum: 0 }),
+								sampleLimit: t.Integer({ minimum: 1 }),
+								observedAt: t.String({ format: "date-time" }),
+								ageMs: t.Integer({ minimum: 0 }),
+							},
+							{ additionalProperties: false },
+						),
+					),
 					checks: t.Object(
 						{ postgresql: check, redis: check },
 						{ additionalProperties: false },
@@ -44,5 +57,5 @@ export const readDiagnostics = (
 			),
 			detail: { tags: ["Operations"], security: [{ bearerAuth: [] }] },
 		},
-		() => service.diagnostics(),
+		({ operation }) => service.diagnostics(operation.deadlineAt),
 	);
